@@ -7,9 +7,9 @@ retail inventory replenishment and store-level stock allocation. It is designed 
 turn Walmart M5 observed sales into auditable forecasts and simulated inventory
 recommendations through a batch-oriented distributed architecture.
 
-The repository currently contains project metadata, a placeholder Python package,
-and design specifications. The data pipeline, services, model training, database
-publication, and dashboard are not implemented yet.
+The repository currently contains project metadata, a Python package, developer
+tooling, and design specifications. The data pipeline, services, model training,
+database publication, and dashboard are not implemented yet.
 
 ## Project Objectives
 
@@ -85,13 +85,13 @@ The tracked repository is intentionally small at this stage:
 
 | Path | Purpose and status |
 |---|---|
-| [`pyproject.toml`](pyproject.toml) | Python project metadata and the placeholder console entry point |
+| [`pyproject.toml`](pyproject.toml) | Python project metadata and developer tooling configuration |
 | [`uv.lock`](uv.lock) | Committed dependency-resolution metadata |
 | [`.python-version`](.python-version) | Python 3.11 project marker |
-| [`src/warehouse_bigdata/`](src/warehouse_bigdata/) | Tracked package scaffold; currently only a placeholder entry point |
+| [`src/warehouse_bigdata/`](src/warehouse_bigdata/) | Tracked package and minimal CLI entry point |
 | [`docs/`](docs/01_PROJECT_OVERVIEW.md) | Design specifications and repository guidance |
 | `infrastructure/` | Local directory reserved for Hadoop, Spark, and ClickHouse configuration; no tracked configuration yet |
-| `tests/` | Local directory reserved for focused tests; no tracked tests or fixtures yet |
+| `tests/` | Focused package and CLI tests; no shared fixtures yet |
 | `app/`, `sql/`, `scripts/`, `data/`, `artifacts/` | Planned areas described by the design; not currently present in the tracked tree |
 
 [`docs/BASED_STRUCTURE.md`](docs/BASED_STRUCTURE.md) is a reference layout, not
@@ -102,8 +102,9 @@ first real implementation requires them.
 
 ### Implemented or scaffolded
 
-- Python project metadata for Python 3.11 managed with `uv`.
-- A placeholder `warehouse-bigdata` console entry point that prints a greeting.
+- Python project metadata and reproducible developer tooling for Python 3.11 managed with `uv`.
+- A `warehouse-bigdata` console entry point with `--help` and `--version` support.
+- Focused pytest checks for package importability and CLI argument handling.
 - Design documents covering requirements, architecture, data, forecasting,
   inventory policy, database design, application design, and testing.
 - Repository cleanup and documentation alignment for the FND-01 foundation task.
@@ -123,18 +124,30 @@ result should be inferred from the design documents.
 
 ## Getting Started
 
-Prerequisites are Python 3.11 and `uv`. The versions are recorded in
-[`.python-version`](.python-version) and [`uv.lock`](uv.lock).
+Prerequisites are `uv` and Python 3.11. The required Python version is recorded in
+[`.python-version`](.python-version), and resolved development dependencies are recorded
+in [`uv.lock`](uv.lock).
 
-From the repository root, the current Python scaffold can be synchronized and
-invoked with:
+From the repository root, install/select Python 3.11 and synchronize the locked
+development environment:
 
 ```bash
-uv sync
-uv run warehouse-bigdata
+uv python install 3.11
+uv sync --locked
 ```
 
-The entry point currently prints a placeholder greeting. It does not download data,
+Run the CLI, lint checks, formatting check, tests, and package build with:
+
+```bash
+uv run --locked warehouse-bigdata --help
+uv run --locked warehouse-bigdata --version
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+uv run --locked pytest -q
+uv build
+```
+
+The CLI is a packaging and environment smoke test only. It does not download data,
 start HDFS, run Spark, train a model, load ClickHouse, or start Streamlit. There is
 currently no operational pipeline or service quickstart; those instructions belong
 with the corresponding implementation in a later foundation task.

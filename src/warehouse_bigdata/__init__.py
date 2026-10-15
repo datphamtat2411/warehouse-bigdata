@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from warehouse-bigdata!")
+"""Warehouse Big Data project package."""

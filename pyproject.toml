@@ -1,16 +1,33 @@
 [project]
 name = "warehouse-bigdata"
 version = "0.1.0"
-description = "Add your description here"
+description = "Batch-oriented big-data inventory decision-support prototype"
 readme = "README.md"
 authors = [
     { name = "Pham Tat Dat", email = "datphamtat19@gmail.com" }
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 dependencies = []
 
 [project.scripts]
-warehouse-bigdata = "warehouse_bigdata:main"
+warehouse-bigdata = "warehouse_bigdata.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]
