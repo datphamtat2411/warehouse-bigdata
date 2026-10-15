@@ -142,9 +142,7 @@ def test_negative_sales_and_unexpected_field_are_rejected() -> None:
 
 def test_zero_sales_remains_valid() -> None:
     fixture = load_fixture()
-    record = next(
-        row for row in fixture["datasets"]["sales_daily"] if row["unit_sales"] == 0
-    )
+    record = next(row for row in fixture["datasets"]["sales_daily"] if row["unit_sales"] == 0)
 
     validate_record(
         DATASET_CONTRACTS_BY_NAME["sales_daily"],

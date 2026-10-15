@@ -1,7 +1,7 @@
 """Contract tests for seven-day forecast and evaluation records."""
 
-from copy import deepcopy
 import math
+from copy import deepcopy
 
 import pytest
 
@@ -31,16 +31,11 @@ def test_forecast_golden_values_cover_exactly_seven_horizons() -> None:
 
     assert len(records) == expected["row_count"]
     assert len(series) == expected["series_count"]
-    assert {
-        record["horizon"] for record in series["ITEM_A|CA_1"]
-    } == set(expected["horizons"])
-    assert {
-        record["horizon"] for record in series["ITEM_B|CA_2"]
-    } == set(expected["horizons"])
+    assert {record["horizon"] for record in series["ITEM_A|CA_1"]} == set(expected["horizons"])
+    assert {record["horizon"] for record in series["ITEM_B|CA_2"]} == set(expected["horizons"])
     assert sorted({record["forecast_date"] for record in records}) == expected["forecast_dates"]
     assert {
-        key: sum(record["predicted_units"] for record in values)
-        for key, values in series.items()
+        key: sum(record["predicted_units"] for record in values) for key, values in series.items()
     } == expected["series_totals"]
     assert all(
         math.isfinite(record["predicted_units"]) and record["predicted_units"] >= 0
@@ -69,9 +64,7 @@ def test_duplicate_forecast_horizon_is_rejected() -> None:
     fixture = load_fixture()
     records = deepcopy(fixture["datasets"]["forecast_daily"])
     duplicate = next(
-        record
-        for record in records
-        if record["item_id"] == "ITEM_A" and record["horizon"] == 2
+        record for record in records if record["item_id"] == "ITEM_A" and record["horizon"] == 2
     )
     duplicate["horizon"] = 1
 

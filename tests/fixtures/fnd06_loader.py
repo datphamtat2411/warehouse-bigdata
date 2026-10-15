@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 _FIXTURE_DIR = Path(__file__).parent
 
 

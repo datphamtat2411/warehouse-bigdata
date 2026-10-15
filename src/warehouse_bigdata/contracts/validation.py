@@ -9,9 +9,9 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from numbers import Real
-from typing import Any
 
 from .datasets import (
+    BOOL,
     DATE,
     FINITE_FLOAT,
     INTEGER,
@@ -19,7 +19,6 @@ from .datasets import (
     NON_NEGATIVE_INT,
     STRING,
     TIMESTAMP_UTC,
-    BOOL,
     DatasetContract,
     FieldSpec,
 )
@@ -491,9 +490,7 @@ def _manifest_issues(
         type_issue = _logical_type_issue(field, value)
         if type_issue is not None:
             code, message = type_issue
-            issues.append(
-                _issue(code, contract.name, field=field.name, message=message)
-            )
+            issues.append(_issue(code, contract.name, field=field.name, message=message))
         if _is_identifier_field(field.name) and isinstance(value, str) and not value:
             issues.append(
                 _issue(
@@ -516,6 +513,7 @@ def _manifest_issues(
                     field=field_name,
                     message="conditional lineage identifiers must be strings",
                 )
+            )
         elif not value:
             issues.append(
                 _issue(
@@ -838,8 +836,10 @@ def _publication_context_issues(context: Mapping[str, object]) -> list[Validatio
             )
         )
     policy_ids = context.get("policy_ids")
-    if not isinstance(policy_ids, list) or not policy_ids or not all(
-        isinstance(policy_id, str) and policy_id for policy_id in policy_ids
+    if (
+        not isinstance(policy_ids, list)
+        or not policy_ids
+        or not all(isinstance(policy_id, str) and policy_id for policy_id in policy_ids)
     ):
         issues.append(
             _issue(
@@ -913,11 +913,16 @@ def _record_key(
 
 
 def _is_identifier_field(name: str) -> bool:
-    return name.endswith("_id") or name.endswith("_version") or name in {
-        "source_version",
-        "feature_version",
-        "contract_version",
-    }
+    return (
+        name.endswith("_id")
+        or name.endswith("_version")
+        or name
+        in {
+            "source_version",
+            "feature_version",
+            "contract_version",
+        }
+    )
 
 
 def _is_integer(value: object) -> bool:

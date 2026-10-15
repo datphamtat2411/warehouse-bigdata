@@ -1,12 +1,11 @@
 """Contract tests for approved publication metadata and coherent context."""
 
-from copy import deepcopy
 import json
+from copy import deepcopy
 
 import pytest
 
 from tests.fixtures.fnd06_loader import load_fixture
-from warehouse_bigdata.contracts.manifests import MANIFEST_CONTRACTS_BY_NAME
 from warehouse_bigdata.contracts.validation import (
     ContractValidationError,
     validate_publication,
