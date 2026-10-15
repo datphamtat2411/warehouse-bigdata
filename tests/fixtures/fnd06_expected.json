@@ -1,0 +1,133 @@
+{
+  "catalog_version": "1.0",
+  "sales_daily": {
+    "row_count": 8,
+    "logical_key_count": 8,
+    "unit_sales_total": 13,
+    "zero_sales_count": 2
+  },
+  "sales_enriched": {
+    "row_count": 8,
+    "missing_price_count": 1,
+    "zero_sale_flag_count": 2
+  },
+  "store_daily_sales": {
+    "row_count": 4,
+    "totals": {
+      "CA_1|2026-01-05": 4,
+      "CA_2|2026-01-05": 3,
+      "CA_1|2026-01-06": 3,
+      "CA_2|2026-01-06": 3
+    }
+  },
+  "forecast_daily": {
+    "row_count": 14,
+    "series_count": 2,
+    "horizons": [1, 2, 3, 4, 5, 6, 7],
+    "forecast_dates": [
+      "2026-01-08",
+      "2026-01-09",
+      "2026-01-10",
+      "2026-01-11",
+      "2026-01-12",
+      "2026-01-13",
+      "2026-01-14"
+    ],
+    "series_totals": {
+      "ITEM_A|CA_1": 10.0,
+      "ITEM_B|CA_2": 7.25
+    }
+  },
+  "forecast_metrics": {
+    "row_count": 1,
+    "metric_value_is_null": true
+  },
+  "inventory_scenario": {
+    "row_count": 4
+  },
+  "central_supply_scenario": {
+    "row_count": 2
+  },
+  "replenishment_recommendations": {
+    "row_count": 2
+  },
+  "allocation_recommendations": {
+    "row_count": 2,
+    "allocated_total": 5,
+    "central_supply_bound": 5
+  },
+  "inventory_policy_evaluation": {
+    "row_count": 1,
+    "run_type": "validation"
+  },
+  "lineage_ids": {
+    "source_version": "synthetic-fnd06-source-001",
+    "source_snapshot_id": "synthetic-fnd06-snapshot-001",
+    "pipeline_run_id": "synthetic-fnd06-pipeline-001",
+    "feature_version": "synthetic-fnd06-features-001",
+    "model_run_id": "synthetic-fnd06-model-001",
+    "forecast_run_id": "synthetic-fnd06-forecast-001",
+    "scenario_id": "synthetic-fnd06-scenario-001",
+    "decision_run_id": "synthetic-fnd06-decision-001",
+    "evaluation_run_id": "synthetic-fnd06-evaluation-001",
+    "publication_id": "synthetic-fnd06-publication-001",
+    "holdout_id": "synthetic-fnd06-holdout-001",
+    "policy_id": "synthetic-fnd06-policy-001",
+    "policy_version": "synthetic-fnd06-policy-v1"
+  },
+  "manifests": {
+    "source_manifest": {
+      "contract_name": "source_manifest",
+      "contract_version": "1.0",
+      "manifest_kind": "source_acquisition",
+      "status": "VALIDATED"
+    },
+    "pipeline_run_manifest": {
+      "contract_name": "pipeline_run_manifest",
+      "contract_version": "1.0",
+      "manifest_kind": "pipeline_output",
+      "status": "VALIDATED"
+    },
+    "model_manifest": {
+      "contract_name": "model_manifest",
+      "contract_version": "1.0",
+      "manifest_kind": "model_run",
+      "status": "VALIDATED"
+    },
+    "forecast_manifest": {
+      "contract_name": "forecast_manifest",
+      "contract_version": "1.0",
+      "manifest_kind": "forecast_run",
+      "status": "VALIDATED"
+    },
+    "scenario_manifest": {
+      "contract_name": "scenario_manifest",
+      "contract_version": "1.0",
+      "manifest_kind": "scenario",
+      "status": "VALIDATED"
+    },
+    "decision_manifest": {
+      "contract_name": "decision_manifest",
+      "contract_version": "1.0",
+      "manifest_kind": "decision_run",
+      "status": "VALIDATED"
+    },
+    "evaluation_manifest": {
+      "contract_name": "evaluation_manifest",
+      "contract_version": "1.0",
+      "manifest_kind": "evaluation_run",
+      "status": "VALIDATED"
+    },
+    "publication_manifest": {
+      "contract_name": "publication_manifest",
+      "contract_version": "1.0",
+      "manifest_kind": "publication",
+      "status": "APPROVED"
+    }
+  },
+  "publication": {
+    "publication_id": "synthetic-fnd06-publication-001",
+    "manifest_checksum": "sha256:synthetic-fnd06-publication-001",
+    "contract_version": "1.0"
+  }
+}

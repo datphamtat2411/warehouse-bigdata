@@ -33,6 +33,14 @@ from .manifests import (
     PublicationCoverage,
     RunIdentity,
 )
+from .validation import (
+    ContractValidationError,
+    ValidationIssue,
+    validate_dataset,
+    validate_manifest,
+    validate_publication,
+    validate_record,
+)
 
 CONTRACT_CATALOG_VERSION = "1.0"
 
@@ -42,6 +50,7 @@ __all__ = [
     "ApplicationReadContract",
     "ArtifactPathContract",
     "CENTRAL_SUPPLY_SCENARIO",
+    "ContractValidationError",
     "CONTRACT_CATALOG_VERSION",
     "DatasetContract",
     "DATASET_CONTRACTS",
@@ -67,4 +76,9 @@ __all__ = [
     "SALES_ENRICHED",
     "SERVING_DATASET_MAPPINGS",
     "STORE_DAILY_SALES",
+    "ValidationIssue",
+    "validate_dataset",
+    "validate_manifest",
+    "validate_publication",
+    "validate_record",
 ]

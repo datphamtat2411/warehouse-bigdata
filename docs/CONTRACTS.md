@@ -2,7 +2,7 @@
 
 **Document ID:** `CONTRACTS`  
 **Contract catalog version:** `1.0`  
-**Status:** Implementation complete — Contract v1 approval pending.  
+**Status:** Contract v1 approved for FND-06 implementation; cataloged contracts are frozen. Calendar and weekly-price lookup contracts are not defined by Contract v1.  
 **Scope:** FND-05 interface metadata only; no Spark, HDFS, ClickHouse, or Streamlit implementation is asserted.
 
 This document is the navigation index for the machine-readable contracts in
@@ -128,24 +128,24 @@ Invalid publication metadata or unavailable shards is an error state. A valid fi
 
 ## Discrepancy Decision Record
 
-The implementation follows the canonical choices written in the reviewed plan. The plan still lists the following team approvals as pending; this document does not silently claim that the Contract v1 freeze has occurred.
+The implementation follows the canonical choices written in the reviewed plan. The cataloged Contract v1 decisions below are approved for FND-06 implementation. Calendar and weekly-price lookup contracts remain outside this catalog and are not approved by this record.
 
 | Issue | Implementation record | Approval status |
 |---|---|---|
-| CONTRACT-001 | Keep `source_version` for acquired raw identity and `source_snapshot_id` for validated curated identity; manifests record the parent relationship. | Pending team approval |
+| CONTRACT-001 | Keep `source_version` for acquired raw identity and `source_snapshot_id` for validated curated identity; manifests record the parent relationship. | Approved for FND-06 implementation |
 | CONTRACT-002 | Keep canonical `date` and `unit_sales`; map serving `sale_date` to `date` and retain `units_sold` only as a query alias. | Implemented per plan |
 | CONTRACT-003 | Use `forecast_run_id` in the forecast uniqueness key; retain `model_run_id` as model lineage. | Implemented per plan |
-| CONTRACT-004 | Keep the complete logical forecast contract in Parquet; retain application/lineage fields in serving; record `raw_prediction` serving retention as pending. | Pending team approval |
+| CONTRACT-004 | Keep the complete logical forecast contract in Parquet; retain application/lineage fields in serving; record `raw_prediction` serving retention as pending. | Approved for FND-06 implementation |
 | CONTRACT-005 | Keep logical names `replenishment_recommendations` and `allocation_recommendations`; map serving names to `replenishment` and `allocation`. | Implemented per plan |
-| CONTRACT-006 | Use `forecast_metrics` for scored forecast errors; keep model-training metadata in `model_manifest`; keep policy outcomes separate. | Pending team approval |
-| CONTRACT-007 | Use forecast run types `validation`, `test`, and `forward_demo`; use only `validation`/`test` for scored policy outcomes. | Pending team approval |
+| CONTRACT-006 | Use `forecast_metrics` for scored forecast errors; keep model-training metadata in `model_manifest`; keep policy outcomes separate. | Approved for FND-06 implementation |
+| CONTRACT-007 | Use forecast run types `validation`, `test`, and `forward_demo`; use only `validation`/`test` for scored policy outcomes. | Approved for FND-06 implementation |
 | CONTRACT-008 | Use `decision_run_id` for decision batches and retain forecast/model/scenario/policy lineage. | Implemented per plan |
 | CONTRACT-009 | Include `issue_date` in scenario uniqueness keys. | Implemented per plan |
-| CONTRACT-010 | Treat HDFS `published/current.json` as authoritative and the application file as an exact copy. | Pending team approval |
-| CONTRACT-011 | Use `pipeline_run_id`, `source_snapshot_id`, `feature_version`, `model_run_id`, `forecast_run_id`, `decision_run_id`, `evaluation_run_id`, and `publication_id`; do not introduce the rejected path aliases. | Pending team approval |
+| CONTRACT-010 | Treat HDFS `published/current.json` as authoritative and the application file as an exact copy. | Approved for FND-06 implementation |
+| CONTRACT-011 | Use `pipeline_run_id`, `source_snapshot_id`, `feature_version`, `model_run_id`, `forecast_run_id`, `decision_run_id`, `evaluation_run_id`, and `publication_id`; do not introduce the rejected path aliases. | Approved for FND-06 implementation |
 | CONTRACT-012 | Bind application reads to one approved publication context rather than independent latest-ID parameters. | Implemented per plan |
-| CONTRACT-013 | Represent `policy_id` and `policy_version` as separate identities. | Pending team approval |
-| CONTRACT-014 | Carry `evaluation_run_id` on independently rerunnable evaluation artifacts. | Pending team approval |
+| CONTRACT-013 | Represent `policy_id` and `policy_version` as separate identities. | Approved for FND-06 implementation |
+| CONTRACT-014 | Carry `evaluation_run_id` on independently rerunnable evaluation artifacts. | Approved for FND-06 implementation |
 
 ## Owning Documents
 
