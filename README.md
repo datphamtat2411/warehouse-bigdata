@@ -153,6 +153,15 @@ start HDFS, run Spark, train a model, load ClickHouse, or start Streamlit. There
 currently no operational pipeline or service quickstart; those instructions belong
 with the corresponding implementation in a later foundation task.
 
+## Collaboration and CI
+
+The task-oriented Git workflow and pull request expectations are documented in
+[`CONTRIBUTING.md`](CONTRIBUTING.md). Pull requests targeting `develop` and pushes to
+`develop` use [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for locked
+dependency synchronization, Ruff lint and formatting checks, and the lightweight
+pytest suite. Branch protection is a separate GitHub administrative setting and is
+not implied by the workflow file.
+
 ### Shared Configuration
 
 Python components use the typed loaders in
