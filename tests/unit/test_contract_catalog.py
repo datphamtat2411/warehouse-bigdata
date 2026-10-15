@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from warehouse_bigdata import contracts as root_contracts
 from warehouse_bigdata.contracts import (
     APPLICATION_READ_CONTRACTS,
     DATASET_CONTRACTS,
@@ -22,6 +23,14 @@ from warehouse_bigdata.contracts.manifests import (
     FORECAST_RUN_TYPES,
     POLICY_EVALUATION_RUN_TYPES,
 )
+from warehouse_bigdata.contracts.validation import (
+    ContractValidationError,
+    ValidationIssue,
+    validate_dataset,
+    validate_manifest,
+    validate_publication,
+    validate_record,
+)
 
 
 def test_dataset_names_versions_and_fields_are_unique() -> None:
@@ -35,6 +44,15 @@ def test_dataset_names_versions_and_fields_are_unique() -> None:
         assert len(field_names) == len(set(field_names))
         assert all(field.logical_type in LOGICAL_TYPES for field in contract.fields)
         assert set(contract.unique_key).issubset(field_names)
+
+
+def test_validation_public_api_is_reexported_without_aliases() -> None:
+    assert root_contracts.ContractValidationError is ContractValidationError
+    assert root_contracts.ValidationIssue is ValidationIssue
+    assert root_contracts.validate_dataset is validate_dataset
+    assert root_contracts.validate_manifest is validate_manifest
+    assert root_contracts.validate_publication is validate_publication
+    assert root_contracts.validate_record is validate_record
 
 
 def test_required_lineage_has_an_explicit_authority() -> None:

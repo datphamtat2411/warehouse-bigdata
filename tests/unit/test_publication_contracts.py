@@ -5,7 +5,7 @@ from copy import deepcopy
 
 import pytest
 
-from tests.fixtures.fnd06_loader import load_fixture
+from tests.fixtures.loader import load_manifest, load_publication_fixture
 from warehouse_bigdata.contracts.validation import (
     ContractValidationError,
     validate_publication,
@@ -17,9 +17,9 @@ def _assert_code(error: ContractValidationError, code: str) -> None:
 
 
 def _valid_publication_inputs() -> tuple[dict, dict, dict]:
-    fixture = load_fixture()
+    fixture = load_publication_fixture()
     return (
-        fixture["manifests"]["publication_manifest"],
+        load_manifest("publication_manifest"),
         fixture["publication_context"],
         fixture["publication_copy"],
     )
@@ -51,7 +51,7 @@ def test_publication_rejects_incompatible_identity_or_checksum() -> None:
     record, context, application_copy = _valid_publication_inputs()
 
     mismatch_record = deepcopy(record)
-    mismatch_record["forecast_run_id"] = "synthetic-fnd06-forecast-other"
+    mismatch_record["forecast_run_id"] = "synthetic-forecast-other"
     with pytest.raises(ContractValidationError) as lineage_error:
         validate_publication(
             mismatch_record,

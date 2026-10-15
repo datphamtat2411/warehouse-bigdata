@@ -1,0 +1,32 @@
+{
+  "publication_context": {
+    "contract_version": "1.0",
+    "publication_id": "synthetic-publication-001",
+    "manifest_checksum": "sha256:synthetic-publication-001",
+    "source_snapshot_id": "synthetic-snapshot-001",
+    "model_run_id": "synthetic-model-001",
+    "forecast_run_id": "synthetic-forecast-001",
+    "scenario_id": "synthetic-scenario-001",
+    "decision_run_id": "synthetic-decision-001",
+    "evaluation_run_id": "synthetic-evaluation-001",
+    "holdout_id": "synthetic-holdout-001",
+    "issue_date": "2026-01-07",
+    "policy_ids": [
+      "synthetic-policy-001"
+    ],
+    "coverage": {
+      "series_total": 2,
+      "series_eligible": 2,
+      "series_scored": 2,
+      "loaded_rows": 22,
+      "available_stores": [
+        "CA_1",
+        "CA_2"
+      ]
+    }
+  },
+  "publication_copy": {
+    "publication_id": "synthetic-publication-001",
+    "manifest_checksum": "sha256:synthetic-publication-001"
+  }
+}

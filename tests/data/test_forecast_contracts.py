@@ -5,7 +5,7 @@ from copy import deepcopy
 
 import pytest
 
-from tests.fixtures.fnd06_loader import load_expected, load_fixture
+from tests.fixtures.loader import load_context, load_dataset, load_expected
 from warehouse_bigdata.contracts import DATASET_CONTRACTS_BY_NAME
 from warehouse_bigdata.contracts.validation import ContractValidationError, validate_dataset
 
@@ -15,14 +15,14 @@ def _assert_code(error: ContractValidationError, code: str) -> None:
 
 
 def test_forecast_golden_values_cover_exactly_seven_horizons() -> None:
-    fixture = load_fixture()
-    expected = load_expected()["forecast_daily"]
-    records = fixture["datasets"]["forecast_daily"]
+    context = load_context()
+    expected = load_expected("forecast_daily")
+    records = load_dataset("forecast_daily")
 
     validate_dataset(
         DATASET_CONTRACTS_BY_NAME["forecast_daily"],
         records,
-        lineage_context=fixture["lineage"],
+        lineage_context=context["lineage"],
     )
 
     series = {}
@@ -44,10 +44,10 @@ def test_forecast_golden_values_cover_exactly_seven_horizons() -> None:
 
 
 def test_missing_forecast_horizon_is_rejected() -> None:
-    fixture = load_fixture()
+    context = load_context()
     records = [
         record
-        for record in deepcopy(fixture["datasets"]["forecast_daily"])
+        for record in deepcopy(load_dataset("forecast_daily"))
         if not (record["item_id"] == "ITEM_A" and record["horizon"] == 7)
     ]
 
@@ -55,14 +55,14 @@ def test_missing_forecast_horizon_is_rejected() -> None:
         validate_dataset(
             DATASET_CONTRACTS_BY_NAME["forecast_daily"],
             records,
-            lineage_context=fixture["lineage"],
+            lineage_context=context["lineage"],
         )
     _assert_code(error.value, "INCOMPLETE_HORIZON_COVERAGE")
 
 
 def test_duplicate_forecast_horizon_is_rejected() -> None:
-    fixture = load_fixture()
-    records = deepcopy(fixture["datasets"]["forecast_daily"])
+    context = load_context()
+    records = deepcopy(load_dataset("forecast_daily"))
     duplicate = next(
         record for record in records if record["item_id"] == "ITEM_A" and record["horizon"] == 2
     )
@@ -72,87 +72,87 @@ def test_duplicate_forecast_horizon_is_rejected() -> None:
         validate_dataset(
             DATASET_CONTRACTS_BY_NAME["forecast_daily"],
             records,
-            lineage_context=fixture["lineage"],
+            lineage_context=context["lineage"],
         )
     _assert_code(error.value, "DUPLICATE_HORIZON")
 
 
 @pytest.mark.parametrize("horizon", [0, 8])
 def test_forecast_horizon_outside_one_to_seven_is_rejected(horizon: int) -> None:
-    fixture = load_fixture()
-    records = deepcopy(fixture["datasets"]["forecast_daily"])
+    context = load_context()
+    records = deepcopy(load_dataset("forecast_daily"))
     records[0]["horizon"] = horizon
 
     with pytest.raises(ContractValidationError) as error:
         validate_dataset(
             DATASET_CONTRACTS_BY_NAME["forecast_daily"],
             records,
-            lineage_context=fixture["lineage"],
+            lineage_context=context["lineage"],
         )
     _assert_code(error.value, "DOMAIN_VIOLATION")
 
 
 def test_forecast_date_must_align_with_issue_date_and_horizon() -> None:
-    fixture = load_fixture()
-    records = deepcopy(fixture["datasets"]["forecast_daily"])
+    context = load_context()
+    records = deepcopy(load_dataset("forecast_daily"))
     records[0]["forecast_date"] = "2026-01-09"
 
     with pytest.raises(ContractValidationError) as error:
         validate_dataset(
             DATASET_CONTRACTS_BY_NAME["forecast_daily"],
             records,
-            lineage_context=fixture["lineage"],
+            lineage_context=context["lineage"],
         )
     _assert_code(error.value, "TEMPORAL_MISMATCH")
 
 
 @pytest.mark.parametrize("prediction", [-1.0, math.nan, math.inf])
 def test_prediction_must_be_finite_and_nonnegative(prediction: float) -> None:
-    fixture = load_fixture()
-    records = deepcopy(fixture["datasets"]["forecast_daily"])
+    context = load_context()
+    records = deepcopy(load_dataset("forecast_daily"))
     records[0]["predicted_units"] = prediction
 
     with pytest.raises(ContractValidationError) as error:
         validate_dataset(
             DATASET_CONTRACTS_BY_NAME["forecast_daily"],
             records,
-            lineage_context=fixture["lineage"],
+            lineage_context=context["lineage"],
         )
     _assert_code(error.value, "DOMAIN_VIOLATION")
 
 
 def test_invalid_forecast_run_type_and_missing_model_lineage_are_rejected() -> None:
-    fixture = load_fixture()
-    records = deepcopy(fixture["datasets"]["forecast_daily"])
+    context = load_context()
+    records = deepcopy(load_dataset("forecast_daily"))
     records[0]["run_type"] = "historical_backtest"
     with pytest.raises(ContractValidationError) as run_type_error:
         validate_dataset(
             DATASET_CONTRACTS_BY_NAME["forecast_daily"],
             records,
-            lineage_context=fixture["lineage"],
+            lineage_context=context["lineage"],
         )
     _assert_code(run_type_error.value, "INVALID_ENUM")
 
-    missing_lineage = deepcopy(fixture["datasets"]["forecast_daily"][:1])
+    missing_lineage = deepcopy(load_dataset("forecast_daily")[:1])
     del missing_lineage[0]["model_run_id"]
     with pytest.raises(ContractValidationError) as lineage_error:
         validate_dataset(
             DATASET_CONTRACTS_BY_NAME["forecast_daily"],
             missing_lineage,
-            lineage_context=fixture["lineage"],
+            lineage_context=context["lineage"],
         )
     _assert_code(lineage_error.value, "MISSING_LINEAGE")
 
 
 def test_nullable_metric_value_is_accepted_without_claiming_accuracy() -> None:
-    fixture = load_fixture()
-    expected = load_expected()["forecast_metrics"]
-    records = fixture["datasets"]["forecast_metrics"]
+    context = load_context()
+    expected = load_expected("forecast_metrics")
+    records = load_dataset("forecast_metrics")
 
     validate_dataset(
         DATASET_CONTRACTS_BY_NAME["forecast_metrics"],
         records,
-        lineage_context=fixture["lineage"],
+        lineage_context=context["lineage"],
     )
     assert len(records) == expected["row_count"]
     assert records[0]["metric_value"] is None
@@ -160,28 +160,28 @@ def test_nullable_metric_value_is_accepted_without_claiming_accuracy() -> None:
 
 
 def test_forward_demo_cannot_be_used_for_forecast_metrics() -> None:
-    fixture = load_fixture()
-    records = deepcopy(fixture["datasets"]["forecast_metrics"])
+    context = load_context()
+    records = deepcopy(load_dataset("forecast_metrics"))
     records[0]["run_type"] = "forward_demo"
 
     with pytest.raises(ContractValidationError) as error:
         validate_dataset(
             DATASET_CONTRACTS_BY_NAME["forecast_metrics"],
             records,
-            lineage_context=fixture["lineage"],
+            lineage_context=context["lineage"],
         )
     _assert_code(error.value, "RUN_TYPE_MISMATCH")
 
 
 def test_forward_demo_cannot_be_used_for_policy_evaluation() -> None:
-    fixture = load_fixture()
-    records = deepcopy(fixture["datasets"]["inventory_policy_evaluation"])
+    context = load_context()
+    records = deepcopy(load_dataset("inventory_policy_evaluation"))
     records[0]["run_type"] = "forward_demo"
 
     with pytest.raises(ContractValidationError) as error:
         validate_dataset(
             DATASET_CONTRACTS_BY_NAME["inventory_policy_evaluation"],
             records,
-            lineage_context=fixture["lineage"],
+            lineage_context=context["lineage"],
         )
     _assert_code(error.value, "RUN_TYPE_MISMATCH")

@@ -23,7 +23,15 @@
   "forecast_daily": {
     "row_count": 14,
     "series_count": 2,
-    "horizons": [1, 2, 3, 4, 5, 6, 7],
+    "horizons": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
     "forecast_dates": [
       "2026-01-08",
       "2026-01-09",
@@ -61,19 +69,19 @@
     "run_type": "validation"
   },
   "lineage_ids": {
-    "source_version": "synthetic-fnd06-source-001",
-    "source_snapshot_id": "synthetic-fnd06-snapshot-001",
-    "pipeline_run_id": "synthetic-fnd06-pipeline-001",
-    "feature_version": "synthetic-fnd06-features-001",
-    "model_run_id": "synthetic-fnd06-model-001",
-    "forecast_run_id": "synthetic-fnd06-forecast-001",
-    "scenario_id": "synthetic-fnd06-scenario-001",
-    "decision_run_id": "synthetic-fnd06-decision-001",
-    "evaluation_run_id": "synthetic-fnd06-evaluation-001",
-    "publication_id": "synthetic-fnd06-publication-001",
-    "holdout_id": "synthetic-fnd06-holdout-001",
-    "policy_id": "synthetic-fnd06-policy-001",
-    "policy_version": "synthetic-fnd06-policy-v1"
+    "source_version": "synthetic-source-001",
+    "source_snapshot_id": "synthetic-snapshot-001",
+    "pipeline_run_id": "synthetic-pipeline-001",
+    "feature_version": "synthetic-feature-001",
+    "model_run_id": "synthetic-model-001",
+    "forecast_run_id": "synthetic-forecast-001",
+    "scenario_id": "synthetic-scenario-001",
+    "decision_run_id": "synthetic-decision-001",
+    "evaluation_run_id": "synthetic-evaluation-001",
+    "publication_id": "synthetic-publication-001",
+    "holdout_id": "synthetic-holdout-001",
+    "policy_id": "synthetic-policy-001",
+    "policy_version": "synthetic-policy-v1"
   },
   "manifests": {
     "source_manifest": {
@@ -126,8 +134,8 @@
     }
   },
   "publication": {
-    "publication_id": "synthetic-fnd06-publication-001",
-    "manifest_checksum": "sha256:synthetic-fnd06-publication-001",
+    "publication_id": "synthetic-publication-001",
+    "manifest_checksum": "sha256:synthetic-publication-001",
     "contract_version": "1.0"
   }
 }

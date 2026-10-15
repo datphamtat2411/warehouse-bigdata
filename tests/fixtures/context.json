@@ -1,0 +1,22 @@
+{
+  "metadata": {
+    "synthetic": true,
+    "fixture_id": "synthetic-fixture-001",
+    "provenance": "Deterministic synthetic records; not genuine M5 observations."
+  },
+  "lineage": {
+    "source_version": "synthetic-source-001",
+    "source_snapshot_id": "synthetic-snapshot-001",
+    "pipeline_run_id": "synthetic-pipeline-001",
+    "feature_version": "synthetic-feature-001",
+    "model_run_id": "synthetic-model-001",
+    "forecast_run_id": "synthetic-forecast-001",
+    "scenario_id": "synthetic-scenario-001",
+    "decision_run_id": "synthetic-decision-001",
+    "evaluation_run_id": "synthetic-evaluation-001",
+    "publication_id": "synthetic-publication-001",
+    "holdout_id": "synthetic-holdout-001",
+    "policy_id": "synthetic-policy-001",
+    "policy_version": "synthetic-policy-v1"
+  }
+}
