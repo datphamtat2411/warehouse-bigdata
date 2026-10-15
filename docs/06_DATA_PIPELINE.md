@@ -142,8 +142,7 @@ The following paths are **proposed canonical logical paths**, configurable throu
 
 ```text
 /data/warehouse/
-  raw/m5/
-    source_version=<source_version>/
+  raw/m5/source_version=<source_version>/
       sales_train_evaluation.csv
       sales_train_validation.csv             # optional
       calendar.csv
@@ -151,45 +150,41 @@ The following paths are **proposed canonical logical paths**, configurable throu
       sample_submission.csv                 # optional
       source_manifest.json
   staging/
-    run_id=<pipeline_run_id>/
+    pipeline_run_id=<pipeline_run_id>/
       sales_unpivot/
         chunk_0001/                          # distinct, resumable chunk
         chunk_0002/
         ...
       candidate_sales_daily/
       candidate_sales_enriched/
-  curated/
-    sales_daily/source_version=<source_version>/
+  curated/sales_daily/source_snapshot_id=<source_snapshot_id>/
       sale_year=2011/...
       ...
-    sales_enriched/source_version=<source_version>/
+  curated/sales_enriched/source_snapshot_id=<source_snapshot_id>/
       sale_year=2011/...
       ...
-    analytics/source_version=<source_version>/...
-  features/
-    demand_forecasting/feature_run_id=<feature_run_id>/...
-  outputs/
-    forecasts/model_run_id=<model_run_id>/...
-    evaluation/model_run_id=<model_run_id>/...
-    decisions/scenario_run_id=<scenario_run_id>/...
-    publication/export_run_id=<export_run_id>/...
-  manifests/
-    runs/<pipeline_run_id>.json
-    published/current.json
-  quality/
-    runs/<pipeline_run_id>/...
+  features/demand_forecasting/
+    source_snapshot_id=<source_snapshot_id>/
+      feature_version=<feature_version>/...
+  models/<model_run_id>/...
+  outputs/forecasts/<forecast_run_id>/...
+  outputs/decisions/<decision_run_id>/...
+  outputs/evaluation/<evaluation_run_id>/...
+  manifests/runs/<pipeline_run_id>.json
+  manifests/publications/<publication_id>.json
+  manifests/published/current.json
 ```
 
 - The source snapshot is **immutable**. Do not edit a raw CSV in place.
-- `source_version` identifies **the acquired dataset snapshot**; `pipeline_run_id` identifies **one transformation attempt**. They are **not interchangeable**.
+- `source_version` identifies **the acquired raw package**; `source_snapshot_id` identifies **the validated curated derivation**; `pipeline_run_id` identifies **one transformation attempt**. They are **not interchangeable**. The parent relationship is recorded in manifests.
 - Staging directories may be deleted/rebuilt only when the corresponding run is not published; curated releases are promoted **only after quality gates pass**.
 - Prefer explicit manifest/pointer files over overwriting the currently active result.
-- A release manifest should include the resulting dataset paths, row counts, schema fingerprint, upstream IDs, status, and timestamps.
+- A release manifest should include the resulting dataset paths, exact contract versions, row counts, schema fingerprint, upstream IDs, status, and timestamps.
 - `_SUCCESS` indicates Spark completed a write, **not** that all business-quality checks passed. Only the approved run manifest certifies publication.
 
 ### 4.2. Canonical normalized fact: `sales_daily`
 
-**Grain:** one `(item_id, store_id, date)` or, equivalently, one unique `(item_id, store_id, day_key)`.
+**Grain:** one `(item_id, store_id, date)` or, equivalently, one unique `(item_id, store_id, day_key)` within a `source_snapshot_id`; the snapshot identity is authoritative in the manifest/path.
 
 | Field | Suggested logical type | Source / meaning | Null allowed? |
 |---|---|---|---|
@@ -204,9 +199,8 @@ The following paths are **proposed canonical logical paths**, configurable throu
 | `date` | Date | Date from `calendar.csv` | No |
 | `wm_yr_wk` | Integer | M5 retail week for the day | No |
 | `unit_sales` | Integer | Nonnegative recorded daily units | No |
-| `sale_year` | Integer | Derived from date; physical Parquet partition | No |
 
-Retain zero values and do not assume a missing observation can be substituted by zero. Original M5 `id` is renamed **`series_id`** to distinguish a historical source identifier from the logical business key `(item_id, store_id)`.
+`sale_year` may be present as a physical Parquet partition column, but it is not a canonical logical field. Retain zero values and do not assume a missing observation can be substituted by zero. Original M5 `id` is renamed **`series_id`** to distinguish a historical source identifier from the logical business key `(item_id, store_id)`.
 
 ### 4.3. Price-enriched daily fact: `sales_enriched`
 
@@ -221,7 +215,7 @@ Contains the canonical `sales_daily` fields plus useful context:
 | `snap_applicable` | Integer / Boolean | State-appropriate `snap_CA`, `snap_TX`, or `snap_WI` |
 | `is_zero_sale` | Boolean | `unit_sales = 0`, not a missingness indicator |
 
-`unit_sales` is the canonical Spark/Parquet metric. If the final ClickHouse DDL uses `units_sold` (as an illustrative query in the architecture document does), **J08 must explicitly rename/map this field**; the meanings must never diverge. Final serving identifiers are owned by `09_DATABASE_DESIGN.md`.
+`unit_sales` is the canonical Spark/Parquet and serving metric. A query may expose `units_sold` as a documented alias, but it is not a physical or logical replacement. Final serving identifiers are owned by `09_DATABASE_DESIGN.md`.
 
 ### 4.4. Analytical aggregates
 
@@ -229,7 +223,7 @@ Define grain **per dataset** rather than blending different resolutions:
 
 | Dataset | Key / grain | Measures | Intended use |
 |---|---|---|---|
-| `store_daily_sales` | `(store_id, date)` | `sum(unit_sales)`; optional row count | Trends and store comparisons |
+| `store_daily_sales` | `(source_snapshot_id, store_id, date)` | `sum(unit_sales)`; optional row count | Trends and store comparisons |
 | `item_store_weekly_sales` | `(item_id, store_id, wm_yr_wk)` | Units and observed-sales-day coverage | Demand patterns, diagnostics |
 | `category_monthly_sales` | `(cat_id, month_start)` | Sum of units | Category dashboard |
 | `data_quality_summary` | `(pipeline_run_id, dataset_name, check_name)` | Measured counts/rates/status | Reproducibility and defense |
@@ -242,11 +236,13 @@ These are **interface-level contracts**, not a replacement for documents 07–09
 
 | Dataset | Key | Minimum metadata |
 |---|---|---|
-| `forecast_daily` | `(model_run_id, issue_date, item_id, store_id, forecast_date)` | Prediction, horizon index `1..7`, source/feature version, coverage/status |
-| `model_metrics` | `(model_run_id, holdout_id, metric_name)` | Metric value, n observations, baseline name, evaluation dates |
-| `inventory_scenario` | `(scenario_id, item_id, store_id)` at snapshot | **Simulated** available stock, units, scenario seed/assumptions |
-| `replenishment_recommendations` | `(model_run_id, scenario_id, item_id, store_id)` | Proposed quantity, shortages, policy version |
-| `allocation_recommendations` | `(model_run_id, scenario_id, item_id, source, destination)` | Allocated quantity, unmet quantity, limited supply |
+| `forecast_daily` | `(forecast_run_id, item_id, store_id, forecast_date)` | Prediction, model/source/feature lineage, issue date, horizon `1..7`, run type |
+| `forecast_metrics` | `(evaluation_run_id, holdout_id, method_id, metric_name, horizon)` | Metric value, observation count, evaluation dates, compatible forecast/model IDs |
+| `inventory_scenario` | `(scenario_id, issue_date, item_id, store_id)` | **Simulated** stock, units, scenario version/seed/assumptions |
+| `central_supply_scenario` | `(scenario_id, issue_date, item_id)` | **Simulated** product-level central supply |
+| `replenishment_recommendations` | `(decision_run_id, item_id, store_id)` | Forecast/model/source/scenario lineage, request and policy version |
+| `allocation_recommendations` | `(decision_run_id, policy_id, item_id, store_id)` | Forecast/model/source/scenario/policy lineage, allocated and unmet quantities |
+| `inventory_policy_evaluation` | `(evaluation_run_id, decision_run_id, policy_id, item_id, store_id, issue_date)` | Historical sales-proxy outcomes and policy lineage |
 
 Outputs must be linked to **the correct historical issue date and input scenario**. They cannot silently join to a newer model or to real stock records that M5 does not contain.
 
@@ -684,6 +680,7 @@ Before ingesting into ClickHouse, every exported logical dataset must have:
 - Its exact row count, null counts in required fields, and schema definition.
 - A deterministic mapping from Spark fields to target table fields.
 - A source/output manifest with status `VALIDATED`.
+- All required lineage identifiers, with `publication_id` assigned by J08 rather than inferred from a file-success marker.
 - A load mode that prevents accidental duplication on retries.
 
 **Baseline transport:** versioned Parquet + a **bounded-file/bounded-batch loader** after ETL/ML has completed. Avoid a full-driver-memory list of 59 million records. A Spark–ClickHouse connector is an alternative **only after compatibility, resource use, and exactly-once/idempotence behavior are tested**.
@@ -710,7 +707,9 @@ The app may query:
 - Filtered store/item/time sales facts or validated aggregates.
 - Precomputed seven-day `forecast_daily` rows.
 - Reproducibly simulated inventory/replenishment/allocation results.
-- Model and pipeline metadata indicating which run produced an output.
+- Forecast/model/scenario/decision/evaluation metadata selected by one approved `publication_id`.
+
+The HDFS `manifests/published/current.json` pointer is the publication authority. The application-mounted `artifacts/approved_publication.json` is an exact read-only materialized copy with the same publication ID and manifest checksum. J08 must not expose a candidate merely because its computation completed; only `APPROVED` publication metadata may update the pointer. The application receives one coherent context and must not select independent latest run IDs.
 
 No dashboard action should trigger unbounded Spark transformations, random unrestricted CSV reads, or model retraining. All visible charts, menus, filters, metric labels, and error messages are in **Vietnamese**.
 
@@ -752,7 +751,7 @@ No dashboard action should trigger unbounded Spark transformations, random unres
 | `decisions` | Stock and allocation constraints | `decision_quality.json` |
 | `clickhouse` | Two-shard audit/count/aggregation match | `publication_quality.json` |
 
-Suggested status values: `PLANNED`, `RUNNING`, `FAILED`, `VALIDATED`, `PUBLISHED`. Publication does **not** occur simply because a script exited with code zero.
+Suggested computation status values are `PLANNED`, `RUNNING`, `COMPLETED`, `FAILED`, and `VALIDATED`. `APPROVED` is reserved for a publication after serving reconciliation. Publication does **not** occur simply because a script exited with code zero or a file-write marker exists.
 
 ### 11.3. Example executable invariants
 
@@ -808,11 +807,11 @@ A defensible command interface could be:
 python -m pipeline.run ingest --source-version m5_eval_v1
 python -m pipeline.run normalize --source-version m5_eval_v1 --days-per-chunk 128
 python -m pipeline.run enrich --source-version m5_eval_v1
-python -m pipeline.run features --cutoff "$CUTOFF_DATE"
-python -m pipeline.run train --feature-run-id "$FEATURE_RUN_ID"
+python -m pipeline.run features --feature-version "$FEATURE_VERSION" --cutoff "$CUTOFF_DATE"
+python -m pipeline.run train --feature-version "$FEATURE_VERSION"
 python -m pipeline.run forecast --model-run-id "$MODEL_RUN_ID"
 python -m pipeline.run decide --scenario-id "$SCENARIO_ID"
-python -m pipeline.run publish --export-run-id "$EXPORT_RUN_ID"
+python -m pipeline.run publish --publication-id "$PUBLICATION_ID"
 ```
 
 **These commands describe the intended CLI; they are not currently implemented.** Production execution will use Spark submission to the configured **Spark Standalone Master** for distributed jobs. Entry points should pass configuration explicitly instead of embedding machine-specific paths.
@@ -839,8 +838,8 @@ stateDiagram-v2
   RUNNING --> FAILED: quality / execution error
   RUNNING --> VALIDATED: data + manifest checks passed
   FAILED --> RUNNING: explicit retry / rebuild
-  VALIDATED --> PUBLISHED: promote new immutable snapshot
-  PUBLISHED --> [*]
+  VALIDATED --> APPROVED: serving reconciliation and application-readiness checks pass
+  APPROVED --> [*]
 ```
 
 A single HDFS filesystem directory rename can support an atomic **candidate-to-final path** promotion when used correctly and when the target does not already exist. **It does not create one transaction spanning HDFS and two ClickHouse shards.** ClickHouse publishing needs its **own** audited promotion/read-selection mechanism.

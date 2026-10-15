@@ -208,14 +208,14 @@ A dataset name alone does not define its meaning. Every publication manifest MUS
 
 | Logical dataset | Logical unique grain | Proposed name (local / distributed) |
 |---|---|---|
-| Daily M5 sales | `(source_snapshot_id, item_id, store_id, sale_date)` | `sales_daily_local` / `sales_daily` |
-| Store daily totals | `(source_snapshot_id, store_id, sale_date)` | `store_daily_sales_local` / `store_daily_sales` |
-| Daily forecast | `(forecast_run_id, issue_date, item_id, store_id, forecast_date)` | `forecast_daily_local` / `forecast_daily` |
+| Daily M5 sales | `(source_snapshot_id, item_id, store_id, date)` | `sales_daily_local` / `sales_daily` (`date` serves as physical `sale_date`) |
+| Store daily totals | `(source_snapshot_id, store_id, date)` | `store_daily_sales_local` / `store_daily_sales` (`date` serves as physical `sale_date`) |
+| Daily forecast | `(forecast_run_id, item_id, store_id, forecast_date)`; `issue_date` is required lineage/timing metadata | `forecast_daily_local` / `forecast_daily` |
 | Store inventory scenario | `(scenario_id, issue_date, item_id, store_id)` | `inventory_scenario_local` / `inventory_scenario` |
 | Central warehouse supply | `(scenario_id, issue_date, item_id)` | `central_supply_scenario_local` / `central_supply_scenario` |
 | Replenishment | `(decision_run_id, item_id, store_id)` | `replenishment_local` / `replenishment` |
 | Allocation | `(decision_run_id, policy_id, item_id, store_id)` | `allocation_local` / `allocation` |
-| Forecast metric | `(model_run_id, holdout_id, method_id, metric_name, horizon)` | `forecast_metrics_local` / `forecast_metrics` |
+| Forecast metric | `(evaluation_run_id, holdout_id, method_id, metric_name, horizon)` | `forecast_metrics_local` / `forecast_metrics` |
 | Policy backtest | `(evaluation_run_id, decision_run_id, policy_id, item_id, store_id, issue_date)` | `policy_evaluation_local` / `policy_evaluation` |
 
 **Physical sort keys are not uniqueness constraints.** ClickHouse `MergeTree ORDER BY` arranges/indexes data; duplicate business keys are rejected by the **publisher validation process**, not automatically prevented by the database engine. The names above are an implementation proposal; actual published schemas must match the final versioned Parquet contracts.
@@ -248,7 +248,7 @@ This makes all rows of the same `(item_id, store_id)` pair use the same shard wh
 |---|---|---|
 | `store_daily_sales` | `cityHash64(store_id, sale_date)` | Distributes dashboard aggregates beyond ten stores |
 | `central_supply_scenario` | `cityHash64(item_id)` | One central product-level supply record, not multiplied by store |
-| `forecast_metrics` | `cityHash64(model_run_id, holdout_id, method_id)` | Small analytical metric rows spread by evaluation context |
+| `forecast_metrics` | `cityHash64(evaluation_run_id, holdout_id, method_id)` | Small analytical metric rows spread by evaluation context |
 | `policy_evaluation` | `cityHash64(item_id, store_id)` | Co-locate store-level decisions and scores |
 
 If a table is too small for balanced distribution, that is not itself a correctness failure. The flagship sharding proof should use a **sufficiently populated project-derived table** with measurable rows on both nodes.
@@ -345,19 +345,22 @@ CREATE TABLE IF NOT EXISTS warehouse.forecast_daily_local
     forecast_run_id String,
     model_run_id String,
     source_snapshot_id String,
+    feature_version String,
     issue_date Date,
     forecast_date Date,
     horizon UInt8,
     item_id String,
     store_id LowCardinality(String),
     predicted_units Float64,
+    run_type LowCardinality(String),
+    created_at DateTime64(3, 'UTC'),
     forecast_status LowCardinality(String)
 )
 ENGINE = MergeTree
 ORDER BY (store_id, item_id, issue_date, forecast_date, forecast_run_id);
 ```
 
-Rules: exactly **seven** unique horizons `1..7` for each completed/eligible forecast series, `forecast_date = issue_date + horizon` in calendar days, predictions finite and `>= 0`. Forecasts are predicted sales, not real stock or guaranteed future demand.
+Rules: exactly **seven** unique horizons `1..7` for each completed/eligible forecast series, `forecast_date = issue_date + horizon` in calendar days, predictions finite and `>= 0`. Forecasts are predicted sales, not real stock or guaranteed future demand. `forecast_status` is serving completeness metadata and does not replace `run_type` or lineage. The logical Parquet `raw_prediction` is retained there; its ClickHouse retention remains pending explicit contract approval.
 
 ### 6.5. Simulated stock and central supply
 
@@ -400,6 +403,7 @@ ORDER BY (item_id, issue_date, scenario_id);
 CREATE TABLE IF NOT EXISTS warehouse.replenishment_local
 (
     decision_run_id String,
+    source_snapshot_id String,
     forecast_run_id String,
     model_run_id String,
     scenario_id String,
@@ -430,7 +434,9 @@ Equations, ceiling policy, shortage priority and consistency constraints are **n
 CREATE TABLE IF NOT EXISTS warehouse.allocation_local
 (
     decision_run_id String,
+    source_snapshot_id String,
     forecast_run_id String,
+    model_run_id String,
     scenario_id String,
     policy_id LowCardinality(String),
     policy_version String,
@@ -456,18 +462,23 @@ ORDER BY (store_id, item_id, issue_date, decision_run_id, policy_id);
 ```sql
 CREATE TABLE IF NOT EXISTS warehouse.forecast_metrics_local
 (
-    model_run_id String,
+    evaluation_run_id String,
+    model_run_id Nullable(String),
+    forecast_run_id Nullable(String),
     holdout_id String,
     method_id LowCardinality(String),
     metric_name LowCardinality(String),
     horizon UInt8,
-    metric_value Float64,
+    metric_value Nullable(Float64),
     observation_count UInt32,
+    sum_absolute_error Float64,
+    sum_actual_units Float64,
     evaluation_start Date,
-    evaluation_end Date
+    evaluation_end Date,
+    run_type LowCardinality(String)
 )
 ENGINE = MergeTree
-ORDER BY (model_run_id, holdout_id, method_id, metric_name, horizon);
+ORDER BY (evaluation_run_id, holdout_id, method_id, metric_name, horizon);
 
 CREATE TABLE IF NOT EXISTS warehouse.policy_evaluation_local
 (
@@ -495,7 +506,7 @@ ENGINE = MergeTree
 ORDER BY (store_id, item_id, issue_date, evaluation_run_id, policy_id);
 ```
 
-`forecast_metrics.horizon = 0` denotes an explicitly documented pooled aggregate; `1..7` denotes horizon-specific metrics. The publisher MUST enforce that convention. `policy_evaluation` is **holdout-only**; a forward-demo run with unknown future labels MUST NOT have fabricated evaluation outcomes.
+`forecast_metrics.horizon = 0` denotes an explicitly documented pooled aggregate; `1..7` denotes horizon-specific metrics. The publisher MUST enforce that convention. `evaluation_run_id` identifies the metric execution, while `model_run_id` and `forecast_run_id` are compatible lineage when applicable. `policy_evaluation` is **holdout-only**; a forward-demo run with unknown future labels MUST NOT have fabricated evaluation outcomes.
 
 ### 6.9. Distributed counterparts
 
@@ -592,15 +603,17 @@ Every approved publication must record at minimum:
 | `publication_id` | Immutable identifier of one publish attempt/accepted version |
 | `dataset_name` | Logical dataset name and exact grain |
 | `source_snapshot_id` | M5 source lineage |
-| `model_run_id` / `forecast_run_id` | When the dataset contains model-derived results |
+| `model_run_id` / `forecast_run_id` | When the dataset contains model-derived results; `forecast_run_id` is the forecast batch identity |
 | `scenario_id` / `decision_run_id` | When the dataset contains policy outputs |
+| `evaluation_run_id`, `policy_id`, `policy_version` | Evaluation execution and policy lineage where applicable |
 | `input_hdfs_path` and checksum/manifest | Reproducibility |
 | `expected_rows`, `loaded_rows_shard_1`, `loaded_rows_shard_2` | Row count reconciliation |
 | Representative measure sum/checksum | Detect truncated/doubled/inaccurate loads |
-| `schema_version`, `policy_version`, `code_revision` | Cross-component compatibility |
+| Exact dataset contract versions, `policy_version`, `code_revision` | Cross-component compatibility |
 | `started_at`, `completed_at`, `status` | Auditable run state |
+| `approved_status`, publication timestamp, application manifest checksum/materialization reference | Application-readiness and pointer reconciliation |
 
-The manifest remains durable outside ClickHouse (for example, in versioned Parquet and a JSON/CSV metadata artifact). An optional **small coordinator-local** publication registry can assist the app in selecting an approved batch; it does not need distributed sharding and is **not** the data-plane proof.
+The manifest remains durable outside ClickHouse (for example, in versioned Parquet and a JSON/CSV metadata artifact). J08 is the approval authority. HDFS `manifests/published/current.json` is authoritative; `artifacts/approved_publication.json` is an exact application-side copy with matching checksum and `publication_id`. An optional **small coordinator-local** registry may assist diagnostics but cannot select a different publication.
 
 ### 7.4. Inserts and consistency
 
@@ -678,6 +691,8 @@ SELECT
     predicted_units
 FROM warehouse.forecast_daily
 WHERE forecast_run_id = {forecast_run_id:String}
+  AND model_run_id = {model_run_id:String}
+  AND source_snapshot_id = {source_snapshot_id:String}
   AND issue_date = {issue_date:Date}
   AND item_id = {item_id:String}
   AND store_id = {store_id:String}
@@ -701,6 +716,9 @@ SELECT
     forecast_shortage_flag
 FROM warehouse.replenishment
 WHERE decision_run_id = {decision_run_id:String}
+  AND source_snapshot_id = {source_snapshot_id:String}
+  AND forecast_run_id = {forecast_run_id:String}
+  AND scenario_id = {scenario_id:String}
   AND item_id = {item_id:String}
   AND store_id = {store_id:String}
 LIMIT 1;
@@ -720,6 +738,9 @@ SELECT
     central_available_units
 FROM warehouse.allocation
 WHERE decision_run_id = {decision_run_id:String}
+  AND source_snapshot_id = {source_snapshot_id:String}
+  AND forecast_run_id = {forecast_run_id:String}
+  AND scenario_id = {scenario_id:String}
   AND item_id = {item_id:String}
   AND policy_id = {policy_id:String}
 ORDER BY store_id
@@ -738,8 +759,10 @@ SELECT
     metric_value,
     observation_count
 FROM warehouse.forecast_metrics
-WHERE model_run_id = {model_run_id:String}
+WHERE evaluation_run_id = {evaluation_run_id:String}
   AND holdout_id = {holdout_id:String}
+  AND model_run_id = {model_run_id:String}
+  AND forecast_run_id = {forecast_run_id:String}
 ORDER BY metric_name, method_id, horizon
 LIMIT 200;
 ```

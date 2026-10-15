@@ -210,13 +210,16 @@ For metric units, prefer **“sản phẩm”**, **“đơn vị sản phẩm”
 
 The pipeline can produce multiple historical snapshots, trained models, forecast issues, simulated stock scenarios, decision policies and evaluation runs. Combining independently newest rows is unsafe. The app must read an **approved publication manifest** produced at the end of validation (see documents 06 and 09).
 
-**Recommended small read-only file** mounted into the app container: `artifacts/approved_publication.json`. It is deployment metadata, not a new database. Its exact format may evolve, but it must be versioned and checked.
+The authoritative selector is the immutable publication manifest referenced by HDFS `manifests/published/current.json`. A small read-only file mounted into the app container, `artifacts/approved_publication.json`, is an exact materialized copy with the same `publication_id` and manifest checksum. It is deployment metadata, not a new database, and it must never select a different run.
 
 ```json
 {
-  "schema_version": "1",
+  "manifest_schema_version": "1.0",
+  "contract_name": "publication_manifest",
+  "contract_version": "1.0",
+  "status": "APPROVED",
   "publication_id": "approved_run_identifier",
-  "approved": true,
+  "manifest_checksum": "sha256_of_authoritative_manifest",
   "source_snapshot_id": "source_snapshot_identifier",
   "forecast_run_id": "forecast_run_identifier",
   "model_run_id": "model_run_identifier",
@@ -225,9 +228,15 @@ The pipeline can produce multiple historical snapshots, trained models, forecast
   "evaluation_run_id": "historical_evaluation_identifier_or_null",
   "holdout_id": "holdout_identifier_or_null",
   "issue_date": "YYYY-MM-DD",
+  "policy_ids": ["shortage_first_proportional"],
   "published_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
-  "available_stores": ["CA_1"],
-  "coverage_note": "Declared and measured serving subset or full population"
+  "coverage": {
+    "series_total": 30490,
+    "series_eligible": 30490,
+    "series_scored": 30490,
+    "loaded_rows": 0,
+    "available_stores": ["CA_1"]
+  }
 }
 ```
 
@@ -237,12 +246,12 @@ The pipeline can produce multiple historical snapshots, trained models, forecast
 
 The application MUST validate:
 
-1. Manifest is present, parseable, supported in `schema_version`, and explicitly `approved=true`.
+1. Manifest is present, parseable, supported in `manifest_schema_version`/`contract_version`, and has status `APPROVED`.
 2. Required identifiers are nonempty and the date is valid.
 3. Database queries confirm at least the necessary serving data exists for that publication; no silent partial reads if a shard is unavailable.
 4. Compatible model, forecast, scenario and decision data all refer to the same issue date and expected population.
 5. The selected `item_id`/`store_id` pair is in the approved **forecast and decision** coverage; do not assume every M5 product is covered by the trained demo model.
-6. Only historical holdout publications with valid observed labels expose measured policy comparisons.
+6. Only historical holdout publications with valid observed labels expose measured policy comparisons; policy run types are `validation` or `test`, never an undocumented legacy backtest value.
 
 If any gate fails, show a localized, specific **not-ready** state. The application must not guess the latest string ID from `max()` or quietly substitute an older incompatible run.
 
@@ -255,7 +264,7 @@ If any gate fails, show a localized, specific **not-ready** state. The applicati
 | `forecast_run_id`, `model_run_id` | Approved manifest | Read-only unless multiple coherent approved bundles explicitly supported |
 | `issue_date` | Approved forecast issue | Display and use for all joined decisions |
 | `scenario_id`, `decision_run_id` | Approved scenario/policy bundle | Read-only for core demo; switching requires validated compatible bundle |
-| `policy_id` | Defined policies in document 08 | Default `shortage_first_proportional_v1`, baseline `equal_share_v1` |
+| `policy_id`, `policy_version` | Defined policy family and immutable implementation revision in document 08 | Approved policy identifiers; do not combine family and revision into an untyped run ID |
 | `store_id` | Eligible `store_id` list | Global user selection, restricted to available coverage |
 | `item_id` | Bounded product search | Selection under active coverage and optional selected store |
 | `history_date_range` | Page 1 and optional Page 2 | Must be within loaded observed period |
@@ -321,40 +330,42 @@ This is a **suggested logical layout**, not a claim that these modules already e
 
 ```python
 from datetime import date
+from warehouse_bigdata.contracts.manifests import PublicationContext
 
 
-def get_store_trend(source_snapshot_id: str, store_id: str,
+def get_store_trend(context: PublicationContext, store_id: str,
                     start_date: date, end_date: date) -> list[dict]: ...
 
 
-def get_eligible_items(forecast_run_id: str, store_id: str,
+def get_eligible_items(context: PublicationContext, store_id: str,
                        search_text: str, limit: int = 50) -> list[dict]: ...
 
 
-def get_forecast_series(forecast_run_id: str, issue_date: date,
+def get_forecast_series(context: PublicationContext,
                         item_id: str, store_id: str) -> list[dict]: ...
 
 
-def get_forecast_metrics(model_run_id: str, holdout_id: str) -> list[dict]: ...
+def get_forecast_metrics(context: PublicationContext) -> list[dict]: ...
 
 
-def get_replenishment(decision_run_id: str, item_id: str,
-                      store_id: str) -> dict | None: ...
+def get_replenishment(context: PublicationContext, item_id: str,
+                       store_id: str) -> dict | None: ...
 
 
-def get_central_supply(scenario_id: str, issue_date: date,
+def get_central_supply(context: PublicationContext,
                        item_id: str) -> dict | None: ...
 
 
-def get_allocation(decision_run_id: str, item_id: str,
-                   policy_id: str) -> list[dict]: ...
+def get_allocation(context: PublicationContext, item_id: str,
+                    policy_id: str) -> list[dict]: ...
 
 
-def get_policy_evaluation(evaluation_run_id: str, item_id: str,
-                          allowed_policy_ids: tuple[str, ...]) -> list[dict]: ...
+def get_policy_evaluation(context: PublicationContext,
+                           item_id: str) -> list[dict]: ...
 ```
 
 - Return typed rows or explicit missing values/errors; never return made-up success rows.
+- Every operation receives one approved publication context. It may accept bounded business filters, but it must not accept independent model, forecast, scenario, decision, or evaluation run IDs.
 - The public UI may show raw item identifiers such as `FOODS_1_001`; M5 does not supply consumer-friendly product names that should be invented.
 - The application should use a small **manifest-generated product/store catalog** when appropriate to avoid searching a large sales fact table with every keystroke. Catalog rows must be derived from approved source/prediction coverage, not from arbitrary demo content.
 - Repository methods own SQL. Page files must not contain ad hoc query string interpolation.
@@ -364,6 +375,7 @@ def get_policy_evaluation(evaluation_run_id: str, item_id: str,
 ```python
 from datetime import date
 import clickhouse_connect
+from warehouse_bigdata.contracts.manifests import PublicationContext
 
 
 def create_clickhouse_client(host: str, port: int, user: str, password: str):
@@ -377,7 +389,7 @@ def create_clickhouse_client(host: str, port: int, user: str, password: str):
     )
 
 
-def read_store_trend(client, snapshot_id: str, store_id: str,
+def read_store_trend(client, context: PublicationContext, store_id: str,
                      start_date: date, end_date: date):
     if start_date > end_date:
         raise ValueError("Invalid date range")
@@ -392,7 +404,7 @@ def read_store_trend(client, snapshot_id: str, store_id: str,
         LIMIT 365
     """
     result = client.query(sql, parameters={
-        "snapshot": snapshot_id,
+            "snapshot": context.source_snapshot_id,
         "store": store_id,
         "from_date": start_date,
         "to_date": end_date,
@@ -536,6 +548,8 @@ Ngày lập dự báo: DD/MM/YYYY   |   Mã phiên dự báo: ...
 SELECT forecast_date, horizon, predicted_units
 FROM warehouse.forecast_daily
 WHERE forecast_run_id = {forecast_run_id:String}
+  AND model_run_id = {model_run_id:String}
+  AND source_snapshot_id = {source_snapshot_id:String}
   AND issue_date = {issue_date:Date}
   AND item_id = {item_id:String}
   AND store_id = {store_id:String}
@@ -551,7 +565,7 @@ LIMIT 7;
 ```sql
 SELECT method_id, metric_name, horizon, metric_value, observation_count
 FROM warehouse.forecast_metrics
-WHERE model_run_id = {model_run_id:String}
+WHERE evaluation_run_id = {evaluation_run_id:String}
   AND holdout_id = {holdout_id:String}
 ORDER BY metric_name, method_id, horizon
 LIMIT 200;
@@ -626,6 +640,9 @@ SELECT
     origin_label
 FROM warehouse.replenishment
 WHERE decision_run_id = {decision_run_id:String}
+  AND source_snapshot_id = {source_snapshot_id:String}
+  AND forecast_run_id = {forecast_run_id:String}
+  AND scenario_id = {scenario_id:String}
   AND item_id = {item_id:String}
   AND store_id = {store_id:String}
 LIMIT 1;
@@ -700,6 +717,9 @@ SELECT
     central_available_units
 FROM warehouse.allocation
 WHERE decision_run_id = {decision_run_id:String}
+  AND source_snapshot_id = {source_snapshot_id:String}
+  AND forecast_run_id = {forecast_run_id:String}
+  AND scenario_id = {scenario_id:String}
   AND item_id = {item_id:String}
   AND policy_id = {policy_id:String}
 ORDER BY store_id
@@ -763,7 +783,7 @@ WHERE evaluation_run_id = {evaluation_run_id:String}
   AND forecast_run_id = {forecast_run_id:String}
   AND item_id = {item_id:String}
   AND policy_id IN ('shortage_first_proportional_v1', 'equal_share_v1')
-  AND run_type = 'historical_backtest'
+  AND run_type IN ('validation', 'test')
 GROUP BY policy_id
 ORDER BY policy_id;
 ```

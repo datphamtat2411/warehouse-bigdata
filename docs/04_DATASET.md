@@ -80,6 +80,10 @@ After download and extraction, record a **source manifest**. Do not manually alt
 
 **Current status:** no locally executed manifest or verified file-level profile has been supplied. All fields requiring measurement remain **TBD** until ingestion.
 
+### 2.3 Cross-module source identity
+
+`source_version` identifies the immutable acquired raw package and is created by J01. `source_snapshot_id` identifies the immutable validated curated derivation created after the J02/J03 quality gates. A curated or downstream artifact must retain the parent `source_version` in its manifest even when its row-level contract uses `source_snapshot_id`. These identifiers are not interchangeable: a new acquisition or a different validated derivation cannot silently reuse the other identity.
+
 ---
 
 ## 3. Source File Inventory
@@ -176,7 +180,7 @@ The dataset has **three broad categories**: `FOODS`, `HOBBIES`, and `HOUSEHOLD`.
 
 Before feature engineering, normalize into one record per observed **item–store–day**:
 
-| Proposed field | Type / semantics | Origin |
+| Canonical logical field | Type / semantics | Origin |
 |---|---|---|
 | `item_id` | Non-null string | Original sales file |
 | `store_id` | Non-null string | Original sales file |
@@ -199,6 +203,8 @@ Illustrative records — **fabricated only to explain the schema; not dataset sa
 | `EXAMPLE_ITEM_2` | `TX_1` | `d_1` | `2011-01-29` | 9 |
 
 The output schema is a **logical data contract**, not yet a finalized Parquet schema or ClickHouse DDL. Physical columns, data types, and partitioning will be defined in `06_DATA_PIPELINE.md` and `09_DATABASE_DESIGN.md`.
+
+`source_snapshot_id` scopes the physical dataset and is authoritative in the dataset manifest/path for `sales_daily`; `pipeline_run_id` identifies the execution attempt in the run manifest. It is not silently substituted into the logical fact key.
 
 ### 5.3. Deriving the large row count correctly
 
@@ -380,7 +386,7 @@ At minimum, store these measured results as a versioned data-quality report:
 - Final curated output count and documented reasons for differences from the unfiltered count.
 - Spark processing run ID, output location, and data-quality pass/fail status.
 
-**Recommended reproducibility metadata:** `source_version`, `pipeline_run_id`, `profiled_at_utc`, `raw_row_count`, `normalized_row_count`, `curated_row_count`, and `filters_applied`.
+**Recommended reproducibility metadata:** `source_version`, `source_snapshot_id`, `pipeline_run_id`, `profiled_at_utc`, `raw_row_count`, `normalized_row_count`, `curated_row_count`, and `filters_applied`.
 
 ---
 
@@ -409,7 +415,7 @@ M5 source package / source manifest
    -> Streamlit chart/table with explicit scope label
 ```
 
-The `source_version` and downstream `run_id` must prevent mixing forecasts or decisions computed from different source snapshots or incompatible scenario settings.
+`source_version`, `source_snapshot_id`, and the downstream stage-specific identities must prevent mixing forecasts or decisions computed from different source snapshots or incompatible scenario settings. A model, forecast, scenario, decision, evaluation, or publication identity is not a generic replacement for another stage's identity.
 
 ---
 
@@ -480,20 +486,22 @@ The architecture expects these **illustrative** zones; `06_DATA_PIPELINE.md` own
 
 ```text
 /data/warehouse/
-  raw/m5/                         # Immutable original source CSVs and manifest
-  curated/sales_daily/            # Daily normalized and validated Parquet
-  curated/analytics/              # Sales aggregates / lookup summaries
-  features/demand_forecasting/    # Point-in-time-correct ML features
-  outputs/forecasts/              # Versioned seven-day predictions
-  outputs/evaluation/             # Model and policy metrics
-  outputs/decisions/              # Scenario-based recommendations
+  raw/m5/source_version=<source_version>/  # Immutable source CSVs and manifest
+  curated/sales_daily/source_snapshot_id=<source_snapshot_id>/
+  curated/sales_enriched/source_snapshot_id=<source_snapshot_id>/
+  features/demand_forecasting/             # source + feature_version dimensions
+  outputs/forecasts/<forecast_run_id>/     # Versioned seven-day predictions
+  outputs/evaluation/<evaluation_run_id>/  # Forecast/policy metrics
+  outputs/decisions/<decision_run_id>/     # Scenario-based recommendations
+  manifests/publications/<publication_id>.json
+  manifests/published/current.json         # Approved publication pointer
 ```
 
 ### 14.2. ClickHouse distributed serving
 
 The project uses **two shards, one replica each**. ClickHouse holds a controlled analytical serving copy, not the authoritative raw M5 CSV archive. A published table could hold all validated daily sales records, aggregates, or a declared subset, but each table must state its **row grain, loaded dates, item/store coverage, row counts and publishing run**.
 
-If memory/disk constraints prevent storing all 59.18 million normalized observations in ClickHouse, that **must be disclosed** rather than describing a partial serving copy as the complete history. Sharding evidence and reconciliation are the responsibilities of `09_DATABASE_DESIGN.md` and `11_TESTING.md`.
+If memory/disk constraints prevent storing all 59.18 million normalized observations in ClickHouse, that **must be disclosed** rather than describing a partial serving copy as the complete history. The logical `date` field maps to serving `sale_date`; `unit_sales` remains canonical and `units_sold` is only a documented query alias. Sharding evidence and reconciliation are the responsibilities of `09_DATABASE_DESIGN.md` and `11_TESTING.md`.
 
 ### 14.3. Practical disk planning
 

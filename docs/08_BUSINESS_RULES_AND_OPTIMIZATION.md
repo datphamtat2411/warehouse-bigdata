@@ -851,6 +851,7 @@ The following contracts describe **semantic datasets**. ClickHouse physical engi
 | Field | Meaning / constraint |
 |---|---|
 | `decision_run_id` | Immutable decision batch identity |
+| `source_snapshot_id` | Exact validated observed-sales derivation |
 | `forecast_run_id`, `model_run_id` | Versioned source forecast/model |
 | `scenario_id`, `policy_version` | Exact scenario and rule version |
 | `issue_date`, `item_id`, `store_id` | Decision grain |
@@ -871,7 +872,7 @@ The following contracts describe **semantic datasets**. ClickHouse physical engi
 | Field | Meaning / constraint |
 |---|---|
 | `decision_run_id`, `policy_id` | Decision run and proposed/baseline rule |
-| `scenario_id`, `forecast_run_id`, `issue_date` | Identical origin metadata |
+| `source_snapshot_id`, `scenario_id`, `forecast_run_id`, `model_run_id`, `issue_date` | Identical origin metadata |
 | `item_id`, `store_id`, `source_warehouse_id` | Item, destination and simulated origin |
 | `requested_units` | `R`, copied from corresponding replenishment result |
 | `critical_allocated_units` | First-stage quantity (baseline may use `null`) |
@@ -911,12 +912,13 @@ observed_label_window_start
 observed_label_window_end
 ```
 
-All holdout-derived fields are **evaluation-only artifacts** and may never be fed back into the same origin's recommendation inputs.
+`evaluation_run_id` is required for every independently rerunnable policy evaluation artifact. `run_type` is limited to `validation` or `test` for scored policy outcomes; `forward_demo` has no fabricated outcome fields. All holdout-derived fields are **evaluation-only artifacts** and may never be fed back into the same origin's recommendation inputs.
 
 ### 14.5. Stable identities and failure handling
 
 - Join forecasts to scenarios only on matching `issue_date`, `item_id`, `store_id` and compatible published run/source snapshot IDs.
-- Carry `forecast_run_id`, `scenario_id` and `policy_version` into every decision output.
+- Carry `source_snapshot_id`, `forecast_run_id`, `model_run_id`, `scenario_id`, `policy_id`, and `policy_version` into every decision output.
+- Treat `policy_id` as the stable policy family and `policy_version` as its immutable implementation/configuration revision.
 - Reject duplicate key rows, ambiguous scenario versions, or mixed historical/forward-demo outputs.
 - A logical run manifest contains input versions, row counts, exclusions, parameter digest, timestamps, code revision and a completion state.
 - Publish as an approved batch only after all required stock and allocation consistency checks pass.

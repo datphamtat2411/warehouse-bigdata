@@ -215,15 +215,16 @@ Illustrative logical paths (final exact paths are owned by `06_DATA_PIPELINE.md`
 
 | Dataset | Grain / unique logical key | Owner | Consumer |
 |---|---|---|---|
-| `sales_daily` | `(item_id, store_id, date)` | Spark ETL | Spark features, ClickHouse analytics |
-| `sales_aggregates` | Depends on aggregation, e.g. `(store_id, date)` | Spark analytics | ClickHouse / dashboard |
-| `forecast_daily` | `(run_id, issue_date, item_id, store_id, forecast_date)` | Spark ML | Inventory rules / ClickHouse / dashboard |
-| `inventory_scenario` | `(scenario_id, item_id, store_id)` at scenario snapshot | Simulation data generator | Inventory rules / dashboard |
-| `replenishment_recommendations` | `(run_id, scenario_id, item_id, store_id)` | Decision module | ClickHouse / dashboard |
-| `allocation_recommendations` | `(run_id, scenario_id, item_id, source, destination)` | Decision module | ClickHouse / dashboard |
-| `model_metrics` | `(run_id, holdout_id, metric_name)` | Evaluation stage | ClickHouse / dashboard / report |
+| `sales_daily` | `(source_snapshot_id, item_id, store_id, date)` | Spark ETL | Spark features, ClickHouse analytics |
+| `store_daily_sales` | `(source_snapshot_id, store_id, date)` | Spark analytics | ClickHouse / dashboard |
+| `forecast_daily` | `(forecast_run_id, item_id, store_id, forecast_date)` | Spark ML | Inventory rules / ClickHouse / dashboard |
+| `inventory_scenario` | `(scenario_id, issue_date, item_id, store_id)` | Simulation data generator | Inventory rules / dashboard |
+| `replenishment_recommendations` | `(decision_run_id, item_id, store_id)` | Decision module | ClickHouse / dashboard |
+| `allocation_recommendations` | `(decision_run_id, policy_id, item_id, store_id)` | Decision module | ClickHouse / dashboard |
+| `forecast_metrics` | `(evaluation_run_id, holdout_id, method_id, metric_name, horizon)` | Evaluation stage | ClickHouse / dashboard / report |
+| `inventory_policy_evaluation` | `(evaluation_run_id, decision_run_id, policy_id, item_id, store_id, issue_date)` | Decision evaluation stage | ClickHouse / dashboard / report |
 
-The precise column types, nullable fields, partition strategy and storage schemas are specified separately in `04_DATASET.md`, `06_DATA_PIPELINE.md` and `09_DATABASE_DESIGN.md`. These keys establish boundaries; they are **not yet implemented schemas**.
+The precise column types, nullable fields, partition strategy and storage schemas are specified separately in `04_DATASET.md`, `06_DATA_PIPELINE.md`, `09_DATABASE_DESIGN.md`, and the machine-readable [`CONTRACTS.md`](CONTRACTS.md). These keys establish boundaries; they are **not yet implemented schemas**.
 
 ### 4.3 Storage formats and partition strategy
 
@@ -231,7 +232,7 @@ The precise column types, nullable fields, partition strategy and storage schema
 - **Curated zone:** columnar **Parquet** for efficient Spark scans; use sensible partitions (for example, month or store plus a coarse time bucket) and avoid thousands of tiny files.
 - **HDFS replication:** initially factor 2 for demonstration, subject to disk capacity; file and block placements must be verified.
 - **ClickHouse:** append/rebuild controlled analytical tables organized for time-bounded product/store filtering. Avoid treating ClickHouse as a transactionally updated source of inventory truth.
-- **Dataset versioning:** every published forecast and decision batch receives a `run_id`, data-cutoff/issue date, model version and scenario reference, so results are not mixed across incompatible runs.
+- **Dataset versioning:** every published forecast and decision batch carries its distinct `forecast_run_id` or `decision_run_id`, issue date, model lineage, source snapshot, scenario and policy references, and publication identity so results are not mixed across incompatible runs.
 
 ### 4.4 Data correctness invariants
 
@@ -271,7 +272,7 @@ These are **logical stages**, not a demand for eight separately deployed applica
 - **Algorithm:** Spark MLlib `RandomForestRegressor`.
 - **Objective:** predict store–item unit sales for the **next seven days**.
 - **Historical evaluation:** split by date; keep future targets out of earlier features.
-- **Forecast output:** one row per eligible item–store–forecast-date, with `run_id` and the issue date.
+- **Forecast output:** one row per eligible item–store–forecast-date, keyed by `forecast_run_id` with `model_run_id` lineage and the issue date.
 - **Baseline:** a transparent historical method, such as trailing-period sales average or seasonal naive prediction.
 - **Metrics:** MAE, RMSE and WAPE where mathematically applicable.
 
@@ -338,15 +339,15 @@ ORDER BY shard_num;
 
 -- Inspect rows assigned to each physical shard through the Distributed table.
 SELECT _shard_num AS shard, count() AS rows_on_shard
-FROM warehouse.sales_daily_distributed
+FROM warehouse.sales_daily
 GROUP BY _shard_num
 ORDER BY shard;
 
 -- Verify cross-shard aggregation through the same query endpoint.
-SELECT store_id, sum(units_sold) AS total_units
-FROM warehouse.sales_daily_distributed
+SELECT store_id, sum(unit_sales) AS units_sold
+FROM warehouse.sales_daily
 GROUP BY store_id
-ORDER BY total_units DESC;
+ORDER BY units_sold DESC;
 ```
 
 These names are **proposed contracts**, not claims that tables exist today. The full DDL, type choices, sharding expression, ingestion protocol and query plans belong in `09_DATABASE_DESIGN.md`.
@@ -427,15 +428,18 @@ No arbitrary throughput, latency, accuracy, or container-heap target is presente
 Every major stage should record enough metadata to reproduce its outcome:
 
 ```text
-run_id
-source_dataset_version / source file manifest
+source_version / source file manifest
+source_snapshot_id
+pipeline_run_id
 sales_data_cutoff_date
 pipeline_code_version
 forecast_issue_date and horizon
-model_version and training_window
+model_run_id and training_window
+forecast_run_id, where applicable
 scenario_id and parameters, where applicable
+decision_run_id, evaluation_run_id, publication_id, where applicable
 row_counts_in / row_counts_out
-status: created | running | validated | published | failed
+status: completed | validated | failed; publication approval is a separate APPROVED state
 artifact_paths and execution timestamps
 ```
 

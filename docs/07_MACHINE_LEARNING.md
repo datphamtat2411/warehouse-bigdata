@@ -88,8 +88,10 @@ A **series** is defined by a unique `(item_id, store_id)` pair. A historical obs
 A forecast is issued at a **cutoff** `T`, after the actual daily sales for date `T` are assumed available. Its output grain is:
 
 ```
-(model_run_id, issue_date, item_id, store_id, forecast_date, horizon)
+(forecast_run_id, item_id, store_id, forecast_date, horizon)
 ```
+
+`model_run_id` remains required model lineage on each forecast row but is not the forecast-batch uniqueness key. Re-scoring one model for another issue date or scope therefore receives a distinct `forecast_run_id`.
 
 where `horizon ∈ {1, 2, ..., 7}` and `forecast_date = issue_date + horizon days` using the M5 calendar mapping.
 
@@ -150,8 +152,8 @@ flowchart TD
 | Trainer | Training-only preprocessing and RF fit | Versioned `PipelineModel` |
 | Recursive forecaster | Forecast one day, update predicted history, repeat seven times | `forecast_daily` Parquet |
 | Baseline forecaster | Produce exactly comparable seven-day baselines | Baseline prediction Parquet |
-| Evaluator | Score against chronological actuals; report slices and coverage | `model_metrics`, evaluation report |
-| Publisher | Validate keys, run IDs and totals, then hand off to ClickHouse stage | Approved publish manifest |
+| Evaluator | Score against chronological actuals; report slices and coverage | `forecast_metrics`, evaluation report |
+| Publisher | Validate keys, stage-specific IDs and totals, then hand off to ClickHouse stage | Approved publication manifest |
 
 ---
 
@@ -699,7 +701,7 @@ Reject `NaN`, infinities, missing issue-day keys and duplicate forecast records.
 | `run_type` | Enum/string | `validation`, `test`, or `forward_demo` |
 | `created_at` | Timestamp | Batch publication provenance |
 
-**Uniqueness:** `(forecast_run_id, item_id, store_id, forecast_date)`; `horizon` and `forecast_date` must agree with `issue_date`.
+**Uniqueness:** `(forecast_run_id, item_id, store_id, forecast_date)`; `model_run_id` is lineage, not a replacement key. `horizon` and `forecast_date` must agree with `issue_date`.
 
 The seven-day total is an aggregation keyed by `(forecast_run_id, item_id, store_id)` from the **seven saved daily rows**, not a separately fitted, inconsistent second prediction.
 
@@ -709,7 +711,7 @@ Store together, versioned and immutable after approval:
 
 ```text
 models/
-  rf_global/<model_run_id>/
+  <model_run_id>/
     spark_pipeline_model/          # Saved MLlib PipelineModel
     model_manifest.json            # Params, features, cutoffs, seed, counts
     training_selection_manifest/   # Selection method / keys / digest
@@ -718,7 +720,7 @@ models/
     test_metrics/                  # Only after configuration lock
     evidence/                      # Spark job IDs / screenshots / logs
 
-forecasts/
+outputs/forecasts/
   <forecast_run_id>/
     forecast_daily/                # Parquet
     coverage_exceptions/          # Parquet or JSON
@@ -731,10 +733,12 @@ The actual HDFS/local directory roots are finalized in Document 06; this is a lo
 
 - Publish only approved `forecast_daily` rows, seven-day totals and metrics with compatible run identifiers.
 - Preserve `run_type`, so forward-demo predictions cannot be mistaken for scored historical test predictions.
+- Preserve `source_snapshot_id`, `model_run_id`, `forecast_run_id`, and `feature_version` as required lineage. `forecast_status` may describe serving completeness but cannot replace `run_type` or lineage.
+- `raw_prediction` is required in the logical Parquet contract. Its retention in ClickHouse remains an explicit mapping decision pending contract approval; it must not be silently dropped without the mapping record in [`CONTRACTS.md`](CONTRACTS.md).
 - Dashboard labels and error messages are in **Vietnamese**, while stored column names and code remain in English.
 - A user selecting a supported product/store sees the seven forecast dates, daily predictions, seven-day sum, model identifier or friendly version, and model-performance context.
 - If no forecast is available, show the explicit reason/coverage state; never substitute generated placeholder predictions.
-- Inventory recommendations must read a consistent `(forecast_run_id, scenario_id, policy_version)` combination.
+- Inventory recommendations must read a consistent `(source_snapshot_id, model_run_id, forecast_run_id, scenario_id, decision_run_id, policy_version, issue_date)` combination.
 
 ---
 
@@ -762,6 +766,9 @@ A model-run manifest should contain at least:
 {
   "model_run_id": "rf_global_example_001",
   "status": "proposed_example_not_a_real_run",
+  "manifest_schema_version": "1.0",
+  "contract_name": "model_manifest",
+  "contract_version": "1.0",
   "source_snapshot_id": "m5_evaluation_snapshot_placeholder",
   "feature_version": "features_v1",
   "algorithm": "spark_ml_random_forest_regressor",
@@ -783,6 +790,7 @@ A model-run manifest should contain at least:
   },
   "validation_metrics": null,
   "test_metrics": null,
+  "evaluation_run_id": null,
   "artifact_path": "to_be_recorded_after_fit"
 }
 ```
