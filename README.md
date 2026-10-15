@@ -48,7 +48,7 @@ serving layer, and Streamlit is planned as a read-oriented presentation layer.
 | Layer | Planned technology | Current status |
 |---|---|---|
 | Project runtime | Python 3.11 and `uv` | Project metadata and `uv.lock` exist |
-| Distributed storage | Hadoop HDFS | Designed only; no configuration is tracked |
+| Distributed storage | Hadoop HDFS | Designed only; shared endpoint configuration is tracked, no service is deployed |
 | Distributed processing | Apache Spark | Designed only; no jobs are implemented |
 | Forecasting | Spark MLlib `RandomForestRegressor` | Selected in design; no model is trained |
 | Analytical serving | ClickHouse Distributed, two shards and one replica per shard | Designed only; no SQL or deployment is implemented |
@@ -88,6 +88,7 @@ The tracked repository is intentionally small at this stage:
 | [`pyproject.toml`](pyproject.toml) | Python project metadata and developer tooling configuration |
 | [`uv.lock`](uv.lock) | Committed dependency-resolution metadata |
 | [`.python-version`](.python-version) | Python 3.11 project marker |
+| [`.env.example`](.env.example) | Safe template for the shared environment-variable contract |
 | [`src/warehouse_bigdata/`](src/warehouse_bigdata/) | Tracked package and minimal CLI entry point |
 | [`docs/`](docs/01_PROJECT_OVERVIEW.md) | Design specifications and repository guidance |
 | `infrastructure/` | Local directory reserved for Hadoop, Spark, and ClickHouse configuration; no tracked configuration yet |
@@ -151,6 +152,46 @@ The CLI is a packaging and environment smoke test only. It does not download dat
 start HDFS, run Spark, train a model, load ClickHouse, or start Streamlit. There is
 currently no operational pipeline or service quickstart; those instructions belong
 with the corresponding implementation in a later foundation task.
+
+### Shared Configuration
+
+Python components use the typed loaders in
+`warehouse_bigdata.common.config` rather than reading environment variables directly.
+The loaders validate syntax and required fields without reading `.env` files, creating
+directories, resolving paths, opening sockets, or checking service availability.
+
+Create a local environment file from the safe template when local values are needed:
+
+```bash
+cp .env.example .env
+uv run --locked --env-file .env python -c \
+  "from warehouse_bigdata.common.config import load_runtime_config; print(load_runtime_config())"
+```
+
+`uv run --env-file` explicitly injects values into the child process. The configuration
+module does not parse `.env` files, and `.env` is ignored by Git. Tests and callers that
+need deterministic settings can pass a complete mapping directly:
+
+```python
+from warehouse_bigdata.common.config import load_hdfs_config, load_runtime_config
+
+runtime = load_runtime_config({"WAREHOUSE_ENV": "test"})
+hdfs = load_hdfs_config({"WAREHOUSE_HDFS_URI": "hdfs://namenode:8020"})
+```
+
+Runtime settings default to `local` and `INFO`. HDFS requires
+`WAREHOUSE_HDFS_URI` and defaults its absolute base path to `/warehouse-bigdata`.
+Spark requires `WAREHOUSE_SPARK_MASTER_URL`; `local[*]` is suitable for an explicit
+local mode. ClickHouse requires its host, port, database, and user, while its password
+is optional and empty by default. Local generated artifacts use
+`WAREHOUSE_ARTIFACTS_DIR`, which defaults to `artifacts`; this is a local filesystem
+path and is distinct from the HDFS base path.
+
+Invalid or missing values raise `ConfigurationError` with the variable and expected
+format. Required HDFS, Spark, and ClickHouse endpoints remain blank in
+`.env.example` because those services are not currently deployed. Successful parsing
+only validates configuration syntax; it does not prove that a service is reachable.
+Future Docker Compose definitions must explicitly pass these variables into containers.
 
 ## Documentation Guide
 
