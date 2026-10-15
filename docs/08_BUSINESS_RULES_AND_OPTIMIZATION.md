@@ -29,7 +29,7 @@ The operational setting is a **simulation-driven decision-support prototype**, n
 | Allocation across stores | Objective, two-phase priority policy, tie-breaking, feasible outputs | Physical serving schema: [`09_DATABASE_DESIGN.md`](09_DATABASE_DESIGN.md) |
 | Historical policy evaluation | Simulation and fair baseline comparison | Forecast evaluation: [`07_MACHINE_LEARNING.md`](07_MACHINE_LEARNING.md) |
 | UI descriptions | Expected user-visible information only | UX details: [`10_APPLICATION_DESIGN.md`](10_APPLICATION_DESIGN.md) |
-| Runnable tests and demo | Invariants and illustrative acceptance cases | End-to-end protocol: [`11_TESTING_AND_DEMO.md`](11_TESTING_AND_DEMO.md) |
+| Testing and performance evaluation | Invariants and illustrative acceptance cases | End-to-end software, data-quality, integration and distributed-system verification: [`11_TESTING.md`](11_TESTING.md) |
 
 **Central engineering principle:** Every claim of “optimization” must specify an **objective**, a **feasible set**, an **alternative policy**, and **measured evidence**. A business rule is not automatically optimal simply because it produces a recommendation.
 
@@ -1171,7 +1171,7 @@ No implementation detail may silently change the meaning of `scenario_id`, `fore
 - [`07_MACHINE_LEARNING.md`](07_MACHINE_LEARNING.md) — the global Random Forest, recursive seven-day inference and chronological evaluation.
 - [`09_DATABASE_DESIGN.md`](09_DATABASE_DESIGN.md) — future detailed physical ClickHouse schema and two-shard publication.
 - [`10_APPLICATION_DESIGN.md`](10_APPLICATION_DESIGN.md) — future Vietnamese Streamlit interaction flows.
-- [`11_TESTING_AND_DEMO.md`](11_TESTING_AND_DEMO.md) — future end-to-end runnable verification and defense script.
+- [`11_TESTING.md`](11_TESTING.md) — future end-to-end software, data-quality, integration and distributed-system verification, performance evaluation, and acceptance evidence.
 
 ### 20.2. External references (conceptual background)
 

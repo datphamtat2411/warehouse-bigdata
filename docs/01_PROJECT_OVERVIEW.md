@@ -231,7 +231,7 @@ The project should be assessed on **correctness**, **decision usefulness**, and 
 | **Operational value** | How does the proposed policy compare with the baseline? | Backtesting/simulation results for stockouts, unmet demand, and remaining stock. |
 | **User experience** | Can a user inspect and understand results? | A working Vietnamese-language dashboard using real processed results. |
 
-Do not invent performance thresholds or claim that Random Forest outperforms a baseline before testing. Acceptance details and the demonstration script belong in [`11_TESTING_AND_DEMO.md`](11_TESTING_AND_DEMO.md).
+Do not invent performance thresholds or claim that Random Forest outperforms a baseline before testing. Acceptance checks and their test evidence belong in [`11 — Testing and Performance Evaluation`](11_TESTING.md). Academic demonstration and presentation requirements remain part of the overall deliverable and are described by the relevant requirements and application documents.
 
 ## 11. Assumptions, Limitations, and Risks
 
@@ -276,9 +276,9 @@ This document answers **“What problem are we solving, why does it matter, and 
 | [`08_BUSINESS_RULES_AND_OPTIMIZATION.md`](08_BUSINESS_RULES_AND_OPTIMIZATION.md) | Inventory/replenishment formulas, allocation constraints, and policy baselines. |
 | [`09_DATABASE_DESIGN.md`](09_DATABASE_DESIGN.md) | ClickHouse cluster, schemas, sharding keys, and analytical queries. |
 | [`10_APPLICATION_DESIGN.md`](10_APPLICATION_DESIGN.md) | Vietnamese-language UI, user journeys, charts, and result presentation. |
-| [`11_TESTING_AND_DEMO.md`](11_TESTING_AND_DEMO.md) | Tests, benchmarks, distributed evidence, demo plan, and defense questions. |
+| [`11 — Testing and Performance Evaluation`](11_TESTING.md) | Software, data-quality, integration and distributed-system tests, performance evaluation, test evidence, and acceptance checks. |
 
-> **Note:** These links reflect the agreed repository structure. Some referenced documents may not yet exist when this overview is written.
+> **Note:** The numbered design documents listed above are present in this repository. Their proposals remain subject to implementation validation.
 
 ## 14. Primary References
 

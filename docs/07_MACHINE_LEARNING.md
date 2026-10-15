@@ -908,7 +908,7 @@ These items are explicit engineering validation tasks, **not missing promises di
 | [`08_BUSINESS_RULES_AND_OPTIMIZATION.md`](08_BUSINESS_RULES_AND_OPTIMIZATION.md) | Forecast-to-replenishment/allocation policy and simulated outcome evaluation |
 | [`09_DATABASE_DESIGN.md`](09_DATABASE_DESIGN.md) | Physical distributed schema for published forecast/metric records |
 | [`10_APPLICATION_DESIGN.md`](10_APPLICATION_DESIGN.md) | Vietnamese forecast screens and supported-coverage behavior |
-| [`11_TESTING_AND_DEMO.md`](11_TESTING_AND_DEMO.md) | Executable test plan, evidence capture and instructor-defense scenario |
+| [`11_TESTING.md`](11_TESTING.md) | Software and data-quality test plan, performance evaluation, evidence capture, and acceptance checks |
 
 ---
 

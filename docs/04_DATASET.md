@@ -493,7 +493,7 @@ The architecture expects these **illustrative** zones; `06_DATA_PIPELINE.md` own
 
 The project uses **two shards, one replica each**. ClickHouse holds a controlled analytical serving copy, not the authoritative raw M5 CSV archive. A published table could hold all validated daily sales records, aggregates, or a declared subset, but each table must state its **row grain, loaded dates, item/store coverage, row counts and publishing run**.
 
-If memory/disk constraints prevent storing all 59.18 million normalized observations in ClickHouse, that **must be disclosed** rather than describing a partial serving copy as the complete history. Sharding evidence and reconciliation are the responsibilities of `09_DATABASE_DESIGN.md` and `11_TESTING_AND_DEMO.md`.
+If memory/disk constraints prevent storing all 59.18 million normalized observations in ClickHouse, that **must be disclosed** rather than describing a partial serving copy as the complete history. Sharding evidence and reconciliation are the responsibilities of `09_DATABASE_DESIGN.md` and `11_TESTING.md`.
 
 ### 14.3. Practical disk planning
 
@@ -551,7 +551,7 @@ The Kaggle package size is **not** the total project footprint. Allow additional
 | `DR-06` | Historical cutoff and temporal source availability | `07_MACHINE_LEARNING.md` |
 | `DR-07` | Serving scope and source-vs-shard reconciliation | `09_DATABASE_DESIGN.md` |
 | `DR-08` | Correct quantity units and nonnegative valid scenario inputs | `08_BUSINESS_RULES_AND_OPTIMIZATION.md` |
-| `DR-09` | Run-level source, model, and scenario lineage | `06_DATA_PIPELINE.md`, `11_TESTING_AND_DEMO.md` |
+| `DR-09` | Run-level source, model, and scenario lineage | `06_DATA_PIPELINE.md`, `11_TESTING.md` |
 
 ---
 
@@ -567,7 +567,7 @@ These matters must be resolved during profiling/implementation, not described as
 | DATA-OPEN-04 | Exact training/backtest dates and seven-day forecast strategy | `07_MACHINE_LEARNING.md` |
 | DATA-OPEN-05 | Exact ClickHouse publication granularity and full-data feasibility | `09_DATABASE_DESIGN.md` and hardware experiments |
 | DATA-OPEN-06 | Deterministic inventory scenario and allocation assumptions | `08_BUSINESS_RULES_AND_OPTIMIZATION.md` |
-| DATA-OPEN-07 | Final Parquet partitions and cluster load-performance benchmarks | `06_DATA_PIPELINE.md`, `11_TESTING_AND_DEMO.md` |
+| DATA-OPEN-07 | Final Parquet partitions and cluster load-performance benchmarks | `06_DATA_PIPELINE.md`, `11_TESTING.md` |
 
 ---
 
@@ -592,6 +592,6 @@ Related project documentation:
 - [`07_MACHINE_LEARNING.md`](07_MACHINE_LEARNING.md) — leakage-safe seven-day forecasting and evaluation.
 - [`08_BUSINESS_RULES_AND_OPTIMIZATION.md`](08_BUSINESS_RULES_AND_OPTIMIZATION.md) — simulated inventory and quantity-allocation logic.
 - [`09_DATABASE_DESIGN.md`](09_DATABASE_DESIGN.md) — ClickHouse table structures and sharding.
-- [`11_TESTING_AND_DEMO.md`](11_TESTING_AND_DEMO.md) — executed evidence, benchmark results, and demo procedure.
+- [`11_TESTING.md`](11_TESTING.md) — software and distributed-system test evidence, performance evaluation results, and acceptance checks.
 
 **Document principle:** The source data is real, but the warehouse state is simulated. Large scale must be **measured and explained**, distributed processing must be **demonstrated**, and forecast/optimization claims must be **evaluated rather than asserted**.

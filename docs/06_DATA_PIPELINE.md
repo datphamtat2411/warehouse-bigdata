@@ -35,7 +35,7 @@ This document specifies **how the project's M5 Walmart data moves from an author
 | Replenishment, allocation, and business-policy formulas | [`08_BUSINESS_RULES_AND_OPTIMIZATION.md`](08_BUSINESS_RULES_AND_OPTIMIZATION.md) |
 | Exact ClickHouse DDL, sharding expression, and client queries | [`09_DATABASE_DESIGN.md`](09_DATABASE_DESIGN.md) |
 | Vietnamese UI and dashboard behaviors | [`10_APPLICATION_DESIGN.md`](10_APPLICATION_DESIGN.md) |
-| Comprehensive test cases, benchmarks, and oral-demo script | [`11_TESTING_AND_DEMO.md`](11_TESTING_AND_DEMO.md) |
+| Software, data-quality, integration and distributed-system tests, performance evaluation, and acceptance evidence | [`11_TESTING.md`](11_TESTING.md) |
 
 **Language rule:** documentation, identifiers, SQL, Python, Docker configuration, logs, and dataset contracts use **English**. Only **user-facing Streamlit text** is in **Vietnamese**.
 
@@ -1003,6 +1003,6 @@ The acceptance criteria come from `02_SYSTEM_REQUIREMENTS.md`. This document pro
 - [`08_BUSINESS_RULES_AND_OPTIMIZATION.md`](08_BUSINESS_RULES_AND_OPTIMIZATION.md) — inventory decisions and distribution constraints.
 - [`09_DATABASE_DESIGN.md`](09_DATABASE_DESIGN.md) — ClickHouse local/distributed schemas and sharding.
 - [`10_APPLICATION_DESIGN.md`](10_APPLICATION_DESIGN.md) — Vietnamese Streamlit UI.
-- [`11_TESTING_AND_DEMO.md`](11_TESTING_AND_DEMO.md) — system tests, demo evidence, and defense preparation.
+- [`11_TESTING.md`](11_TESTING.md) — software, data-quality, integration and distributed-system tests, performance evaluation, and acceptance evidence.
 
 > **Implementation status:** This file is an engineering design and validation contract. Actual schemas, counts, timings, Spark UI screenshots, ClickHouse shard counts, and ML scores must be collected by executing the system and then recorded as measured evidence. None are asserted as already achieved.

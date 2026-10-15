@@ -37,7 +37,7 @@ It does **not** redefine M5 fields, implement Spark transformations, choose Rand
 | Seven-day forecasting, baseline and model metrics | [07_MACHINE_LEARNING.md](07_MACHINE_LEARNING.md) |
 | Scenario, replenishment and allocation rules | [08_BUSINESS_RULES_AND_OPTIMIZATION.md](08_BUSINESS_RULES_AND_OPTIMIZATION.md) |
 | ClickHouse table definitions, sharding and SQL semantics | [09_DATABASE_DESIGN.md](09_DATABASE_DESIGN.md) |
-| Acceptance evidence and presentation script | [11_TESTING_AND_DEMO.md](11_TESTING_AND_DEMO.md) |
+| Test evidence and acceptance checks | [11_TESTING.md](11_TESTING.md) |
 
 **Requirement priorities:** `P0` means essential to the demonstrated project; `P1` enhances usability/evidence after P0; `P2` is optional. The application must not imply unsupported capabilities simply because they would make an attractive screenshot.
 
@@ -1175,7 +1175,7 @@ The **implementation** is done only after all P0 UI tests pass against the real,
 7. [07 — Machine Learning](07_MACHINE_LEARNING.md)
 8. [08 — Business Rules and Optimization](08_BUSINESS_RULES_AND_OPTIMIZATION.md)
 9. [09 — Database Design](09_DATABASE_DESIGN.md)
-10. [11 — Testing and Demo](11_TESTING_AND_DEMO.md)
+10. [11 — Testing and Performance Evaluation](11_TESTING.md)
 
 **External technical references (official documentation)**
 

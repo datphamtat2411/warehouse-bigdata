@@ -1,4 +1,7 @@
-**This folder structure is reference-only and not strictly enforced.**
+**This folder structure is a planned reference layout, not an inventory of the
+currently tracked repository.** The directories below should be created only when
+their first real implementation requires them. Generated data and runtime
+artifacts remain local and are not source-controlled.
 
 warehouse-bigdata
 │
@@ -55,4 +58,5 @@ warehouse-bigdata
     ├── reports/
     └── test-runs/
 
-**Suggested folder structure (not strictly mandatory).**
+**Suggested future folder structure; not all directories currently exist or contain
+tracked files.**

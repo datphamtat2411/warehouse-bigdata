@@ -478,7 +478,7 @@ The goal is **verifiable behavior**, not screenshots of technologies that are me
 | “Inventory is optimized” | Declared scenario, rules/constraints, baseline comparison and measured outcomes | Claiming reduced real Walmart cost without stock/cost data |
 | “The app works” | Vietnamese UI reading real published forecasts and recommendations | Static screenshots unrelated to pipeline results |
 
-Technical testing, benchmark methodology, expected outputs and defense scripts are specified in `11_TESTING_AND_DEMO.md`.
+Technical testing, benchmark methodology, expected outputs, and acceptance evidence are specified in [`11_TESTING.md`](11_TESTING.md).
 
 ## 11. Architecture Decisions and Trade-offs
 
@@ -508,7 +508,7 @@ A technology is justified only if it adds demonstrable value against implementat
 | Predictions → inventory decisions | Inventory assumptions, equations, allocation constraints | [`08_BUSINESS_RULES_AND_OPTIMIZATION.md`](08_BUSINESS_RULES_AND_OPTIMIZATION.md) |
 | Published artifacts → ClickHouse | DDL, sharding key, write/load method and SQL | [`09_DATABASE_DESIGN.md`](09_DATABASE_DESIGN.md) |
 | ClickHouse → Streamlit | Filters, page behavior, visualization and Vietnamese copy | [`10_APPLICATION_DESIGN.md`](10_APPLICATION_DESIGN.md) |
-| All components → verification | Tests, benchmarks, demo checklist, evidence | [`11_TESTING_AND_DEMO.md`](11_TESTING_AND_DEMO.md) |
+| All components → verification | Software, data-quality, integration and distributed-system tests, performance evaluation, and acceptance evidence | [`11_TESTING.md`](11_TESTING.md) |
 | Whole system → acceptance | FR/NFR and traceability | [`02_SYSTEM_REQUIREMENTS.md`](02_SYSTEM_REQUIREMENTS.md) |
 | Technology choices → compatibility | Versions, environment and alternatives | [`05_TECH_STACK.md`](05_TECH_STACK.md) |
 
@@ -539,7 +539,7 @@ These are explicitly **open**, not decisions silently assumed to be complete:
 4. **Parquet layout:** Which partition granularity and output file targets minimize small files while supporting joins and scans? (`06_DATA_PIPELINE.md`)
 5. **ClickHouse sharding and publication:** Which sharding expression, ingestion method and safe rerun/swap strategy are used? (`09_DATABASE_DESIGN.md`)
 6. **Inventory scenario:** How are deterministic opening stock and central supply generated and how are constraints measured? (`08_BUSINESS_RULES_AND_OPTIMIZATION.md`)
-7. **Hardware benchmarking:** Which resource ceilings and running modes remain stable on the actual 16 GB Windows + WSL2 machine? (`11_TESTING_AND_DEMO.md`)
+7. **Hardware benchmarking:** Which resource ceilings and running modes remain stable on the actual 16 GB Windows + WSL2 machine? (`11_TESTING.md`)
 
 The team should resolve these through **small, measured spikes** rather than by prematurely adding more infrastructure.
 

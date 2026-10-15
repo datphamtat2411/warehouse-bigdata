@@ -36,7 +36,7 @@ This document **does not** own the official M5 data definitions, Spark ETL logic
 | Forecast output and model-evaluation methodology | [`07_MACHINE_LEARNING.md`](07_MACHINE_LEARNING.md) |
 | Inventory simulation, allocation policies, backtests | [`08_BUSINESS_RULES_AND_OPTIMIZATION.md`](08_BUSINESS_RULES_AND_OPTIMIZATION.md) |
 | UI presentation and queries | [`10_APPLICATION_DESIGN.md`](10_APPLICATION_DESIGN.md) |
-| Verification and live defense | [`11_TESTING_AND_DEMO.md`](11_TESTING_AND_DEMO.md) |
+| Testing and performance evaluation | [`11_TESTING.md`](11_TESTING.md) |
 
 ### 1.1. Normative language
 

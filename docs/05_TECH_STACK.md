@@ -574,14 +574,14 @@ These are **accepted technology-level decisions** unless explicitly flagged as p
 
 | Requirement area | Technology decision | Where implementation details belong | Evidence document |
 |---|---|---|---|
-| FR-01, DR-01–DR-04 | M5 source + CSV manifest | [04 — Dataset](04_DATASET.md) | [11 — Testing and Demo](11_TESTING_AND_DEMO.md) |
-| FR-02, NFR-01 | Hadoop HDFS | [03 — System Architecture](03_SYSTEM_ARCHITECTURE.md), [06 — Data Pipeline](06_DATA_PIPELINE.md) | [11 — Testing and Demo](11_TESTING_AND_DEMO.md) |
-| FR-03–FR-05, NFR-02 | PySpark DataFrames, Parquet | [06 — Data Pipeline](06_DATA_PIPELINE.md) | [11 — Testing and Demo](11_TESTING_AND_DEMO.md) |
-| FR-06–FR-08 | Spark MLlib Random Forest | [07 — Machine Learning](07_MACHINE_LEARNING.md) | [11 — Testing and Demo](11_TESTING_AND_DEMO.md) |
-| FR-09–FR-12 | Python/PySpark policy layer | [08 — Business Rules and Optimization](08_BUSINESS_RULES_AND_OPTIMIZATION.md) | [11 — Testing and Demo](11_TESTING_AND_DEMO.md) |
-| FR-13, NFR-03 | 2-shard ClickHouse Distributed | [09 — Database Design](09_DATABASE_DESIGN.md) | [11 — Testing and Demo](11_TESTING_AND_DEMO.md) |
-| FR-14–FR-17, NFR-07 | Streamlit, Plotly, ClickHouse Connect | [10 — Application Design](10_APPLICATION_DESIGN.md) | [11 — Testing and Demo](11_TESTING_AND_DEMO.md) |
-| FR-18, NFR-04–NFR-09 | Versioned runs and inspectable distributed execution | [03 — System Architecture](03_SYSTEM_ARCHITECTURE.md) and repository configuration | [11 — Testing and Demo](11_TESTING_AND_DEMO.md) |
+| FR-01, DR-01–DR-04 | M5 source + CSV manifest | [04 — Dataset](04_DATASET.md) | [11 — Testing and Performance Evaluation](11_TESTING.md) |
+| FR-02, NFR-01 | Hadoop HDFS | [03 — System Architecture](03_SYSTEM_ARCHITECTURE.md), [06 — Data Pipeline](06_DATA_PIPELINE.md) | [11 — Testing and Performance Evaluation](11_TESTING.md) |
+| FR-03–FR-05, NFR-02 | PySpark DataFrames, Parquet | [06 — Data Pipeline](06_DATA_PIPELINE.md) | [11 — Testing and Performance Evaluation](11_TESTING.md) |
+| FR-06–FR-08 | Spark MLlib Random Forest | [07 — Machine Learning](07_MACHINE_LEARNING.md) | [11 — Testing and Performance Evaluation](11_TESTING.md) |
+| FR-09–FR-12 | Python/PySpark policy layer | [08 — Business Rules and Optimization](08_BUSINESS_RULES_AND_OPTIMIZATION.md) | [11 — Testing and Performance Evaluation](11_TESTING.md) |
+| FR-13, NFR-03 | 2-shard ClickHouse Distributed | [09 — Database Design](09_DATABASE_DESIGN.md) | [11 — Testing and Performance Evaluation](11_TESTING.md) |
+| FR-14–FR-17, NFR-07 | Streamlit, Plotly, ClickHouse Connect | [10 — Application Design](10_APPLICATION_DESIGN.md) | [11 — Testing and Performance Evaluation](11_TESTING.md) |
+| FR-18, NFR-04–NFR-09 | Versioned runs and inspectable distributed execution | [03 — System Architecture](03_SYSTEM_ARCHITECTURE.md) and repository configuration | [11 — Testing and Performance Evaluation](11_TESTING.md) |
 
 **Document ownership reminder:** this document owns **technology rationale and interoperability policy**. It does not replace the SRS (`02`), physical/data-flow architecture (`03`), dataset dictionary (`04`), implementation design (`06`–`10`), or executed testing (`11`).
 

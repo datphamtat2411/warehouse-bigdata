@@ -18,7 +18,7 @@ This is **not** a business-rule specification, infrastructure runbook, database 
 - **Business rules document:** Defines the replenishment equation, units, assumptions, priority policy, and edge cases.
 - **Database design document:** Defines where the recommendations are stored and how they are queried.
 - **Application design document:** Defines the controls and charts used to display the recommendation.
-- **Testing document:** Defines executable tests and captures the actual results.
+- **Testing and performance evaluation document:** Defines software, data-quality, integration, distributed-system, and performance checks, and captures test evidence and acceptance results.
 
 ### 1.1. Normative terminology
 
@@ -395,7 +395,7 @@ The SRS owns the **required behavior**. The linked documents own **how it is des
 | FR-13, DR-07, NFR-03 | [09 — Database Design](09_DATABASE_DESIGN.md) | ClickHouse cluster topology, shard queries and count audits |
 | FR-14–FR-17, NFR-07–NFR-08 | [10 — Application Design](10_APPLICATION_DESIGN.md) | Four-view functional demo, screenshots, empty/error-state tests |
 | NFR-06, NFR-10–NFR-12 | [03 — Architecture](03_SYSTEM_ARCHITECTURE.md), [05 — Tech Stack](05_TECH_STACK.md) | Resource monitoring, test runs, application response-time measurements |
-| FR-18, AT-01–AT-09 | [11 — Testing & Demo](11_TESTING_AND_DEMO.md) | Test cases, recorded observations, evidence directory, defense script |
+| FR-18, AT-01–AT-09 | [11 — Testing and Performance Evaluation](11_TESTING.md) | Software, data-quality, integration and distributed-system test cases, performance measurements, recorded observations, and acceptance evidence |
 
 ### 10.1. Academic rubric coverage
 
@@ -448,7 +448,7 @@ The academic prototype is considered ready for final evaluation when:
 - [08 — Business Rules and Optimization](08_BUSINESS_RULES_AND_OPTIMIZATION.md): replenishment formula, allocation policy, constraints, and experiments.
 - [09 — Database Design](09_DATABASE_DESIGN.md): ClickHouse schema, two-shard routing, and distributed queries.
 - [10 — Application Design](10_APPLICATION_DESIGN.md): Vietnamese UI behavior, layouts, filters, and visualizations.
-- [11 — Testing and Demo](11_TESTING_AND_DEMO.md): detailed test cases, measurements, technical demonstrations, and defense evidence.
+- [11 — Testing and Performance Evaluation](11_TESTING.md): detailed software, data-quality, integration and distributed-system tests, performance measurements, and acceptance evidence.
 - **Primary dataset:** [Kaggle — M5 Forecasting Accuracy](https://www.kaggle.com/competitions/m5-forecasting-accuracy/data).
 
 > **Document boundary:** Requirements say **what must be true**. The other documents specify **how to make it true**, and testing supplies **proof that it became true**.
