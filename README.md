@@ -8,8 +8,9 @@ turn Walmart M5 observed sales into auditable forecasts and simulated inventory
 recommendations through a batch-oriented distributed architecture.
 
 The repository currently contains project metadata, a Python package, developer
-tooling, and design specifications. The data pipeline, services, model training,
-database publication, and dashboard are not implemented yet.
+tooling, design specifications, and a persistent local HDFS deployment. The data
+pipeline, other services, model training, database publication, and dashboard are
+not implemented yet.
 
 ## Project Objectives
 
@@ -48,12 +49,12 @@ serving layer, and Streamlit is planned as a read-oriented presentation layer.
 | Layer | Planned technology | Current status |
 |---|---|---|
 | Project runtime | Python 3.11 and `uv` | Project metadata and `uv.lock` exist |
-| Distributed storage | Hadoop HDFS | Designed only; shared endpoint configuration is tracked, no service is deployed |
+| Distributed storage | Hadoop HDFS 3.4.3 | Persistent one-NameNode/two-DataNode Compose deployment and lifecycle scripts |
 | Distributed processing | Apache Spark | Designed only; no jobs are implemented |
 | Forecasting | Spark MLlib `RandomForestRegressor` | Selected in design; no model is trained |
 | Analytical serving | ClickHouse Distributed, two shards and one replica per shard | Designed only; no SQL or deployment is implemented |
 | Application | Streamlit and Plotly | Designed only; no application code is implemented |
-| Local environment | Docker Compose on Ubuntu/WSL2 | Planned topology; no Compose files are tracked |
+| Local environment | Docker Compose on Ubuntu/WSL2 | HDFS topology implemented; other services remain planned |
 
 ## Dataset Overview
 
@@ -91,9 +92,10 @@ The tracked repository is intentionally small at this stage:
 | [`.env.example`](.env.example) | Safe template for the shared environment-variable contract |
 | [`src/warehouse_bigdata/`](src/warehouse_bigdata/) | Tracked package and minimal CLI entry point |
 | [`docs/`](docs/01_PROJECT_OVERVIEW.md) | Design specifications and repository guidance |
-| `infrastructure/` | Local directory reserved for Hadoop, Spark, and ClickHouse configuration; no tracked configuration yet |
+| [`infrastructure/`](infrastructure/) | HDFS Compose deployment and Hadoop configuration; Spark and ClickHouse remain planned |
 | `tests/` | Focused package and CLI tests; no shared fixtures yet |
-| `app/`, `sql/`, `scripts/`, `data/`, `artifacts/` | Planned areas described by the design; not currently present in the tracked tree |
+| [`scripts/`](scripts/) | Explicit HDFS initialization and focused smoke check |
+| `app/`, `sql/`, `data/`, `artifacts/` | Planned areas described by the design; not currently present in the tracked tree |
 
 [`docs/BASED_STRUCTURE.md`](docs/BASED_STRUCTURE.md) is a reference layout, not
 an inventory of directories that already exist. Create directories when their
@@ -109,16 +111,19 @@ first real implementation requires them.
 - Design documents covering requirements, architecture, data, forecasting,
   inventory policy, database design, application design, and testing.
 - Repository cleanup and documentation alignment for the FND-01 foundation task.
+- T01 HDFS deployment: pinned official image, guarded initialization, three separate
+  persistent volumes, bounded health checks, and volume-preserving lifecycle commands.
+  See the [HDFS operations guide](infrastructure/hadoop/README.md).
 
 ### Planned but not implemented
 
-- M5 download, profiling, ingestion, HDFS storage, and Spark ETL.
+- M5 download, profiling, ingestion into HDFS, and Spark ETL.
 - Spark MLlib training, chronological evaluation, and seven-day forecast artifacts.
 - Inventory simulation, replenishment, and constrained allocation execution.
 - ClickHouse schemas, shard publication, and analytical queries.
 - Streamlit pages, Vietnamese labels, and dashboard data access.
-- Infrastructure definitions, SQL migrations, operational scripts, automated tests,
-  measured benchmarks, and end-to-end evidence.
+- Remaining service infrastructure, SQL migrations, pipeline operational scripts,
+  integration tests, measured benchmarks, and end-to-end evidence.
 
 No distributed execution, trained model, dashboard, service startup, or performance
 result should be inferred from the design documents.
@@ -149,9 +154,10 @@ uv build
 ```
 
 The CLI is a packaging and environment smoke test only. It does not download data,
-start HDFS, run Spark, train a model, load ClickHouse, or start Streamlit. There is
-currently no operational pipeline or service quickstart; those instructions belong
-with the corresponding implementation in a later foundation task.
+start HDFS, run Spark, train a model, load ClickHouse, or start Streamlit. For explicit
+HDFS initialization, startup, smoke checks, and safe lifecycle operations, follow the
+[HDFS operations guide](infrastructure/hadoop/README.md). There is no operational
+data pipeline yet.
 
 ## Collaboration and CI
 
@@ -198,9 +204,11 @@ path and is distinct from the HDFS base path.
 
 Invalid or missing values raise `ConfigurationError` with the variable and expected
 format. Required HDFS, Spark, and ClickHouse endpoints remain blank in
-`.env.example` because those services are not currently deployed. Successful parsing
-only validates configuration syntax; it does not prove that a service is reachable.
-Future Docker Compose definitions must explicitly pass these variables into containers.
+`.env.example`; Python client alignment is outside T01. The deployment's internal
+HDFS endpoint is documented in the [operations guide](infrastructure/hadoop/README.md).
+Successful parsing only validates configuration syntax; it does not prove that a
+service is reachable. Future application containers must explicitly receive their
+required environment variables.
 
 ## Documentation Guide
 

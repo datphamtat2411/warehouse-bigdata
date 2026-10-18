@@ -1,0 +1,141 @@
+name: warehouse-bigdata
+
+x-hdfs-common: &hdfs-common
+  image: apache/hadoop:3.4.3@sha256:127774dadab40ce84df7ac668a7a8c99945688b3fe336f1388f4477ca33e1529
+  platform: linux/amd64
+  user: "1000:100"
+  entrypoint: ["dumb-init", "--", "/bin/bash", "/opt/warehouse-hdfs/lifecycle.sh"]
+  environment: &hdfs-environment
+    HADOOP_CONF_DIR: /opt/hadoop/etc/hadoop
+    HADOOP_HEAPSIZE_MIN: "128"
+    HADOOP_HEAPSIZE_MAX: "512"
+  networks: [warehouse-bigdata]
+  cpus: 1.0
+  restart: "on-failure:3"
+  stop_grace_period: 60s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  hdfs-namenode:
+    <<: *hdfs-common
+    hostname: hdfs-namenode
+    command: ["namenode"]
+    mem_limit: 1g
+    ports:
+      - "127.0.0.1:9870:9870"
+    expose: ["8020", "9870"]
+    volumes:
+      - &core-config
+        type: bind
+        source: ./hadoop/core-site.xml
+        target: /opt/hadoop/etc/hadoop/core-site.xml
+        read_only: true
+        bind:
+          create_host_path: false
+      - &hdfs-config
+        type: bind
+        source: ./hadoop/hdfs-site.xml
+        target: /opt/hadoop/etc/hadoop/hdfs-site.xml
+        read_only: true
+        bind:
+          create_host_path: false
+      - &lifecycle-script
+        type: bind
+        source: ./hadoop/lifecycle.sh
+        target: /opt/warehouse-hdfs/lifecycle.sh
+        read_only: true
+        bind:
+          create_host_path: false
+      - &healthcheck-script
+        type: bind
+        source: ./hadoop/healthcheck.sh
+        target: /opt/warehouse-hdfs/healthcheck.sh
+        read_only: true
+        bind:
+          create_host_path: false
+      - hdfs-namenode-data:/var/lib/hdfs/name
+    healthcheck:
+      test: ["CMD", "/bin/bash", "/opt/warehouse-hdfs/healthcheck.sh", "namenode"]
+      interval: 10s
+      timeout: 8s
+      retries: 12
+      start_period: 30s
+
+  hdfs-datanode-1:
+    <<: *hdfs-common
+    hostname: hdfs-datanode-1
+    command: ["datanode"]
+    mem_limit: 768m
+    environment:
+      <<: *hdfs-environment
+      HADOOP_HEAPSIZE_MAX: "256"
+      HDFS_DATANODE_HOSTNAME: hdfs-datanode-1
+    expose: ["9866", "9867", "9864"]
+    volumes:
+      - *core-config
+      - *hdfs-config
+      - *lifecycle-script
+      - *healthcheck-script
+      - hdfs-datanode-1-data:/var/lib/hdfs/data
+    depends_on:
+      hdfs-namenode:
+        condition: service_healthy
+    healthcheck: &datanode-healthcheck
+      test: ["CMD", "/bin/bash", "/opt/warehouse-hdfs/healthcheck.sh", "datanode"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  hdfs-datanode-2:
+    <<: *hdfs-common
+    hostname: hdfs-datanode-2
+    command: ["datanode"]
+    mem_limit: 768m
+    environment:
+      <<: *hdfs-environment
+      HADOOP_HEAPSIZE_MAX: "256"
+      HDFS_DATANODE_HOSTNAME: hdfs-datanode-2
+    expose: ["9866", "9867", "9864"]
+    volumes:
+      - *core-config
+      - *hdfs-config
+      - *lifecycle-script
+      - *healthcheck-script
+      - hdfs-datanode-2-data:/var/lib/hdfs/data
+    depends_on:
+      hdfs-namenode:
+        condition: service_healthy
+    healthcheck: *datanode-healthcheck
+
+  hdfs-init:
+    <<: *hdfs-common
+    profiles: [init]
+    user: "0:0"
+    command: ["init"]
+    mem_limit: 512m
+    environment:
+      <<: *hdfs-environment
+      HADOOP_HEAPSIZE_MAX: "256"
+    restart: "no"
+    volumes:
+      - *core-config
+      - *hdfs-config
+      - *lifecycle-script
+      - hdfs-namenode-data:/var/lib/hdfs/name
+      - hdfs-datanode-1-data:/var/lib/hdfs/datanode-1
+      - hdfs-datanode-2-data:/var/lib/hdfs/datanode-2
+
+networks:
+  warehouse-bigdata:
+    name: warehouse-bigdata
+    driver: bridge
+
+volumes:
+  hdfs-namenode-data:
+  hdfs-datanode-1-data:
+  hdfs-datanode-2-data:
