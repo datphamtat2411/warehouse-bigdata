@@ -191,11 +191,22 @@ need deterministic settings can pass a complete mapping directly:
 from warehouse_bigdata.common.config import load_hdfs_config, load_runtime_config
 
 runtime = load_runtime_config({"WAREHOUSE_ENV": "test"})
-hdfs = load_hdfs_config({"WAREHOUSE_HDFS_URI": "hdfs://namenode:8020"})
+# Container-network example: use only where hdfs-namenode resolves.
+hdfs = load_hdfs_config({"WAREHOUSE_HDFS_URI": "hdfs://hdfs-namenode:8020"})
 ```
 
-Runtime settings default to `local` and `INFO`. HDFS requires
-`WAREHOUSE_HDFS_URI` and defaults its absolute base path to `/warehouse-bigdata`.
+Runtime settings default to `local` and `INFO`. HDFS requires an explicitly supplied
+`WAREHOUSE_HDFS_URI` in every runtime mode (`local`, `test`, and `container`); the mode
+does not select an endpoint. Omitting `WAREHOUSE_HDFS_BASE_PATH` uses `/data/warehouse`,
+matching the frozen Contract v1 namespace. Explicit valid absolute base-path overrides
+remain supported but do not redefine frozen Contract v1 artifact identities or templates.
+
+The canonical container-internal NameNode RPC endpoint is `hdfs://hdfs-namenode:8020`,
+usable only where that service hostname resolves. Host-side clients must explicitly
+supply an endpoint reachable from their network and cannot assume Docker service DNS.
+Actual HDFS access requires both NameNode RPC and DataNode connectivity; see the
+[operations guide](infrastructure/hadoop/README.md).
+
 Spark requires `WAREHOUSE_SPARK_MASTER_URL`; `local[*]` is suitable for an explicit
 local mode. ClickHouse requires its host, port, database, and user, while its password
 is optional and empty by default. Local generated artifacts use
@@ -204,11 +215,10 @@ path and is distinct from the HDFS base path.
 
 Invalid or missing values raise `ConfigurationError` with the variable and expected
 format. Required HDFS, Spark, and ClickHouse endpoints remain blank in
-`.env.example`; Python client alignment is outside T01. The deployment's internal
-HDFS endpoint is documented in the [operations guide](infrastructure/hadoop/README.md).
-Successful parsing only validates configuration syntax; it does not prove that a
-service is reachable. Future application containers must explicitly receive their
-required environment variables.
+`.env.example`. Successful parsing only validates configuration syntax; it does not
+prove that a service is reachable or that HDFS paths exist. Runtime environments,
+including application containers, must explicitly receive their required variables
+through process-environment injection or a caller-supplied mapping.
 
 ## Documentation Guide
 

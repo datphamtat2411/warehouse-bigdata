@@ -3,7 +3,7 @@
 import importlib
 import socket
 from dataclasses import FrozenInstanceError
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -19,6 +19,7 @@ from warehouse_bigdata.common.config import (
     load_runtime_config,
     load_spark_config,
 )
+from warehouse_bigdata.contracts.manifests import HDFS_ARTIFACT_PATHS
 
 RUNTIME_VARIABLES = {
     "WAREHOUSE_ENV",
@@ -77,12 +78,22 @@ def test_invalid_log_level(value: str) -> None:
         load_runtime_config({"WAREHOUSE_LOG_LEVEL": value})
 
 
-def test_hdfs_uri_is_required_and_empty_values_do_not_use_defaults() -> None:
+@pytest.mark.parametrize("environment", ["local", "test", "container"])
+def test_hdfs_uri_is_required_in_every_runtime_environment(environment: str) -> None:
     with pytest.raises(ConfigurationError, match="WAREHOUSE_HDFS_URI"):
-        load_hdfs_config({})
+        load_hdfs_config({"WAREHOUSE_ENV": environment})
 
+
+@pytest.mark.parametrize("environment", ["local", "test", "container"])
+@pytest.mark.parametrize("uri", ["", " \t\n", None, 8020])
+def test_invalid_required_hdfs_uri_does_not_use_a_default(environment: str, uri: object) -> None:
     with pytest.raises(ConfigurationError, match="WAREHOUSE_HDFS_URI"):
-        load_hdfs_config({"WAREHOUSE_HDFS_URI": ""})
+        load_hdfs_config(
+            {
+                "WAREHOUSE_ENV": environment,
+                "WAREHOUSE_HDFS_URI": uri,  # type: ignore[dict-item]
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -96,6 +107,12 @@ def test_hdfs_uri_is_required_and_empty_values_do_not_use_defaults() -> None:
         "hdfs://namenode:65536",
         "hdfs://namenode:8020?query=1",
         "hdfs://namenode:8020#fragment",
+        " hdfs://namenode:8020",
+        "hdfs://name node:8020",
+        "hdfs://namenode:8020\n",
+        "hdfs://namenode:",
+        "hdfs://[::1",
+        "hdfs://[not-an-ip]:8020",
     ],
 )
 def test_invalid_hdfs_uri(uri: str) -> None:
@@ -103,22 +120,53 @@ def test_invalid_hdfs_uri(uri: str) -> None:
         load_hdfs_config({"WAREHOUSE_HDFS_URI": uri})
 
 
-def test_hdfs_defaults_and_explicit_base_path() -> None:
-    assert load_hdfs_config({"WAREHOUSE_HDFS_URI": "hdfs://namenode:8020"}) == HDFSConfig(
-        uri="hdfs://namenode:8020",
-        base_path="/warehouse-bigdata",
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "hdfs://hdfs-namenode:8020",
+        "hdfs://localhost:19000",
+        "hdfs://other-namenode:9000",
+        "hdfs://namenode",
+    ],
+)
+def test_hdfs_explicit_endpoints_use_contract_namespace_by_default(uri: str) -> None:
+    assert load_hdfs_config({"WAREHOUSE_HDFS_URI": uri}) == HDFSConfig(
+        uri=uri,
+        base_path="/data/warehouse",
     )
+
+
+def test_hdfs_default_namespace_contains_frozen_artifact_templates() -> None:
+    config = load_hdfs_config({"WAREHOUSE_HDFS_URI": "hdfs://hdfs-namenode:8020"})
+    namespace = PurePosixPath(config.base_path)
+
+    for artifact in HDFS_ARTIFACT_PATHS:
+        assert namespace in PurePosixPath(artifact.template).parents, artifact.name
+
+
+@pytest.mark.parametrize("base_path", ["/curated/m5", "/custom/warehouse/"])
+def test_hdfs_explicit_base_path_is_preserved(base_path: str) -> None:
     assert load_hdfs_config(
         {
             "WAREHOUSE_HDFS_URI": "hdfs://namenode",
-            "WAREHOUSE_HDFS_BASE_PATH": "/curated/m5",
+            "WAREHOUSE_HDFS_BASE_PATH": base_path,
         }
-    ) == HDFSConfig(uri="hdfs://namenode", base_path="/curated/m5")
+    ) == HDFSConfig(uri="hdfs://namenode", base_path=base_path)
 
 
 @pytest.mark.parametrize(
     "base_path",
-    ["", "warehouse-bigdata", "file:///tmp/warehouse", "hdfs://namenode/path", "C:/warehouse"],
+    [
+        "",
+        " \t\n",
+        "warehouse-bigdata",
+        "file:///tmp/warehouse",
+        "hdfs://namenode/path",
+        "C:/warehouse",
+        "//namenode/warehouse",
+        "/data/warehouse?query=1",
+        "/data/warehouse#fragment",
+    ],
 )
 def test_invalid_hdfs_base_path(base_path: str) -> None:
     with pytest.raises(ConfigurationError, match="WAREHOUSE_HDFS_BASE_PATH"):
@@ -128,6 +176,34 @@ def test_invalid_hdfs_base_path(base_path: str) -> None:
                 "WAREHOUSE_HDFS_BASE_PATH": base_path,
             }
         )
+
+
+def test_hdfs_loads_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WAREHOUSE_HDFS_URI", "hdfs://localhost:19000")
+    monkeypatch.delenv("WAREHOUSE_HDFS_BASE_PATH", raising=False)
+
+    assert load_hdfs_config() == HDFSConfig(
+        uri="hdfs://localhost:19000", base_path="/data/warehouse"
+    )
+
+    monkeypatch.setenv("WAREHOUSE_HDFS_BASE_PATH", "/custom/warehouse")
+
+    assert load_hdfs_config() == HDFSConfig(
+        uri="hdfs://localhost:19000", base_path="/custom/warehouse"
+    )
+
+
+def test_hdfs_explicit_mapping_is_isolated_from_process_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WAREHOUSE_HDFS_URI", "hdfs://hdfs-namenode:8020")
+    monkeypatch.setenv("WAREHOUSE_HDFS_BASE_PATH", "/ambient/warehouse")
+
+    assert load_hdfs_config({"WAREHOUSE_HDFS_URI": "hdfs://localhost:19000"}) == HDFSConfig(
+        uri="hdfs://localhost:19000", base_path="/data/warehouse"
+    )
+    with pytest.raises(ConfigurationError, match="WAREHOUSE_HDFS_URI"):
+        load_hdfs_config({})
 
 
 @pytest.mark.parametrize("master_url", ["local[*]", "local[2]", "local[2,3]"])
@@ -274,11 +350,13 @@ def test_configuration_loading_does_not_use_filesystem_or_network(
 
 def test_env_example_contains_exact_supported_variables() -> None:
     env_file = Path(__file__).parents[2] / ".env.example"
-    variables = {
-        line.partition("=")[0]
+    values = dict(
+        line.split("=", maxsplit=1)
         for line in env_file.read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#") and "=" in line
-    }
+    )
 
-    assert variables == ALL_VARIABLES
-    assert RUNTIME_VARIABLES <= variables
+    assert set(values) == ALL_VARIABLES
+    assert RUNTIME_VARIABLES <= values.keys()
+    assert values["WAREHOUSE_HDFS_URI"] == ""
+    assert values["WAREHOUSE_HDFS_BASE_PATH"] == "/data/warehouse"

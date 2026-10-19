@@ -33,7 +33,7 @@ class RuntimeConfig:
 
 @dataclass(frozen=True, slots=True)
 class HDFSConfig:
-    """Configuration for HDFS consumers."""
+    """HDFS settings with a runtime-supplied URI and logical base path."""
 
     uri: str
     base_path: str
@@ -81,10 +81,13 @@ def load_runtime_config(env: Mapping[str, str] | None = None) -> RuntimeConfig:
 
 
 def load_hdfs_config(env: Mapping[str, str] | None = None) -> HDFSConfig:
-    """Load and validate HDFS endpoint and base-path settings."""
+    """Load a required runtime URI and default to Contract v1's /data/warehouse.
+
+    Validate syntax only, without checking service reachability or creating paths.
+    """
     settings = _settings(env)
     uri = _read(settings, "WAREHOUSE_HDFS_URI")
-    base_path = _read(settings, "WAREHOUSE_HDFS_BASE_PATH", default="/warehouse-bigdata")
+    base_path = _read(settings, "WAREHOUSE_HDFS_BASE_PATH", default="/data/warehouse")
 
     _validate_endpoint_url(uri, "WAREHOUSE_HDFS_URI", scheme="hdfs", require_port=False)
     _validate_hdfs_base_path(base_path)
