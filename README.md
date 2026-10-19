@@ -8,7 +8,8 @@ turn Walmart M5 observed sales into auditable forecasts and simulated inventory
 recommendations through a batch-oriented distributed architecture.
 
 The repository currently contains project metadata, a Python package, developer
-tooling, design specifications, and a persistent local HDFS deployment. The data
+tooling, design specifications, a persistent local HDFS deployment, and opt-in HDFS
+integration verification. The data
 pipeline, other services, model training, database publication, and dashboard are
 not implemented yet.
 
@@ -49,7 +50,7 @@ serving layer, and Streamlit is planned as a read-oriented presentation layer.
 | Layer | Planned technology | Current status |
 |---|---|---|
 | Project runtime | Python 3.11 and `uv` | Project metadata and `uv.lock` exist |
-| Distributed storage | Hadoop HDFS 3.4.3 | Persistent one-NameNode/two-DataNode Compose deployment and lifecycle scripts |
+| Distributed storage | Hadoop HDFS 3.4.3 | Persistent one-NameNode/two-DataNode deployment, configuration loaders, and opt-in integration verification |
 | Distributed processing | Apache Spark | Designed only; no jobs are implemented |
 | Forecasting | Spark MLlib `RandomForestRegressor` | Selected in design; no model is trained |
 | Analytical serving | ClickHouse Distributed, two shards and one replica per shard | Designed only; no SQL or deployment is implemented |
@@ -93,7 +94,7 @@ The tracked repository is intentionally small at this stage:
 | [`src/warehouse_bigdata/`](src/warehouse_bigdata/) | Tracked package and minimal CLI entry point |
 | [`docs/`](docs/01_PROJECT_OVERVIEW.md) | Design specifications and repository guidance |
 | [`infrastructure/`](infrastructure/) | HDFS Compose deployment and Hadoop configuration; Spark and ClickHouse remain planned |
-| `tests/` | Focused package and CLI tests; no shared fixtures yet |
+| `tests/` | Focused offline tests and opt-in HDFS integration fixtures/scenarios |
 | [`scripts/`](scripts/) | Explicit HDFS initialization and focused smoke check |
 | `app/`, `sql/`, `data/`, `artifacts/` | Planned areas described by the design; not currently present in the tracked tree |
 
@@ -114,6 +115,13 @@ first real implementation requires them.
 - T01 HDFS deployment: pinned official image, guarded initialization, three separate
   persistent volumes, bounded health checks, and volume-preserving lifecycle commands.
   See the [HDFS operations guide](infrastructure/hadoop/README.md).
+- T02 typed, side-effect-free shared configuration loaders with an explicit HDFS URI.
+- T03 HDFS verification tooling: separate-client byte/hash integrity and audited
+  two-node block placement, plus maintenance-window restart, recreation, and
+  DataNode interruption/recovery scenarios. Actual runtime acceptance depends on
+  executed evidence; test implementation alone is not a passing runtime result.
+  On 2026-10-19, the non-disruptive scenario passed with actual two-node placement
+  and byte-exact independent-client I/O; the three maintenance scenarios were skipped.
 
 ### Planned but not implemented
 
@@ -123,7 +131,7 @@ first real implementation requires them.
 - ClickHouse schemas, shard publication, and analytical queries.
 - Streamlit pages, Vietnamese labels, and dashboard data access.
 - Remaining service infrastructure, SQL migrations, pipeline operational scripts,
-  integration tests, measured benchmarks, and end-to-end evidence.
+  cross-service integration tests, measured benchmarks, and end-to-end evidence.
 
 No distributed execution, trained model, dashboard, service startup, or performance
 result should be inferred from the design documents.
@@ -158,6 +166,23 @@ start HDFS, run Spark, train a model, load ClickHouse, or start Streamlit. For e
 HDFS initialization, startup, smoke checks, and safe lifecycle operations, follow the
 [HDFS operations guide](infrastructure/hadoop/README.md). There is no operational
 data pipeline yet.
+
+### Opt-in HDFS integration verification
+
+Against an already initialized, running T01 cluster, run the non-disruptive
+independent-client registration, read/write integrity, and two-replica placement check:
+
+```bash
+WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 uv run --locked pytest -q -m integration tests/integration/test_hdfs.py
+```
+
+Default pytest runs exclude integration tests. The command above skips disruptive
+scenarios; `--run-hdfs-disruptions` additionally requires an exclusive, serial
+maintenance window. See the [T03 operations guide](infrastructure/hadoop/README.md#t03-integration-verification)
+for focused offline checks, controlled disruption commands, recovery, and the M02
+connectivity checklist. Unique evidence is written under `artifacts/test-runs/`;
+only each run's owned fixture/client is cleaned up. Skipped or blocked checks are
+not runtime acceptance. Spark and M5 ingestion are outside this verification.
 
 ## Collaboration and CI
 

@@ -1,10 +1,11 @@
-# HDFS deployment and lifecycle (T01)
+# HDFS deployment, integration verification, and operations (T01–T03)
 
 This is a persistent, single-host development cluster: one NameNode and two
 DataNodes, with replication factor **2**. It demonstrates distributed software
 roles, not physical-host fault tolerance, HA, production security, or proven host
-capacity. Spark, ingestion, Python client configuration (T02), and comprehensive
-failure/recovery or separate-client integration checks (T03) are not included.
+capacity. T02 supplies side-effect-free Python configuration loading; T03 supplies
+opt-in independent-client, replication, persistence, and interruption/recovery
+verification. Spark and source-data ingestion acceptance remain later gates.
 
 ## Runtime and interfaces
 
@@ -227,3 +228,206 @@ docker compose -f infrastructure/compose.yaml config --quiet
 
 The unit checks use temporary directories and stub external commands. They do not
 start services, install Hadoop, or change volumes; default CI remains service-free.
+
+## T03 integration verification
+
+The tests inspect the **existing, initialized, running** T01 cluster. A requested
+runtime test fails with a prerequisite reason if Docker, the explicit URI, matching
+configuration, or write-readiness is unavailable. The tests never initialize or
+format storage, delete volumes, change replication, or start an absent cluster.
+
+Default pytest selection excludes the registered `integration` marker. These
+focused offline checks need no running services:
+
+```bash
+uv run --locked pytest -q tests/unit/test_hdfs_verification.py
+uv run --locked ruff check tests/integration tests/unit/test_hdfs_verification.py
+uv run --locked ruff format --check tests/integration tests/unit/test_hdfs_verification.py
+```
+
+Run the non-disruptive scenario explicitly from the repository root:
+
+```bash
+WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 uv run --locked pytest -q -m integration tests/integration/test_hdfs.py
+```
+
+This executes the independent-client scenario and skips the three disruptive cases
+**before fixture setup**. It creates a uniquely named, 512 MiB/one-CPU temporary
+client on `warehouse-bigdata` with a 256 MiB Hadoop heap. The client inherits the
+resolved Compose image, platform, UID/GID, and two read-only XML bind sources. Its
+daemon entrypoint is bypassed and no HDFS storage volumes are attached.
+
+Each scenario exclusively creates its own `/t03-integration-<32-hex-uuid>` directory
+and writes a deterministic, non-empty **65,536-byte** binary payload. This test-only
+namespace is outside M5 and approved artifact paths. `load_hdfs_config()` supplies
+the required URI and records the base-path contract (default `/data/warehouse`);
+the tests do not publish outputs there. A URI targeting a different endpoint is
+rejected before fixture creation.
+
+Success requires all of the following, beyond container health:
+
+- Service DNS, NameNode RPC/metadata operations, and TCP access to **both** advertised
+  DataNode transfer endpoints (`9866`) from the separate client.
+- Both expected live hostnames, normal registration, distinct persistent DataNode
+  UUIDs, distinct current transfer addresses, and NameNode safe mode off.
+- Configured and file replication **2** without a `setrep` workaround.
+- Non-zero fixture blocks and fixture-scoped `fsck -files -blocks -locations` with
+  no missing/corrupt blocks and exactly two distinct expected locations for **every
+  block**. Addresses come from the current live report, including after recreation.
+- A fresh external-client read with the expected byte count, SHA-256, and exact bytes.
+
+### Maintenance-window scenarios
+
+Reserve an **exclusive maintenance window**, suspend other HDFS writers and
+lifecycle operations, and run serially (no xdist workers). Supplying the additional
+flag acknowledges this window:
+
+```bash
+WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 uv run --locked pytest -q -m integration tests/integration/test_hdfs.py --run-hdfs-disruptions
+```
+
+T03 also takes a non-blocking local lock to prevent overlapping T03 invocations;
+this does not coordinate unrelated Docker/HDFS clients. The three extra scenarios
+have independent fixtures and baseline evidence:
+
+| Scenario | Controlled operation | Required evidence |
+|---|---|---|
+| Restart persistence | Restart only the three HDFS daemons | Same containers, cluster/namespace identity, UUIDs, named-volume attachments, block IDs, bytes/hash, and two-node placement |
+| Recreation persistence | Force-recreate only those daemons; retain network and named volumes | All three container IDs replaced; persistent identities, attachments, fixture block IDs/content, and replication unchanged |
+| Interruption/recovery | Stop only `hdfs-datanode-2` after reconfirming two replicas | Confirmed stopped container, byte-exact fresh read via the remaining replica, restoration, new heartbeat/full block-report timestamps, and restored two-node placement |
+
+Restoration is registered **before** issuing a lifecycle command, including a stop
+that subsequently fails or times out. The harness restores affected daemons before
+removing its fixture. After interruption it requests a full block report on DataNode
+2's IPC port `9867` and waits for renewed contact **and** block-report timestamps.
+
+The current heartbeat recheck is `300000` ms and heartbeat interval is `3` seconds;
+dead-node detection may take approximately **630 seconds**. A short stop can leave
+the node in the live report. That cached count is not degraded-read or recovery
+evidence; do not change heartbeat policy or wait for a dead count as a substitute.
+
+### Bounds, evidence, and outcomes
+
+Commands are bounded: approximately 30 seconds for diagnostics, 120 seconds for
+I/O, 180 seconds for readiness/placement, and 300 seconds for lifecycle operations.
+Hadoop processes also run under an in-container timeout, with a short kill/transport
+grace. Every read starts a fresh Hadoop CLI process rather than retaining a stream.
+
+Each entered scenario writes unique, Git-ignored evidence to
+`artifacts/test-runs/<run-id>/`:
+
+- `commands.jsonl`: exact arguments, start/end timestamps, timeout, return code, and
+  timeout outcome; numbered `.stdout`/`.stderr` files retain raw reports and fsck output.
+- `events.jsonl`: attempted commands, registration, storage identity, confirmed down
+  state, restoration, and renewed-contact evidence.
+- Configuration/client/image details, baseline and post-operation snapshots,
+  content hashes/counts, volume mappings, block IDs, and per-block locations.
+- `outcome.json`: actual scenario status, original failure, separate restoration or
+  cleanup errors, and fixture/client identifiers for recovery.
+
+Only an exact directory whose exclusive `mkdir` succeeded may be deleted, and only
+a temporary client with both the exact name and matching run-ownership label may
+be removed. A timed-out/failed mkdir does not prove ownership. Uncertain fixture
+ownership or failed restoration retains/reports the possible path for investigation.
+Cleanup failures fail the run without replacing the original failure.
+
+Tooling implementation is not runtime acceptance. Retain the actual pytest summary
+and run outcomes. Skipped scenarios, unavailable Docker/configuration, and unexecuted
+maintenance checks must be reported as such. This is single-host software-role
+distribution evidence, not HA, physical-host fault tolerance, Spark compatibility,
+or source-data ingestion acceptance.
+
+### T03 execution snapshot — 2026-10-19
+
+- Focused offline verification: **49 tests passed**.
+- Explicit non-disruptive runtime selection: **1 passed, 3 skipped**. Both normal
+  DataNode registrations and distinct UUIDs were verified. The single 65,536-byte
+  fixture block had two distinct locations on the expected nodes; a fresh independent
+  client read matched the payload exactly. Content SHA-256:
+  `7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2`.
+- The owned fixture and temporary client were removed with no restoration/cleanup
+  errors. Local evidence run:
+  `t03-20261019T111055-test_independent_client_registration_replication_and_integrity-3339cc473d0b4e97b7dd701bd86383b9`.
+- Restart persistence, forced-recreation persistence, and interruption/recovery were
+  **not executed**; their acceptance remains pending an exclusive maintenance window.
+
+## Bounded connectivity and registration diagnostics
+
+Run these read-only diagnostics from the repository root; each command targets only
+HDFS and has a finite timeout:
+
+```bash
+timeout 30s docker compose -f infrastructure/compose.yaml ps -a hdfs-namenode hdfs-datanode-1 hdfs-datanode-2
+timeout 30s docker compose -f infrastructure/compose.yaml logs --since 10m --tail 100 hdfs-namenode hdfs-datanode-1 hdfs-datanode-2
+docker compose -f infrastructure/compose.yaml exec -T hdfs-namenode timeout 30s hdfs dfsadmin -report
+docker compose -f infrastructure/compose.yaml exec -T hdfs-namenode timeout 30s hdfs dfsadmin -safemode get
+docker compose -f infrastructure/compose.yaml exec -T hdfs-namenode timeout 30s hdfs getconf -confKey fs.defaultFS
+docker compose -f infrastructure/compose.yaml exec -T hdfs-namenode timeout 30s hdfs dfs -ls /
+```
+
+Check DNS and individual TCP paths (including block transfer, not just RPC):
+
+```bash
+docker compose -f infrastructure/compose.yaml exec -T hdfs-namenode timeout 30s bash -ec '
+  for host in hdfs-namenode hdfs-datanode-1 hdfs-datanode-2; do getent hosts "$host"; done
+  for endpoint in hdfs-namenode:8020 hdfs-datanode-1:9866 hdfs-datanode-2:9866; do
+    timeout 3s bash -c '\''exec 3<>/dev/tcp/$1/$2'\'' _ "${endpoint%:*}" "${endpoint##*:}"
+  done
+'
+```
+
+These daemon-side probes help locate faults; use the independent-client test for
+external-client acceptance. For a retained, positively identified fixture, inspect
+only that exact file with a bounded `hdfs fsck <exact-fixture>/payload -files -blocks
+-locations`. Compare **each block's** locations with the current report. For a newly
+joined client, RPC success plus transfer failure usually warrants checking network
+membership, advertised DataNode hostnames, XML mounts, DNS, and port `9866` access.
+
+## Interrupted-run recovery
+
+Normal failures and timeouts execute restoration and scoped cleanup. A host/process
+crash or `SIGKILL` can prevent finalizers. Use the recorded run identifiers, command
+results, and ownership evidence; do not initialize storage or remove volumes.
+
+1. Re-establish the maintenance window and check for other active test/lifecycle
+   processes. The local lock is released when its process exits; the lock file's
+   existence does not mean a run is active.
+2. Restore the three existing daemons against their current volumes and wait for
+   actual write-readiness, then inspect registration and bounded logs:
+
+   ```bash
+   timeout 300s docker compose -f infrastructure/compose.yaml up -d --no-deps --no-recreate --wait --wait-timeout 180 hdfs-namenode hdfs-datanode-1 hdfs-datanode-2
+   docker compose -f infrastructure/compose.yaml exec -T hdfs-namenode timeout 190s bash /opt/warehouse-hdfs/healthcheck.sh wait-ready 180
+   docker compose -f infrastructure/compose.yaml exec -T hdfs-namenode timeout 30s hdfs dfsadmin -report
+   ```
+
+3. Verify the run's successful **exclusive mkdir** command before removing only its
+   exact `/t03-integration-<uuid>` directory via a bounded `hdfs dfs -rm -r -skipTrash
+   <exact-owned-directory>`. Never infer ownership from the prefix alone or use a
+   wildcard. If creation timed out or ownership is uncertain, investigate and retain
+   the path rather than deleting it.
+4. Inspect the exact `t03-client-<uuid>` container. Match its name and
+   `warehouse-bigdata.t03.run` label to the evidence before a bounded
+   `docker rm --force <exact-owned-client>` (without a volume-removal option).
+5. Record any remaining paths/clients or restoration blockers. Rerun the appropriate
+   opt-in scenario only after prerequisites are restored; do not mark an interrupted
+   or partially cleaned run as passed.
+
+## M02 connectivity handoff
+
+- [ ] Join the existing external bridge **`warehouse-bigdata`**; verify service DNS.
+- [ ] Supply **`WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020`** explicitly to the
+  shared loader. Record the base-path contract **`/data/warehouse`** and any explicit
+  override; configuration loading alone does not establish connectivity.
+- [ ] Mount the current `core-site.xml` and `hdfs-site.xml` read-only under
+  `/opt/hadoop/etc/hadoop`, retain image-provided Hadoop/Java configuration, and
+  record client identity **UID 1000 / GID 100** for the tested setup.
+- [ ] Demonstrate metadata/RPC access **and both DataNodes' direct TCP `9866` block
+  access**, followed by independent-client byte/hash and per-block replica evidence.
+- [ ] Carry the actual evidence directory and executed/skipped/blocked scenario
+  results into the handoff. Do not imply a maintenance scenario ran from baseline
+  success alone.
+
+Future clients, including Spark **drivers and executors**, need both metadata and
+block connectivity. T03 does not deploy Spark, prove Spark compatibility, ingest
+M5, or authorize writing approved analytical outputs.
