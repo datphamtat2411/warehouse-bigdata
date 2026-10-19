@@ -259,7 +259,9 @@ def test_initializer_refuses_active_daemons(sandbox: dict, state: str) -> None:
 
 
 @pytest.mark.parametrize("states", [{}, {"container-id": "exited"}, {"container-id": "created"}])
-def test_initializer_resolves_paths_and_only_runs_explicit_helper(sandbox: dict, states: dict) -> None:
+def test_initializer_resolves_paths_and_only_runs_explicit_helper(
+    sandbox: dict, states: dict
+) -> None:
     sandbox["env"]["TEST_DOCKER_STATES"] = json.dumps(states)
     result = invoke(sandbox, "", initializer=True)
     assert result.returncode == 0, result.stderr
