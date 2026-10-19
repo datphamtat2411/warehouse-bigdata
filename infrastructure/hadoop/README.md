@@ -236,8 +236,9 @@ runtime test fails with a prerequisite reason if Docker, the explicit URI, match
 configuration, or write-readiness is unavailable. The tests never initialize or
 format storage, delete volumes, change replication, or start an absent cluster.
 
-Default pytest selection excludes the registered `integration` marker. These
-focused offline checks need no running services:
+Default pytest selection and lightweight CI exclude live HDFS integration tests
+through the registered `integration` marker. The complete suite is run manually
+against Docker. These focused offline checks need no running services:
 
 ```bash
 uv run --locked pytest -q tests/unit/test_hdfs_verification.py
@@ -314,7 +315,7 @@ Hadoop processes also run under an in-container timeout, with a short kill/trans
 grace. Every read starts a fresh Hadoop CLI process rather than retaining a stream.
 
 Each entered scenario writes unique, Git-ignored evidence to
-`artifacts/test-runs/<run-id>/`:
+`artifacts/test-runs/<run-id>/`. Keep this generated evidence local and out of Git:
 
 - `commands.jsonl`: exact arguments, start/end timestamps, timeout, return code, and
   timeout outcome; numbered `.stdout`/`.stderr` files retain raw reports and fsck output.
@@ -339,17 +340,40 @@ or source-data ingestion acceptance.
 
 ### T03 execution snapshot — 2026-10-19
 
-- Focused offline verification: **49 tests passed**.
-- Explicit non-disruptive runtime selection: **1 passed, 3 skipped**. Both normal
-  DataNode registrations and distinct UUIDs were verified. The single 65,536-byte
-  fixture block had two distinct locations on the expected nodes; a fresh independent
-  client read matched the payload exactly. Content SHA-256:
-  `7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2`.
-- The owned fixture and temporary client were removed with no restoration/cleanup
-  errors. Local evidence run:
-  `t03-20261019T111055-test_independent_client_registration_replication_and_integrity-3339cc473d0b4e97b7dd701bd86383b9`.
-- Restart persistence, forced-recreation persistence, and interruption/recovery were
-  **not executed**; their acceptance remains pending an exclusive maintenance window.
+The user-reported complete suite was executed manually on **October 19, 2026**
+against the local Docker-based Hadoop cluster with this exact command:
+
+```bash
+WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
+uv run --locked pytest -vv -m integration \
+tests/integration/test_hdfs.py \
+--run-hdfs-disruptions
+```
+
+| Pytest scenario | Reported result | Validated behavior |
+|---|---|---|
+| `test_independent_client_registration_replication_and_integrity` | **PASSED** | Independent-client connectivity, actual block replication on both distinct DataNodes, and byte-level integrity |
+| `test_fixture_persists_after_daemon_restart` | **PASSED** | Fixture persistence, byte/hash integrity, persistent identities, and two-node block placement after daemon restart |
+| `test_fixture_persists_after_forced_container_recreation` | **PASSED** | Fixture persistence and unchanged storage identities, block content, and replication after container recreation with named volumes preserved |
+| `test_degraded_read_and_datanode_recovery` | **PASSED** | Byte-exact read during a controlled DataNode interruption, followed by restoration, renewed heartbeat/block-report evidence, and restored two-node placement |
+
+**Reported pytest summary: 4 passed in 384.85 seconds.** The earlier non-disruptive
+baseline (**1 passed, 3 skipped**) is historical and superseded by this complete run.
+All three maintenance-window scenarios passed.
+
+Reported companion verification:
+
+- Default offline pytest suite: **225 passed, 4 deselected**. Live HDFS integration
+  tests remain excluded from default pytest and CI selection.
+- Ruff lint passed. Ruff formatting passed after formatting
+  `tests/unit/test_hdfs_lifecycle.py`.
+- GitHub Actions `python-quality` passed for PR #1 at commit
+  `c78431f5f40a6c4406371d11adae2f43ab5a1a8c`.
+
+These results establish the verified local HDFS infrastructure scope. Spark
+integration, M5 ingestion, and end-to-end data-pipeline acceptance remain separate,
+unverified gates. Carry a specific local evidence directory into a handoff only
+after verifying its existence and identity.
 
 ## Bounded connectivity and registration diagnostics
 

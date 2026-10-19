@@ -8,10 +8,10 @@ turn Walmart M5 observed sales into auditable forecasts and simulated inventory
 recommendations through a batch-oriented distributed architecture.
 
 The repository currently contains project metadata, a Python package, developer
-tooling, design specifications, a persistent local HDFS deployment, and opt-in HDFS
-integration verification. The data
-pipeline, other services, model training, database publication, and dashboard are
-not implemented yet.
+tooling, design specifications, and a persistent local HDFS deployment with a passing
+four-scenario integration suite. Spark integration, M5 ingestion, the data pipeline,
+other services, model training, database publication, and dashboard are not
+implemented yet.
 
 ## Project Objectives
 
@@ -50,7 +50,7 @@ serving layer, and Streamlit is planned as a read-oriented presentation layer.
 | Layer | Planned technology | Current status |
 |---|---|---|
 | Project runtime | Python 3.11 and `uv` | Project metadata and `uv.lock` exist |
-| Distributed storage | Hadoop HDFS 3.4.3 | Persistent one-NameNode/two-DataNode deployment, configuration loaders, and opt-in integration verification |
+| Distributed storage | Hadoop HDFS 3.4.3 | Persistent one-NameNode/two-DataNode deployment and configuration loaders implemented; complete four-scenario HDFS integration suite passed |
 | Distributed processing | Apache Spark | Designed only; no jobs are implemented |
 | Forecasting | Spark MLlib `RandomForestRegressor` | Selected in design; no model is trained |
 | Analytical serving | ClickHouse Distributed, two shards and one replica per shard | Designed only; no SQL or deployment is implemented |
@@ -112,16 +112,19 @@ first real implementation requires them.
 - Design documents covering requirements, architecture, data, forecasting,
   inventory policy, database design, application design, and testing.
 - Repository cleanup and documentation alignment for the FND-01 foundation task.
-- T01 HDFS deployment: pinned official image, guarded initialization, three separate
+- M01 T01 HDFS deployment: pinned official image, guarded initialization, three separate
   persistent volumes, bounded health checks, and volume-preserving lifecycle commands.
-  See the [HDFS operations guide](infrastructure/hadoop/README.md).
-- T02 typed, side-effect-free shared configuration loaders with an explicit HDFS URI.
-- T03 HDFS verification tooling: separate-client byte/hash integrity and audited
+- M01 T02 typed, side-effect-free shared configuration loaders with an explicit HDFS URI.
+- M01 T03 HDFS verification: separate-client byte/hash integrity and audited
   two-node block placement, plus maintenance-window restart, recreation, and
-  DataNode interruption/recovery scenarios. Actual runtime acceptance depends on
-  executed evidence; test implementation alone is not a passing runtime result.
-  On 2026-10-19, the non-disruptive scenario passed with actual two-node placement
-  and byte-exact independent-client I/O; the three maintenance scenarios were skipped.
+  DataNode interruption/recovery scenarios.
+
+M01 T01, T02, and T03 are implemented. The reported manual execution on the local
+Docker-based Hadoop cluster on **2026-10-19** passed all four HDFS integration
+scenarios: **4 passed in 384.85 seconds**. Spark integration, M5 ingestion, and
+end-to-end data-pipeline acceptance remain future gates. See the
+[HDFS operations guide](infrastructure/hadoop/README.md#t03-integration-verification)
+for the execution snapshot and operational procedures.
 
 ### Planned but not implemented
 
@@ -176,13 +179,15 @@ independent-client registration, read/write integrity, and two-replica placement
 WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 uv run --locked pytest -q -m integration tests/integration/test_hdfs.py
 ```
 
-Default pytest runs exclude integration tests. The command above skips disruptive
-scenarios; `--run-hdfs-disruptions` additionally requires an exclusive, serial
-maintenance window. See the [T03 operations guide](infrastructure/hadoop/README.md#t03-integration-verification)
+Default pytest runs and lightweight CI exclude live HDFS integration tests. The
+command above selects only the non-disruptive scenario; the complete suite additionally
+requires `--run-hdfs-disruptions` and an exclusive, serial maintenance window. The
+complete four-scenario suite was executed manually for the result recorded above.
+See the [T03 operations guide](infrastructure/hadoop/README.md#t03-integration-verification)
 for focused offline checks, controlled disruption commands, recovery, and the M02
-connectivity checklist. Unique evidence is written under `artifacts/test-runs/`;
-only each run's owned fixture/client is cleaned up. Skipped or blocked checks are
-not runtime acceptance. Spark and M5 ingestion are outside this verification.
+connectivity checklist. The harness writes unique, Git-ignored evidence under
+`artifacts/test-runs/`; only each run's owned fixture/client is cleaned up. Spark and
+M5 ingestion are outside this verification.
 
 ## Collaboration and CI
 
@@ -190,8 +195,8 @@ The task-oriented Git workflow and pull request expectations are documented in
 [`CONTRIBUTING.md`](CONTRIBUTING.md). Pull requests targeting `develop` and pushes to
 `develop` use [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for locked
 dependency synchronization, Ruff lint and formatting checks, and the lightweight
-pytest suite. Branch protection is a separate GitHub administrative setting and is
-not implied by the workflow file.
+pytest suite, which excludes live HDFS integration tests. Branch protection is a
+separate GitHub administrative setting and is not implied by the workflow file.
 
 ### Shared Configuration
 
