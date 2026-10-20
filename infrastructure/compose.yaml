@@ -130,6 +130,118 @@ services:
       - hdfs-datanode-1-data:/var/lib/hdfs/datanode-1
       - hdfs-datanode-2-data:/var/lib/hdfs/datanode-2
 
+  spark-master:
+    <<: &spark-common
+      image: warehouse-bigdata-spark:3.5.7-python3.11.17
+      build:
+        context: ./spark
+      platform: linux/amd64
+      profiles: [spark]
+      user: "185:185"
+      networks: [warehouse-bigdata]
+      read_only: true
+      restart: "on-failure:3"
+      stop_grace_period: 60s
+      volumes:
+        - *core-config
+        - *hdfs-config
+      logging:
+        driver: json-file
+        options:
+          max-size: "10m"
+          max-file: "3"
+    hostname: spark-master
+    command:
+      - org.apache.spark.deploy.master.Master
+      - --host
+      - spark-master
+      - --port
+      - "7077"
+      - --webui-port
+      - "8080"
+    environment:
+      SPARK_MASTER_OPTS: -Dspark.master.rest.enabled=false
+    cpus: 0.5
+    mem_limit: 512m
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=67108864,mode=1777
+    ports:
+      - "127.0.0.1:8080:8080"
+    expose: ["7077", "8080"]
+    healthcheck:
+      test: ["CMD", "/opt/python/bin/python3.11", "/opt/warehouse-spark/healthcheck.py", "master"]
+      interval: 10s
+      timeout: 8s
+      retries: 12
+      start_period: 20s
+
+  spark-worker-1:
+    <<: *spark-common
+    hostname: spark-worker-1
+    command:
+      - org.apache.spark.deploy.worker.Worker
+      - --host
+      - spark-worker-1
+      - --port
+      - "7078"
+      - --webui-port
+      - "8081"
+      - --cores
+      - "1"
+      - --memory
+      - 1024m
+      - --work-dir
+      - /tmp/warehouse-spark/work
+      - spark://spark-master:7077
+    environment:
+      SPARK_WORKER_HOST: spark-worker-1
+      SPARK_WORKER_OPTS: &spark-worker-options >-
+        -Dspark.worker.cleanup.enabled=true
+        -Dspark.worker.cleanup.interval=300
+        -Dspark.worker.cleanup.appDataTtl=3600
+    cpus: 1.0
+    mem_limit: 2g
+    tmpfs: &spark-worker-scratch
+      - /tmp:rw,nosuid,nodev,size=268435456,mode=1777
+    expose: ["7078", "8081"]
+    depends_on: &spark-worker-dependencies
+      spark-master:
+        condition: service_healthy
+    healthcheck: &spark-worker-healthcheck
+      test: ["CMD", "/opt/python/bin/python3.11", "/opt/warehouse-spark/healthcheck.py", "worker"]
+      interval: 10s
+      timeout: 8s
+      retries: 12
+      start_period: 20s
+
+  spark-worker-2:
+    <<: *spark-common
+    hostname: spark-worker-2
+    command:
+      - org.apache.spark.deploy.worker.Worker
+      - --host
+      - spark-worker-2
+      - --port
+      - "7078"
+      - --webui-port
+      - "8081"
+      - --cores
+      - "1"
+      - --memory
+      - 1024m
+      - --work-dir
+      - /tmp/warehouse-spark/work
+      - spark://spark-master:7077
+    environment:
+      SPARK_WORKER_HOST: spark-worker-2
+      SPARK_WORKER_OPTS: *spark-worker-options
+    cpus: 1.0
+    mem_limit: 2g
+    tmpfs: *spark-worker-scratch
+    expose: ["7078", "8081"]
+    depends_on: *spark-worker-dependencies
+    healthcheck: *spark-worker-healthcheck
+
 networks:
   warehouse-bigdata:
     name: warehouse-bigdata

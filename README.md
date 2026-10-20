@@ -8,10 +8,11 @@ turn Walmart M5 observed sales into auditable forecasts and simulated inventory
 recommendations through a batch-oriented distributed architecture.
 
 The repository currently contains project metadata, a Python package, developer
-tooling, design specifications, and a persistent local HDFS deployment with a passing
-four-scenario integration suite. Spark integration, M5 ingestion, the data pipeline,
-other services, model training, database publication, and dashboard are not
-implemented yet.
+tooling, design specifications, a persistent local HDFS deployment with a passing
+four-scenario integration suite, and an opt-in Spark Standalone deployment with
+passing live infrastructure acceptance. Spark application integration, M5
+ingestion, the data pipeline, other services,
+model training, database publication, and dashboard are not implemented yet.
 
 ## Project Objectives
 
@@ -51,11 +52,11 @@ serving layer, and Streamlit is planned as a read-oriented presentation layer.
 |---|---|---|
 | Project runtime | Python 3.11 and `uv` | Project metadata and `uv.lock` exist |
 | Distributed storage | Hadoop HDFS 3.4.3 | Persistent one-NameNode/two-DataNode deployment and configuration loaders implemented; complete four-scenario HDFS integration suite passed |
-| Distributed processing | Apache Spark | Designed only; no jobs are implemented |
+| Distributed processing | Apache Spark 3.5.7 | Opt-in one-Master/two-Worker deployment and qualified Python 3.11 image; live registration, lifecycle, connectivity, and Worker recovery acceptance passed; no jobs implemented |
 | Forecasting | Spark MLlib `RandomForestRegressor` | Selected in design; no model is trained |
 | Analytical serving | ClickHouse Distributed, two shards and one replica per shard | Designed only; no SQL or deployment is implemented |
 | Application | Streamlit and Plotly | Designed only; no application code is implemented |
-| Local environment | Docker Compose on Ubuntu/WSL2 | HDFS topology implemented; other services remain planned |
+| Local environment | Docker Compose on Ubuntu/WSL2 | HDFS default topology and opt-in Spark profile implemented; other services remain planned |
 
 ## Dataset Overview
 
@@ -93,9 +94,9 @@ The tracked repository is intentionally small at this stage:
 | [`.env.example`](.env.example) | Safe template for the shared environment-variable contract |
 | [`src/warehouse_bigdata/`](src/warehouse_bigdata/) | Tracked package and minimal CLI entry point |
 | [`docs/`](docs/01_PROJECT_OVERVIEW.md) | Design specifications and repository guidance |
-| [`infrastructure/`](infrastructure/) | HDFS Compose deployment and Hadoop configuration; Spark and ClickHouse remain planned |
-| `tests/` | Focused offline tests and opt-in HDFS integration fixtures/scenarios |
-| [`scripts/`](scripts/) | Explicit HDFS initialization and focused smoke check |
+| [`infrastructure/`](infrastructure/) | HDFS deployment, Hadoop configuration, and opt-in Spark topology/runtime/probes; ClickHouse remains planned |
+| `tests/` | Focused offline checks, Spark registration/lifecycle checks, and opt-in HDFS integration fixtures/scenarios |
+| [`scripts/`](scripts/) | Explicit HDFS initialization, scoped Spark lifecycle commands, and focused smoke checks |
 | `app/`, `sql/`, `data/`, `artifacts/` | Planned areas described by the design; not currently present in the tracked tree |
 
 [`docs/BASED_STRUCTURE.md`](docs/BASED_STRUCTURE.md) is a reference layout, not
@@ -118,10 +119,18 @@ first real implementation requires them.
 - M01 T03 HDFS verification: separate-client byte/hash integrity and audited
   two-node block placement, plus maintenance-window restart, recreation, and
   DataNode interruption/recovery scenarios.
+- M02 T01 Spark infrastructure implementation: a pinned, checksum-qualified shared
+  runtime, an opt-in Master and two Workers, current-registration probes, bounded
+  resources/logs/tmpfs, and Spark-only lifecycle/smoke tooling. Live acceptance
+  passed on **2026-10-20** with **10.70 GiB** of Docker-visible RAM: two registered
+  Workers, both lifecycle smoke checks, and Worker interruption/recovery, with
+  HDFS identities and volumes preserved. A 120-second idle-daemon sample observed
+  about **1.26 GiB** current HDFS+Spark cgroup usage; this does not measure job loads
+  or establish a minimum memory requirement.
 
 M01 T01, T02, and T03 are implemented. The reported manual execution on the local
 Docker-based Hadoop cluster on **2026-10-19** passed all four HDFS integration
-scenarios: **4 passed in 384.85 seconds**. Spark integration, M5 ingestion, and
+scenarios: **4 passed in 384.85 seconds**. Spark application integration, M5 ingestion, and
 end-to-end data-pipeline acceptance remain future gates. See the
 [HDFS operations guide](infrastructure/hadoop/README.md#t03-integration-verification)
 for the execution snapshot and operational procedures.
@@ -169,6 +178,31 @@ start HDFS, run Spark, train a model, load ClickHouse, or start Streamlit. For e
 HDFS initialization, startup, smoke checks, and safe lifecycle operations, follow the
 [HDFS operations guide](infrastructure/hadoop/README.md). There is no operational
 data pipeline yet.
+
+### Opt-in Spark infrastructure
+
+The default Compose selection remains the three HDFS daemons. The `spark` profile
+adds one Master and two Workers on the existing bridge. First provide at least
+**10 GiB of Docker-visible memory** and an already initialized, running HDFS
+deployment, then use the repository-relative wrappers:
+
+```bash
+bash scripts/spark-cluster.sh up
+bash scripts/spark-cluster.sh status
+bash scripts/spark-cluster.sh check
+bash scripts/smoke-spark.sh
+bash scripts/spark-cluster.sh logs
+bash scripts/spark-cluster.sh stop
+```
+
+The Master UI is bound to `http://127.0.0.1:8080`; its RPC endpoint is
+`spark://spark-master:7077` inside the Compose network. The smoke check reports
+registration, runtime, connectivity, limits, and scratch configuration. Runtime
+qualification has passed, including read-only HDFS metadata access. The live
+up/smoke/stop/up/smoke cycle and Worker interruption/recovery checks also passed
+on **2026-10-20** after the Docker memory allocation was increased.
+See the [Spark operations guide](infrastructure/spark/README.md) for pins, resource
+budgets, measured qualification/deployment evidence, and focused acceptance procedures.
 
 ### Opt-in HDFS integration verification
 
@@ -238,7 +272,9 @@ Actual HDFS access requires both NameNode RPC and DataNode connectivity; see the
 [operations guide](infrastructure/hadoop/README.md).
 
 Spark requires `WAREHOUSE_SPARK_MASTER_URL`; `local[*]` is suitable for an explicit
-local mode. ClickHouse requires its host, port, database, and user, while its password
+local mode. The Standalone endpoint `spark://spark-master:7077` is reachable inside
+the Compose bridge and requires Docker service DNS. ClickHouse requires its host,
+port, database, and user, while its password
 is optional and empty by default. Local generated artifacts use
 `WAREHOUSE_ARTIFACTS_DIR`, which defaults to `artifacts`; this is a local filesystem
 path and is distinct from the HDFS base path.
