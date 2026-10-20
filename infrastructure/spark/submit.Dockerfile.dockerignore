@@ -1,0 +1,15 @@
+# Repository-context allowlist; no host environment, datasets, or artifacts.
+**
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!src/**
+!scripts/
+!scripts/package-spark-app.py
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/*.pyc
+**/*.pyo

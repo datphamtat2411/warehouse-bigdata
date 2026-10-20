@@ -10,7 +10,8 @@ recommendations through a batch-oriented distributed architecture.
 The repository currently contains project metadata, a Python package, developer
 tooling, design specifications, a persistent local HDFS deployment with a passing
 four-scenario integration suite, and an opt-in Spark Standalone deployment with
-passing live infrastructure acceptance. Spark application integration, M5
+passing live infrastructure acceptance, plus a short-lived Spark submission runtime.
+Distributed Spark application acceptance, M5
 ingestion, the data pipeline, other services,
 model training, database publication, and dashboard are not implemented yet.
 
@@ -52,7 +53,7 @@ serving layer, and Streamlit is planned as a read-oriented presentation layer.
 |---|---|---|
 | Project runtime | Python 3.11 and `uv` | Project metadata and `uv.lock` exist |
 | Distributed storage | Hadoop HDFS 3.4.3 | Persistent one-NameNode/two-DataNode deployment and configuration loaders implemented; complete four-scenario HDFS integration suite passed |
-| Distributed processing | Apache Spark 3.5.7 | Opt-in one-Master/two-Worker deployment and qualified Python 3.11 image; live registration, lifecycle, connectivity, and Worker recovery acceptance passed; no jobs implemented |
+| Distributed processing | Apache Spark 3.5.7 | Opt-in one-Master/two-Worker deployment, qualified Python 3.11 image, and client-mode submission runtime; live infrastructure acceptance passed; no jobs implemented |
 | Forecasting | Spark MLlib `RandomForestRegressor` | Selected in design; no model is trained |
 | Analytical serving | ClickHouse Distributed, two shards and one replica per shard | Designed only; no SQL or deployment is implemented |
 | Application | Streamlit and Plotly | Designed only; no application code is implemented |
@@ -96,7 +97,7 @@ The tracked repository is intentionally small at this stage:
 | [`docs/`](docs/01_PROJECT_OVERVIEW.md) | Design specifications and repository guidance |
 | [`infrastructure/`](infrastructure/) | HDFS deployment, Hadoop configuration, and opt-in Spark topology/runtime/probes; ClickHouse remains planned |
 | `tests/` | Focused offline checks, Spark registration/lifecycle checks, and opt-in HDFS integration fixtures/scenarios |
-| [`scripts/`](scripts/) | Explicit HDFS initialization, scoped Spark lifecycle commands, and focused smoke checks |
+| [`scripts/`](scripts/) | Explicit HDFS initialization, scoped Spark lifecycle/submission commands, and focused smoke checks |
 | `app/`, `sql/`, `data/`, `artifacts/` | Planned areas described by the design; not currently present in the tracked tree |
 
 [`docs/BASED_STRUCTURE.md`](docs/BASED_STRUCTURE.md) is a reference layout, not
@@ -126,11 +127,16 @@ first real implementation requires them.
   Workers, both lifecycle smoke checks, and Worker interruption/recovery, with
   HDFS identities and volumes preserved. A 120-second idle-daemon sample observed
   about **1.26 GiB** current HDFS+Spark cgroup usage; this does not measure job loads
-  or establish a minimum memory requirement.
+   or establish a minimum memory requirement.
+- M02 T02 Spark job submission runtime: a separate locked, non-editable driver image
+  and project ZIP, an ephemeral Standalone client-mode Compose service, validated
+  CLI submission, and an attached host launcher with ownership-scoped cancellation
+  cleanup. Runtime resources are bounded; application jobs and distributed
+  acceptance workloads are not included.
 
 M01 T01, T02, and T03 are implemented. The reported manual execution on the local
 Docker-based Hadoop cluster on **2026-10-19** passed all four HDFS integration
-scenarios: **4 passed in 384.85 seconds**. Spark application integration, M5 ingestion, and
+scenarios: **4 passed in 384.85 seconds**. Distributed Spark application acceptance, M5 ingestion, and
 end-to-end data-pipeline acceptance remain future gates. See the
 [HDFS operations guide](infrastructure/hadoop/README.md#t03-integration-verification)
 for the execution snapshot and operational procedures.
@@ -173,9 +179,9 @@ uv run --locked pytest -q
 uv build
 ```
 
-The CLI is a packaging and environment smoke test only. It does not download data,
-start HDFS, run Spark, train a model, load ClickHouse, or start Streamlit. For explicit
-HDFS initialization, startup, smoke checks, and safe lifecycle operations, follow the
+The CLI provides packaging/help/version checks and the explicit `spark-submit`
+subcommand for the prepared container runtime. For HDFS initialization, startup,
+smoke checks, and safe lifecycle operations, follow the
 [HDFS operations guide](infrastructure/hadoop/README.md). There is no operational
 data pipeline yet.
 
@@ -203,6 +209,35 @@ up/smoke/stop/up/smoke cycle and Worker interruption/recovery checks also passed
 on **2026-10-20** after the Docker memory allocation was increased.
 See the [Spark operations guide](infrastructure/spark/README.md) for pins, resource
 budgets, measured qualification/deployment evidence, and focused acceptance procedures.
+
+### Short-lived Spark job submission
+
+With T01's qualified local image already prepared, explicitly build the driver layer:
+
+```bash
+docker compose -f infrastructure/compose.yaml --profile spark-submit build spark-submit
+```
+
+After the existing HDFS and Spark services are ready, the repository-relative host API is:
+
+```text
+bash scripts/spark-submit.sh [--conf KEY=VALUE ...] -- APPLICATION.py [APPLICATION_ARGS...]
+```
+
+The application must already exist under the image's `/opt/warehouse-app/src`;
+paths such as `warehouse_bigdata/jobs/my_job.py` are **future entrypoints**, not
+implemented jobs. Rebuild the driver image after code changes. The image installs
+the project non-editably and ships the same sources through `--py-files` for
+executor imports; nothing is installed at submission time.
+
+The launcher checks the prepared image and T01 readiness, then attaches to one
+ephemeral container without starting dependencies. It uses explicit Standalone
+**client** mode, unique bridge DNS, canonical HDFS configuration, fixed compatible
+Python paths, and bounded resources. Application arguments and failure statuses
+are preserved; cancellation cleans up only the invocation-owned driver.
+See [T02 submission operations](infrastructure/spark/README.md#short-lived-submission-runtime--m02-t02)
+for supported `--conf`, limits, exit codes, and focused verification. Distributed
+application and Spark–HDFS read/write acceptance remain a separate gate.
 
 ### Opt-in HDFS integration verification
 
@@ -271,8 +306,9 @@ supply an endpoint reachable from their network and cannot assume Docker service
 Actual HDFS access requires both NameNode RPC and DataNode connectivity; see the
 [operations guide](infrastructure/hadoop/README.md).
 
-Spark requires `WAREHOUSE_SPARK_MASTER_URL`; `local[*]` is suitable for an explicit
-local mode. The Standalone endpoint `spark://spark-master:7077` is reachable inside
+Spark's shared loader requires `WAREHOUSE_SPARK_MASTER_URL`; it accepts `local[*]`
+for explicit local callers. The submission runtime requires Standalone and rejects
+all local modes. The Standalone endpoint `spark://spark-master:7077` is reachable inside
 the Compose bridge and requires Docker service DNS. ClickHouse requires its host,
 port, database, and user, while its password
 is optional and empty by default. Local generated artifacts use

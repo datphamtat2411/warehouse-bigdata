@@ -242,6 +242,39 @@ services:
     depends_on: *spark-worker-dependencies
     healthcheck: *spark-worker-healthcheck
 
+  spark-submit:
+    image: warehouse-bigdata-spark-submit:3.5.7-python3.11.17
+    build:
+      context: ..
+      dockerfile: infrastructure/spark/submit.Dockerfile
+    platform: linux/amd64
+    profiles: [spark-submit]
+    user: "185:185"
+    entrypoint: ["/usr/bin/tini", "-g", "--", "/opt/warehouse-app/.venv/bin/warehouse-bigdata", "spark-submit"]
+    networks: [warehouse-bigdata]
+    environment:
+      WAREHOUSE_ENV: container
+      WAREHOUSE_SPARK_MASTER_URL: spark://spark-master:7077
+      WAREHOUSE_HDFS_URI: hdfs://hdfs-namenode:8020
+      WAREHOUSE_HDFS_BASE_PATH: /data/warehouse
+      HADOOP_CONF_DIR: /opt/hadoop/etc/hadoop
+    cpus: 1.0
+    mem_limit: 1536m
+    read_only: true
+    restart: "no"
+    stop_grace_period: 15s
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=134217728,mode=1777
+    expose: ["7079", "7080"]
+    volumes:
+      - *core-config
+      - *hdfs-config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 networks:
   warehouse-bigdata:
     name: warehouse-bigdata

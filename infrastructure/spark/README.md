@@ -1,17 +1,18 @@
-# Spark Standalone operations — M02 T01
+# Spark Standalone operations — M02 T01/T02
 
 This deployment adds one Master and two explicitly configured Workers to the
 existing `warehouse-bigdata` Compose project and bridge. It is opt-in through the
 `spark` profile; default startup selects only the three HDFS daemons. T01 readiness
 means two current, reachable Worker processes registered with the expected
-resources. Spark application execution and Spark–HDFS data correctness belong to
-T02/T03; registration is not full NFR-02 evidence.
+resources. T02 adds a short-lived client-mode submission runtime, documented below.
+Distributed application execution and Spark–HDFS data correctness require T03
+acceptance; registration and submission packaging are not full NFR-02 evidence.
 
 ## Prerequisites and lifecycle
 
 - Docker Compose v2 with CPU/memory enforcement and Linux tmpfs support.
 - The approved startup budget is **10 GiB Docker-visible memory**: HDFS and Spark
-  container limits total 7 GiB, with approximately 1.5 GiB reserved for a later
+  container limits total 7 GiB, with approximately 1.5 GiB reserved for one submission
   driver and 1.5 GiB for system overhead. This is a conservative planning budget,
   **not a measured minimum needed by the idle T01 daemons**. The wrappers enforce
   the planned budget and report actual capacity; they do not configure the host.
@@ -65,8 +66,8 @@ service, plus Worker-to-Master and mutual Worker RPC reachability.
 
 `WAREHOUSE_SPARK_MASTER_URL` remains an explicit Python configuration input.
 `spark://spark-master:7077` requires Compose DNS and is not a host-side address.
-The image sets `PYSPARK_PYTHON=/opt/python/bin/python3.11`; future application
-configuration and driver packaging belong to T02.
+The shared image sets `PYSPARK_PYTHON=/opt/python/bin/python3.11`. T02 retains that
+executor interpreter and uses a non-editable project virtual environment for the driver.
 
 ## Runtime pins and qualification
 
@@ -198,7 +199,155 @@ and accepts only 1–600. The wrapper adds an outer timeout.
 Stopping a Worker must fail readiness immediately through its independent
 endpoint, even before the Master expires its cached registration.
 
-## Focused verification and live acceptance
+## Short-lived submission runtime — M02 T02
+
+The `spark-submit` profile selects a separate, ephemeral driver service. It has no
+dependencies and publishes no ports. T01 still owns Master/Worker startup and
+shutdown; M01 still owns HDFS initialization, storage, and lifecycle. Prepare those
+services through their existing guides before submitting an application.
+
+### Explicit image preparation and invocation
+
+The qualified T01 image `warehouse-bigdata-spark:3.5.7-python3.11.17` must already be
+available locally. Build **only the driver application layer**, from the repository root:
+
+```bash
+docker compose -f infrastructure/compose.yaml --profile spark-submit build spark-submit
+```
+
+This derives `warehouse-bigdata-spark-submit:3.5.7-python3.11.17` from T01 without
+changing its Dockerfile or bundled Spark/PySpark, Java, Scala, Hadoop client, or
+Python. The repository-context allowlist includes packaging metadata, the locked
+dependencies, `src/`, and the ZIP helper. During the build, `uv sync --locked
+--no-dev --no-editable --python /opt/python/bin/python3.11` installs the project in
+`/opt/warehouse-app/.venv`. A deterministic ZIP of the same copied source tree is
+stored at `/opt/warehouse-app/warehouse_bigdata.zip` for `--py-files`. Its entries
+start with `warehouse_bigdata/`; bytecode and caches are excluded.
+
+Builds may need dependency-cache/network access. `--locked` preserves the project
+resolution, but does not independently pin the ranged `uv_build` build backend.
+There is no installation during submission and no host-source mount. **Rebuild the
+driver image explicitly after application/package changes or a T01 base rebuild**
+so installed driver code and shipped executor imports stay consistent.
+
+Host API, callable through the script's repository path from any working directory:
+
+```text
+bash scripts/spark-submit.sh [--conf KEY=VALUE ...] -- APPLICATION.py [APPLICATION_ARGS...]
+```
+
+Container API: `warehouse-bigdata spark-submit` with the same argument contract.
+The image entrypoint already supplies that subcommand under `tini -g`. Application
+paths are relative to `/opt/warehouse-app/src`; they must be existing, contained
+`.py` files. Absolute paths, escaping symlinks/paths, and missing files fail preflight.
+Preflight also checks the project ZIP and both Hadoop XML files, including matching
+`fs.defaultFS` and hostname-based DataNode addressing. Configuration parsing itself
+does not perform I/O.
+
+Illustrative invocation **only after this future job has been implemented and the
+driver image rebuilt**; this task adds no production job placeholders:
+
+```bash
+bash scripts/spark-submit.sh --conf spark.sql.shuffle.partitions=4 \
+  -- warehouse_bigdata/jobs/my_job.py --run-id demo-001
+```
+
+The `--` before the application is mandatory. Spark options go before the
+application; everything after the application, including spaces, Unicode, leading
+dashes, additional `--conf`, and shell metacharacters, is forwarded as individual
+arguments without shell evaluation. Quote arguments normally in the invoking shell.
+
+### Configuration, networking, and limits
+
+Compose explicitly supplies `WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077`,
+`WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020`, and
+`WAREHOUSE_HDFS_BASE_PATH=/data/warehouse`. Submission requires Standalone and
+always selects `--deploy-mode client`; there is no local fallback. The generic
+shared Spark configuration loader still supports explicit local modes for other
+callers.
+
+Both Hadoop XML mounts and `HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop` are reused
+unchanged. Submission sets `spark.hadoop.fs.defaultFS`, retains hostname-based
+DataNode access, and sends the HDFS URI/base path to executor environments. Driver,
+Workers, NameNode, and DataNodes share the existing `warehouse-bigdata` bridge.
+
+The launcher creates a unique DNS-safe driver container name and injects it through
+the internal `_WAREHOUSE_SPARK_DRIVER_HOST` setting. It uses no shared service
+aliases. The driver advertises that name, binds `0.0.0.0`, and uses internal RPC
+**7079** and driver block-manager **7080**, with port retries disabled. Driver UI
+is disabled. These addresses require bridge DNS and are not host-side endpoints.
+
+| Setting | Driver | Executors |
+|---|---|---|
+| Interpreter | `/opt/warehouse-app/.venv/bin/python` | `/opt/python/bin/python3.11` |
+| Container CPU/RAM | 1 CPU / 1.5 GiB | Existing T01 Worker limits |
+| JVM heap | 512 MiB | 512 MiB each |
+| Application core cap | Docker CPU limit | 1 core each, 2 total |
+| Scratch | `/tmp` tmpfs, 128 MiB | Existing 256 MiB Worker tmpfs |
+| Dynamic allocation | Disabled | Disabled |
+
+The driver uses UID/GID **185:185**, a read-only root, `restart: "no"`, and rotating
+`json-file` logs (10 MiB × 3). Tmpfs is charged to the RAM limit. These are
+conservative initial bounds, not measured workload capacity; the budget covers
+**one active driver**, even though invocation names do not collide.
+
+Repeated `--conf KEY=VALUE` supports task-specific `spark.sql.*` settings and a
+positive `spark.default.parallelism`. Keys must be well formed and unique, and
+values must be nonempty and single-line. Runtime deployment, networking, Python,
+dependencies, HDFS, and resource overrides are rejected. Reserved SQL settings
+include `spark.sql.warehouse.dir`, `spark.sql.extensions`,
+`spark.sql.catalogImplementation`, `spark.sql.defaultCatalog`, `spark.sql.catalog.*`,
+and `spark.sql.hive.*`. No public resource environment-variable inventory is added.
+
+### Lifecycle, failures, and cancellation
+
+The launcher first checks for the prepared driver image, then reuses T01's
+read-only `spark-cluster.sh check`. It runs attached with
+`docker compose run --rm --no-deps -T --pull never`; it does not prepare images or
+start services implicitly. Output is inherited. The installed CLI replaces itself
+with `/opt/spark/bin/spark-submit` via `os.execvpe`, preserving submission/application
+failure status.
+
+- Usage/configuration/preflight errors: **2**.
+- Missing executable: **127**; other executable replacement errors: **126**.
+- Docker/image/readiness failures and application exit codes: propagated unchanged.
+- Cancellation: **130** for interrupt, **143** for termination.
+
+Cancellation terminates the attached client within a finite bound, then checks up
+to five times for the invocation-owned container, including a late create request.
+Diagnostics, graceful stop (10-second grace), and forced removal require both the
+unique name and matching ownership label/token. Each Docker cleanup command has a
+timeout; cleanup/diagnostic failures do not replace the primary status. Other
+drivers, Spark daemons, HDFS containers, named volumes, and the bridge are never
+cleanup targets. There is no job-duration timeout imposed by this wrapper.
+
+### Focused T02 verification
+
+Offline tests and static checks:
+
+```bash
+uv run --locked pytest -q tests/test_cli.py tests/unit/test_spark_submit.py tests/unit/test_spark_submit_runtime.py
+bash -n scripts/spark-submit.sh
+uv run --locked ruff check src/warehouse_bigdata/cli.py src/warehouse_bigdata/common/spark_submit.py scripts/package-spark-app.py tests/test_cli.py tests/unit/test_spark_submit.py tests/unit/test_spark_submit_runtime.py
+uv run --locked ruff format --check src/warehouse_bigdata/cli.py src/warehouse_bigdata/common/spark_submit.py scripts/package-spark-app.py tests/test_cli.py tests/unit/test_spark_submit.py tests/unit/test_spark_submit_runtime.py
+docker compose -f infrastructure/compose.yaml config --quiet
+docker compose -f infrastructure/compose.yaml --profile spark config --quiet
+docker compose -f infrastructure/compose.yaml --profile spark-submit config --quiet
+```
+
+Daemon-free rendering must preserve the complete pre-task default/`spark`/`init`
+models, project identity, volumes, and network. Default selection remains three
+HDFS daemons; `spark` adds only Master/two Workers; `spark-submit` adds only the
+ephemeral submission service. Its dependencies and published ports must be empty.
+
+A driver-image-only build and a bounded, network-disabled packaging probe are
+justified to verify the non-editable installation, installed metadata, driver and
+executor interpreter selection, ZIP imports outside the checkout, and CLI help.
+They do not start cluster services or a Spark application. Distributed executor
+placement, HDFS read/write workloads, M5 ETL, and MLlib implementation remain
+outside T02 acceptance.
+
+## T01 focused verification and live acceptance
 
 Offline checks (no Docker daemon or network needed for pytest):
 
