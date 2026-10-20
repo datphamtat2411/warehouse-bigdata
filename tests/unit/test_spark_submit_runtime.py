@@ -167,6 +167,27 @@ def test_external_cwd_attached_ephemeral_run_and_exact_forwarding(sandbox: dict)
     assert_cluster_untouched(sandbox)
 
 
+def test_failing_user_local_od_does_not_shadow_system_utility(sandbox: dict) -> None:
+    user_binaries = sandbox["cwd"] / "user-bin"
+    user_binaries.mkdir()
+    od = user_binaries / "od"
+    od.write_text(f"#!{sys.executable}\nraise SystemExit(127)\n")
+    od.chmod(0o755)
+    sandbox["env"]["PATH"] = f"{user_binaries}:{sandbox['env']['PATH']}"
+
+    result = invoke(sandbox, "--", "job.py")
+
+    assert result.returncode == 0, result.stderr
+    submissions = runs(sandbox)
+    assert len(submissions) == 1
+    run = submissions[0]
+    name = run[run.index("--name") + 1]
+    assert re.fullmatch(r"warehouse-spark-submit-[a-f0-9]{32}", name)
+    assert f"_WAREHOUSE_SPARK_DRIVER_HOST={name}" in run
+    assert f"{OWNER_LABEL}={name.removeprefix('warehouse-spark-submit-')}" in run
+    assert_cluster_untouched(sandbox)
+
+
 def test_each_invocation_advertises_a_unique_driver_name(sandbox: dict) -> None:
     assert invoke(sandbox, "--", "job.py").returncode == 0
     assert invoke(sandbox, "--", "job.py").returncode == 0

@@ -25,12 +25,17 @@ fi
 repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 image=warehouse-bigdata-spark-submit:3.5.7-python3.11.17
 compose=(docker compose -f "$repository/infrastructure/compose.yaml" --profile spark-submit)
-for executable in docker timeout od; do
+for executable in docker timeout; do
     if ! command -v "$executable" >/dev/null; then
         printf 'Spark submission requires executable: %s\n' "$executable" >&2
         exit 127
     fi
 done
+od_executable=/usr/bin/od
+if [[ ! -x $od_executable ]]; then
+    printf 'Spark submission requires executable: %s\n' "$od_executable" >&2
+    exit 127
+fi
 if timeout 15 docker image inspect "$image" >/dev/null; then
     :
 else
@@ -41,7 +46,7 @@ else
 fi
 bash "$repository/scripts/spark-cluster.sh" check
 
-token=$(od -An -N16 -tx1 /dev/urandom)
+token=$("$od_executable" -An -N16 -tx1 /dev/urandom)
 token=${token//[[:space:]]/}
 driver=warehouse-spark-submit-$token
 owner_label=io.warehouse-bigdata.spark-submit.owner
