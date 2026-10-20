@@ -57,6 +57,20 @@ def sandbox(tmp_path: Path) -> dict:
         record("invoked", stdin=os.readlink("/proc/self/fd/0"), tty=os.isatty(0))
         if args[0] == "info":
             print(os.environ.get("TEST_MEMORY", str(10 * 1024**3)))
+        if os.environ.get("TEST_SMOKE") == "1":
+            if args[0] == "inspect":
+                print("[]")
+            elif "ps" in args:
+                print("container-" + args[-1])
+            elif "exec" in args:
+                source = sys.stdin.read()
+                if "--bulk-mib" in args:
+                    service = args[args.index("exec") + 2]
+                    record("native", service=service, source=source)
+                    print("native load success")
+                    if os.environ.get("TEST_NATIVE_FAIL") == service:
+                        sys.exit(37)
+            sys.exit(0)
         failure = os.environ.get("TEST_FAIL", "")
         readiness_failed = failure == "spark-readiness" and "spark-master" in args and "wait-ready" in args
         if (failure and failure in args) or readiness_failed:
@@ -218,13 +232,15 @@ def compose_commands(sandbox: dict) -> list[list[str]]:
     return result
 
 
-def assert_storage_safe(sandbox: dict) -> None:
+def assert_storage_safe(sandbox: dict, *, smoke: bool = False) -> None:
     for command in commands(sandbox):
         assert not {"down", "rm", "prune", "hdfs-init", "init", "--volumes", "-v"} & set(command)
         if command[0] != "compose":
             continue
         args = command[5:]
-        if args[0] in {"up", "stop", "ps", "logs"}:
+        if smoke and args[:2] == ["ps", "--quiet"]:
+            assert len(args) == 3 and args[2] in SERVICES
+        elif args[0] in {"up", "stop", "ps", "logs"}:
             assert args[-3:] == SERVICES
         hdfs = [arg for arg in args if arg.startswith("hdfs-")]
         if hdfs:
@@ -361,8 +377,12 @@ def assert_readiness_and_diagnostic_bounds(sandbox: dict) -> None:
 
 def assert_descendant_group(sandbox: dict, role: str) -> None:
     events = records(sandbox["process_log"])
-    parent = next(entry for entry in events if entry["role"] == role and entry["event"] == "invoked")
-    children = [entry for entry in events if entry["role"] == role and entry["event"] == "descendant"]
+    parent = next(
+        entry for entry in events if entry["role"] == role and entry["event"] == "invoked"
+    )
+    children = [
+        entry for entry in events if entry["role"] == role and entry["event"] == "descendant"
+    ]
     assert len(children) == 1, "the stalled fake must exercise descendant termination"
     assert children[0]["pid"] != parent["pid"]
     assert children[0]["pgid"] == parent["pgid"]
@@ -386,9 +406,7 @@ def test_success_marker_does_not_mask_readiness_failure_or_stall(
     ]
     assert sum(step[0] == "up" for step in steps) == (probe == "spark-wait-ready")
     probes = [
-        entry["role"]
-        for entry in records(sandbox["process_log"])
-        if entry["event"] == "invoked"
+        entry["role"] for entry in records(sandbox["process_log"]) if entry["event"] == "invoked"
     ]
     assert probes.count(probe) == 1
     if probe == "hdfs-wait-ready":
@@ -491,3 +509,58 @@ def test_smoke_precondition_failures_never_start_services_or_submit_work(
     for command in commands(sandbox):
         assert not {"up", "run", "build", "start", "spark-submit"} & set(command)
     assert_storage_safe(sandbox)
+
+
+def test_compose_keeps_private_exec_within_existing_tmpfs_budgets() -> None:
+    source = (ROOT / "infrastructure/compose.yaml").read_text()
+    master = source.split("  spark-master:\n", 1)[1].split("  spark-worker-1:\n", 1)[0]
+    worker1 = source.split("  spark-worker-1:\n", 1)[1].split("  spark-worker-2:\n", 1)[0]
+    worker2 = source.split("  spark-worker-2:\n", 1)[1].split("  spark-submit:\n", 1)[0]
+    driver = source.split("  spark-submit:\n", 1)[1].split("\nnetworks:", 1)[0]
+    native = "/opt/warehouse-spark/native"
+    mount = f"{native}:rw,exec,nosuid,nodev,size=33554432,uid=185,gid=185,mode=0700"
+    assert "/tmp:rw,nosuid,nodev,noexec,size=67108864,mode=1777" in master
+    assert native not in master
+    assert "/tmp:rw,nosuid,nodev,noexec,size=234881024,mode=1777" in worker1
+    assert mount in worker1 and "tmpfs: *spark-worker-scratch" in worker2
+    assert "/tmp:rw,nosuid,nodev,noexec,size=100663296,mode=1777" in driver
+    assert mount in driver
+    for worker in (worker1, worker2):
+        assert f"JAVA_TOOL_OPTIONS: -Djava.io.tmpdir={native}" in worker
+        assert f"SPARK_DAEMON_JAVA_OPTS: -Xms128m -Djava.io.tmpdir={native}" in worker
+        assert "SPARK_WORKER_HOST:" in worker and "SPARK_WORKER_OPTS:" in worker
+    assert f"JAVA_TOOL_OPTIONS: -Djava.io.tmpdir={native}" in driver
+    assert "WAREHOUSE_HDFS_BASE_PATH: /data/warehouse" in driver
+
+
+@pytest.mark.parametrize("failed_worker", ["", "spark-worker-1", "spark-worker-2"])
+def test_smoke_requires_independent_bounded_jni_checks_on_both_workers(
+    sandbox: dict, failed_worker: str
+) -> None:
+    sandbox["env"].update(TEST_SMOKE="1", TEST_NATIVE_FAIL=failed_worker)
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/smoke-spark.sh")],
+        cwd=sandbox["cwd"],
+        env=sandbox["env"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == (37 if failed_worker else 0), result.stderr
+    native = [entry for entry in records(sandbox["process_log"]) if entry["event"] == "native"]
+    assert [entry["service"] for entry in native] == (
+        ["spark-worker-1"] if failed_worker == "spark-worker-1" else SERVICES[1:]
+    )
+    helper = (ROOT / "scripts/check-spark-native.py").read_text()
+    assert all(entry["source"] == helper for entry in native)
+    for command in commands(sandbox):
+        assert not {"up", "run", "build", "start", "spark-submit"} & set(command)
+        if "--bulk-mib" in command:
+            assert command[-6:] == ["--bulk-mib", "224", "--memory-mib", "2048", "--cpus", "1"]
+    assert_storage_safe(sandbox, smoke=True)
+    smoke = (ROOT / "scripts/smoke-spark.sh").read_text()
+    assert 'timeout --kill-after=2s 45 "${compose[@]}" exec -T' in smoke
+    assert '"noexec"' in smoke and "SPARK_DAEMON_JAVA_OPTS" in smoke
+    assert 'temporary = "/tmp" if master else native' in smoke
+    assert "/opt/warehouse-spark/native" in smoke

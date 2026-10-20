@@ -164,7 +164,7 @@ services:
     cpus: 0.5
     mem_limit: 512m
     tmpfs:
-      - /tmp:rw,nosuid,nodev,size=67108864,mode=1777
+      - /tmp:rw,nosuid,nodev,noexec,size=67108864,mode=1777
     ports:
       - "127.0.0.1:8080:8080"
     expose: ["7077", "8080"]
@@ -195,6 +195,8 @@ services:
       - spark://spark-master:7077
     environment:
       SPARK_WORKER_HOST: spark-worker-1
+      JAVA_TOOL_OPTIONS: -Djava.io.tmpdir=/opt/warehouse-spark/native
+      SPARK_DAEMON_JAVA_OPTS: -Xms128m -Djava.io.tmpdir=/opt/warehouse-spark/native
       SPARK_WORKER_OPTS: &spark-worker-options >-
         -Dspark.worker.cleanup.enabled=true
         -Dspark.worker.cleanup.interval=300
@@ -202,7 +204,8 @@ services:
     cpus: 1.0
     mem_limit: 2g
     tmpfs: &spark-worker-scratch
-      - /tmp:rw,nosuid,nodev,size=268435456,mode=1777
+      - /tmp:rw,nosuid,nodev,noexec,size=234881024,mode=1777
+      - /opt/warehouse-spark/native:rw,exec,nosuid,nodev,size=33554432,uid=185,gid=185,mode=0700
     expose: ["7078", "8081"]
     depends_on: &spark-worker-dependencies
       spark-master:
@@ -234,6 +237,8 @@ services:
       - spark://spark-master:7077
     environment:
       SPARK_WORKER_HOST: spark-worker-2
+      JAVA_TOOL_OPTIONS: -Djava.io.tmpdir=/opt/warehouse-spark/native
+      SPARK_DAEMON_JAVA_OPTS: -Xms128m -Djava.io.tmpdir=/opt/warehouse-spark/native
       SPARK_WORKER_OPTS: *spark-worker-options
     cpus: 1.0
     mem_limit: 2g
@@ -254,6 +259,7 @@ services:
     networks: [warehouse-bigdata]
     environment:
       WAREHOUSE_ENV: container
+      JAVA_TOOL_OPTIONS: -Djava.io.tmpdir=/opt/warehouse-spark/native
       WAREHOUSE_SPARK_MASTER_URL: spark://spark-master:7077
       WAREHOUSE_HDFS_URI: hdfs://hdfs-namenode:8020
       WAREHOUSE_HDFS_BASE_PATH: /data/warehouse
@@ -264,7 +270,8 @@ services:
     restart: "no"
     stop_grace_period: 15s
     tmpfs:
-      - /tmp:rw,nosuid,nodev,size=134217728,mode=1777
+      - /tmp:rw,nosuid,nodev,noexec,size=100663296,mode=1777
+      - /opt/warehouse-spark/native:rw,exec,nosuid,nodev,size=33554432,uid=185,gid=185,mode=0700
     expose: ["7079", "7080"]
     volumes:
       - *core-config

@@ -58,11 +58,20 @@ for container in containers:
     assert host["LogConfig"] == {
         "Type": "json-file", "Config": {"max-size": "10m", "max-file": "3"}
     }
-    size = 67108864 if master else 268435456
-    assert set(host["Tmpfs"]) == {"/tmp"}
-    assert {"rw", "nosuid", "nodev", f"size={size}", "mode=1777"} <= set(
+    native = "/opt/warehouse-spark/native"
+    size = 67108864 if master else 234881024
+    assert set(host["Tmpfs"]) == ({"/tmp"} if master else {"/tmp", native})
+    assert {"rw", "nosuid", "nodev", "noexec", f"size={size}", "mode=1777"} <= set(
         host["Tmpfs"]["/tmp"].split(",")
     )
+    if not master:
+        options = set(host["Tmpfs"][native].split(","))
+        assert {"rw", "exec", "nosuid", "nodev", "size=33554432",
+                "uid=185", "gid=185", "mode=0700"} <= options
+        assert "noexec" not in options
+        env = dict(value.split("=", 1) for value in config["Env"])
+        assert env["JAVA_TOOL_OPTIONS"] == f"-Djava.io.tmpdir={native}"
+        assert env["SPARK_DAEMON_JAVA_OPTS"] == f"-Xms128m -Djava.io.tmpdir={native}"
     mounts = container["Mounts"]
     assert len(mounts) == 2 and all(m["Type"] == "bind" and not m["RW"] for m in mounts)
     for name in ("core-site.xml", "hdfs-site.xml"):
@@ -126,11 +135,18 @@ for process in Path("/proc").iterdir():
             daemons.append(command)
 assert len(daemons) == 1
 command = daemons[0]
-for option in ("-Xms128m", "-Xmx256m", "-Djava.io.tmpdir=/tmp"):
+native = "/opt/warehouse-spark/native"
+temporary = "/tmp" if master else native
+for option in ("-Xms128m", "-Xmx256m", f"-Djava.io.tmpdir={temporary}"):
     assert option in command, option
+assert [option for option in command if option.startswith("-Djava.io.tmpdir=")] == [
+    f"-Djava.io.tmpdir={temporary}"
+]
 if master:
     assert "-Dspark.master.rest.enabled=false" in command
 else:
+    assert os.environ["JAVA_TOOL_OPTIONS"] == f"-Djava.io.tmpdir={native}"
+    assert os.environ["SPARK_DAEMON_JAVA_OPTS"] == f"-Xms128m -Djava.io.tmpdir={native}"
     for option in (
         "-Dspark.worker.cleanup.enabled=true", "-Dspark.worker.cleanup.interval=300",
         "-Dspark.worker.cleanup.appDataTtl=3600",
@@ -153,11 +169,11 @@ assert quota / period == (0.5 if master else 1)
 scratch = os.statvfs("/tmp")
 capacity = scratch.f_blocks * scratch.f_frsize
 used = (scratch.f_blocks - scratch.f_bfree) * scratch.f_frsize
-assert capacity == (64 if master else 256) * 1024**2
+assert capacity == (64 if master else 224) * 1024**2
 mount = next(line for line in Path("/proc/self/mountinfo").read_text().splitlines()
              if line.split()[4] == "/tmp")
 assert " - tmpfs " in mount
-assert {"rw", "nosuid", "nodev"} <= set(mount.split()[5].split(","))
+assert {"rw", "nosuid", "nodev", "noexec"} <= set(mount.split()[5].split(","))
 print(f"{service}: cgroup RAM={actual_memory}, CPUs={quota / period}; "
       f"tmpfs used={used} / {capacity} bytes (charged to container RAM)")
 
@@ -175,5 +191,9 @@ if master:
     )
     print("Bundled HDFS client metadata listing passed (no data writes): " + result.stdout)
 SPARK_SMOKE
+    if [[ $service != spark-master ]]; then
+        timeout --kill-after=2s 45 "${compose[@]}" exec -T "$service" /opt/python/bin/python3.11 - \
+            --bulk-mib 224 --memory-mib 2048 --cpus 1 < "$repository/scripts/check-spark-native.py"
+    fi
 done
-printf 'Spark T01 infrastructure smoke passed: two current Workers; no application submitted.\n'
+printf 'Spark infrastructure smoke passed: two current Workers; both ZSTD JNI loads verified; no application submitted.\n'

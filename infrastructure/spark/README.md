@@ -119,13 +119,17 @@ integration chain in §12.2 extends beyond this infrastructure task.
 | Docker RAM limit | 512 MiB | 2 GiB |
 | Advertised resources | Not an execution Worker | 1 core, 1,024 MiB |
 | Daemon initial / maximum heap | 128 / 256 MiB | 128 / 256 MiB |
-| `/tmp` tmpfs hard ceiling | 64 MiB | 256 MiB |
+| Bulk `/tmp` tmpfs hard ceiling (`noexec`) | 64 MiB | 224 MiB |
+| Private executable JVM-temp tmpfs | None | 32 MiB |
+| Aggregate tmpfs ceiling | 64 MiB | 256 MiB |
 | Docker daemon logs | `json-file`, 10 MiB × 3 files | Same |
 
 Container roots are read-only. Worker work files and application logs use
 `/tmp/warehouse-spark/work`; local spill uses `/tmp/warehouse-spark/local`.
-Other daemon logs/PIDs remain under `/tmp/warehouse-spark`, and JVM temporary
-files use `/tmp`. Docker captures foreground daemon console output.
+Other daemon logs/PIDs remain under `/tmp/warehouse-spark`. The Master uses `/tmp`
+for JVM temporary files; Workers and the ephemeral driver use the private
+`/opt/warehouse-spark/native` mount described below. Docker captures foreground
+daemon console output.
 
 Tmpfs consumption is charged against the container RAM limit. Each Worker has
 512 MiB beyond advertised application memory, maximum daemon heap, and maximum
@@ -323,7 +327,9 @@ is disabled. These addresses require bridge DNS and are not host-side endpoints.
 | Container CPU/RAM | 1 CPU / 1.5 GiB | Existing T01 Worker limits |
 | JVM heap | 512 MiB | 512 MiB each |
 | Application core cap | Docker CPU limit | 1 core each, 2 total |
-| Scratch | `/tmp` tmpfs, 128 MiB | Existing 256 MiB Worker tmpfs |
+| Bulk scratch (`noexec`) | `/tmp` tmpfs, 96 MiB | `/tmp` tmpfs, 224 MiB per Worker |
+| Executable JVM temp | Private 32 MiB tmpfs | Private 32 MiB tmpfs per Worker |
+| Aggregate tmpfs ceiling | 128 MiB | 256 MiB per Worker |
 | Dynamic allocation | Disabled | Disabled |
 
 The driver uses UID/GID **185:185**, a read-only root, `restart: "no"`, and rotating
@@ -501,3 +507,230 @@ These idle-daemon/scratch observations do not measure application workload
 overhead or full-dataset capacity. No applications were submitted; distributed
 executor-task evidence, Spark–HDFS data read/write correctness, and M5 processing
 remain outside this task.
+
+## M02 T03 ZSTD JNI unblocker — rollout pending
+
+### Evidence and selected runtime policy
+
+T03 application `app-20261020140926-0001` completed shuffle-map tasks on both
+Workers, then failed in driver map-output serialization with
+`UnsatisfiedLinkError: /tmp/libzstd-jni-*.so: failed to map segment from shared object`.
+The subsequent RPC timeouts exhausted the unchanged 300-second submission deadline.
+The incident is retained under
+`artifacts/test-runs/t03-20261020T140712-test_distributed_spark_hdfs_round_trip-e96e8aada0cb4277a9dea044705cddb6/`;
+its incomplete event log and missing Parquet output are **failed T03 evidence**.
+Keep that directory and HDFS fixture
+`/t03-integration-c68b2620714846c8b03113796281df90` intact.
+
+Bounded PLAN diagnostics on the existing Worker and driver images reproduced the
+failure with `/tmp` mounted `noexec`. The same bundled Spark ZSTD codec successfully
+compressed and decompressed bytes when JNI extraction used executable storage.
+The selected private-directory probes also loaded Snappy, LZ4 JNI, Netty epoll,
+and RocksDB. Executable native mappings were observed under the private directory;
+all tested native libraries used **14,684,160 bytes**, with ZSTD alone about 1 MiB.
+These measurements justify this focused partition, not arbitrary concurrent JVM
+capacity or distributed workload acceptance.
+
+The Compose-only fix partitions the existing tmpfs budgets:
+
+| Runtime | `/tmp` (`rw,nosuid,nodev,noexec`, mode `1777`) | Private JVM temp | Total |
+|---|---:|---:|---:|
+| Master | 64 MiB | None | 64 MiB |
+| Each Worker | 224 MiB | 32 MiB | 256 MiB |
+| Ephemeral driver | 96 MiB | 32 MiB | 128 MiB |
+
+`/opt/warehouse-spark/native` uses
+`rw,exec,nosuid,nodev,size=33554432,uid=185,gid=185,mode=0700`.
+Workers and the driver inherit
+`JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=/opt/warehouse-spark/native`.
+Workers also explicitly set
+`SPARK_DAEMON_JAVA_OPTS=-Xms128m -Djava.io.tmpdir=/opt/warehouse-spark/native`:
+the image's explicit `-Djava.io.tmpdir=/tmp` overrides `JAVA_TOOL_OPTIONS` unless
+corrected. The regression exercises that precedence failure with a real JVM.
+Master options, Spark work/spill/log/PID locations, heaps, cgroups, versions,
+compression, driver lifetime, and submission deadlines retain their existing policy.
+**No image rebuild is required**; the diagnostic helper is streamed over STDIN.
+
+Making all `/tmp` executable also worked, but would expose the whole writable Spark
+scratch area to executable mappings. The selected mount keeps bulk scratch
+`noexec`, confines writable executable storage to a bounded, private directory,
+and uses the JVM's existing extraction behavior across tested JNI libraries.
+It costs 32 MiB of bulk scratch per Worker/driver and adds mount/environment
+configuration. `java.io.tmpdir` routes **general JVM temporary files too**; this is
+not a native-only directory. Mode `0700` excludes other identities, not untrusted
+code running as the same UID 185. Tmpfs remains charged to unchanged container RAM
+limits. Reduced bulk-scratch capacity and actual executor inheritance await T03.
+
+### Focused pre-rollout checks
+
+The offline gate uses no Docker services:
+
+```bash
+uv run --locked pytest -q tests/unit/test_spark_native_runtime.py tests/unit/test_spark_lifecycle.py tests/unit/test_spark_submit.py tests/unit/test_spark_submit_runtime.py tests/unit/test_spark_verification.py
+bash -n scripts/smoke-spark.sh
+uv run --locked ruff check scripts/check-spark-native.py tests/unit/test_spark_native_runtime.py tests/unit/test_spark_lifecycle.py tests/integration/test_spark_native_runtime.py
+uv run --locked ruff format --check scripts/check-spark-native.py tests/unit/test_spark_native_runtime.py tests/unit/test_spark_lifecycle.py tests/integration/test_spark_native_runtime.py
+```
+
+Render default, `init`, `spark`, `spark-submit`, and combined Spark profiles with
+`config --format json`. Compare complete models with their pre-edit snapshots:
+only the listed Spark tmpfs and JVM-temp environment deltas are permitted. HDFS,
+the initializer, volumes, network, images, resources, endpoints, and service
+selection must match.
+
+The explicitly selected Docker regression uses **existing local images only**:
+
+```bash
+uv run --locked pytest -q -m integration tests/integration/test_spark_native_runtime.py
+```
+
+It creates no Spark context/application and attaches no cluster volumes/network.
+Disposable containers use read-only roots, UID/GID 185:185, 384 MiB RAM, 0.5 CPU,
+128 PIDs, dropped capabilities, and `no-new-privileges`. Positive mounts/environment
+come from the rendered Compose model. Both images must complete a real Spark ZSTD
+codec round trip, report `Native.isLoaded()`, Java exit 0, and executable mappings
+inside the private mount. Both the `noexec` and JVM-option-precedence controls
+must genuinely attempt loading and exit Java 1 with the mapping error.
+
+`scripts/check-spark-native.py` records effective identity/mounts/ownership/mode/
+capacity, cgroup limits, JVM properties, Java status/errors, codec outcome, and
+executable native mappings. Compilation has a 10-second deadline and Java a
+20-second deadline; timed-out invocation-owned process groups are killed and
+reaped. The helper removes only its private probe workspace. The bundled ZSTD
+loader deletes its own extraction on normal JVM exit; no shared scratch cleanup
+is performed. Smoke streams the same helper independently to each Worker with
+a 45-second TERM / 2-second KILL outer bound; existing smoke deadlines stay intact.
+
+### Commands for review: Spark-only maintenance window
+
+**Do not execute this rollout without separate explicit approval.** Use an idle
+cluster and one exclusive Bash session at the repository root. Stop on any failed
+command, partial recreation, preservation mismatch, or incomplete JNI evidence;
+do not retry live T03 automatically. Existing historical T01 execution records
+above predate this new partition and do not qualify its deployment.
+
+Prepare an evidence directory and verify the existing prerequisites:
+
+```bash
+set -euo pipefail
+compose=(docker compose -f "$PWD/infrastructure/compose.yaml")
+hdfs=(hdfs-namenode hdfs-datanode-1 hdfs-datanode-2)
+fixture=/t03-integration-c68b2620714846c8b03113796281df90
+incident=artifacts/test-runs/t03-20261020T140712-test_distributed_spark_hdfs_round_trip-e96e8aada0cb4277a9dea044705cddb6
+evidence="artifacts/test-runs/zstd-rollout-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+mkdir -p "$evidence"
+memory=$(timeout --kill-after=2s 15 docker info --format '{{.MemTotal}}')
+[[ $memory =~ ^[0-9]+$ ]] && (( memory >= 10 * 1024 * 1024 * 1024 ))
+timeout --kill-after=2s 45 "${compose[@]}" exec -T --interactive=false hdfs-namenode \
+  bash /opt/warehouse-hdfs/healthcheck.sh wait-ready 30 < /dev/null
+bash scripts/spark-cluster.sh check
+timeout --kill-after=2s 15 "${compose[@]}" --profile spark exec -T --interactive=false \
+  spark-master /opt/python/bin/python3.11 -c '
+import json, urllib.request
+with urllib.request.urlopen("http://spark-master:8080/json/", timeout=2) as response:
+    master = json.load(response)
+assert master["status"] == "ALIVE"
+assert master["activeapps"] == [] and master["activedrivers"] == [], "Cluster is not idle"
+print(json.dumps(master, sort_keys=True))' < /dev/null | tee "$evidence/idle-master.json"
+```
+
+Capture stable container/attachment/storage identities and read-only fingerprints
+of all retained fixture files and incident artifacts. The generated T03 fixture
+paths contain no whitespace. Each HDFS checksum invocation is individually bounded:
+
+```bash
+snapshot_hdfs() {
+  local ids service storage
+  ids=$(timeout --kill-after=2s 15 "${compose[@]}" ps --all --quiet "${hdfs[@]}")
+  local -a containers
+  mapfile -t containers <<< "$ids"
+  [[ ${#containers[@]} == 3 && -n ${containers[0]} ]]
+  timeout --kill-after=2s 15 docker inspect --format \
+    '{{.Id}} {{.State.StartedAt}} {{.RestartCount}} {{.State.Running}} {{.State.Health.Status}} {{json .Mounts}}' \
+    "${containers[@]}"
+  for service in "${hdfs[@]}"; do
+    storage=/var/lib/hdfs/data
+    [[ $service != hdfs-namenode ]] || storage=/var/lib/hdfs/name
+    timeout --kill-after=2s 15 "${compose[@]}" exec -T --interactive=false "$service" \
+      bash -euo pipefail -c 'sha256sum "$1/current/VERSION"; for f in "$1"/current/BP-*/current/VERSION; do
+        [[ ! -f $f ]] || sha256sum "$f"
+      done' bash "$storage" < /dev/null
+  done
+  timeout --kill-after=2s 180 "${compose[@]}" exec -T --interactive=false hdfs-namenode \
+    bash -euo pipefail -c '
+listing=$(timeout --kill-after=2s 20 hdfs dfs -ls -R "$1")
+printf "%s\n" "$listing"
+while read -r permissions replicas owner group bytes day clock path; do
+  if [[ $permissions == -* ]]; then
+    timeout --kill-after=2s 15 hdfs dfs -checksum "$path"
+  fi
+done <<< "$listing"' bash "$fixture" < /dev/null
+  uv run --locked python - "$incident" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+assert root.is_dir()
+for path in sorted(root.rglob("*")):
+    if path.is_file():
+        print(hashlib.sha256(path.read_bytes()).hexdigest(), path)
+PY
+}
+snapshot_hdfs > "$evidence/hdfs-before.txt"
+```
+
+Recreate **only the three Spark daemons**, without build, pull, or dependency startup;
+then check HDFS preservation immediately and wait for both current Workers:
+
+```bash
+timeout --kill-after=2s 120 "${compose[@]}" --profile spark up \
+  --detach --no-deps --no-build --pull never --force-recreate \
+  spark-master spark-worker-1 spark-worker-2
+snapshot_hdfs > "$evidence/hdfs-after.txt"
+diff -u "$evidence/hdfs-before.txt" "$evidence/hdfs-after.txt"
+timeout --kill-after=2s 195 "${compose[@]}" --profile spark exec -T --interactive=false \
+  spark-master /opt/python/bin/python3.11 /opt/warehouse-spark/healthcheck.py wait-ready 180 < /dev/null
+bash scripts/smoke-spark.sh | tee "$evidence/worker-smoke.txt"
+```
+
+Smoke must show successful **independent JNI loads on both Workers** as well as
+the existing readiness/resource/mount checks. Next verify the ephemeral driver's
+actual configured mounts/environment with the same helper, without a Spark application:
+
+```bash
+probe_name="warehouse-zstd-review-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+trap 'timeout --kill-after=2s 10 docker rm --force "$probe_name" > /dev/null 2>&1 || true' EXIT
+timeout --kill-after=2s 45 "${compose[@]}" --profile spark-submit run \
+  --rm --no-deps --pull never -T --name "$probe_name" --entrypoint /usr/bin/tini \
+  spark-submit -g -- /opt/python/bin/python3.11 - \
+  --bulk-mib 96 --memory-mib 1536 --cpus 1 \
+  < scripts/check-spark-native.py | tee "$evidence/driver-native.json"
+trap - EXIT
+snapshot_hdfs > "$evidence/hdfs-after-jni.txt"
+diff -u "$evidence/hdfs-before.txt" "$evidence/hdfs-after-jni.txt"
+```
+
+All three JNI probes must exit 0, prove an actual Spark codec round trip and
+executable private-directory mappings, and match identity, effective mount flags,
+permissions, capacities, JVM temp, and cgroup limits before requesting T03 approval.
+Do not use cluster-wide resets, volume removal, or fixture cleanup for this incident.
+
+### Separately approved, single opt-in T03 acceptance
+
+Only after reviewing successful rollout/JNI/preservation evidence and receiving
+**separate explicit approval**, execute exactly once:
+
+```bash
+uv run --locked pytest -q -m integration tests/integration/test_spark_hdfs.py::test_distributed_spark_hdfs_round_trip
+```
+
+Require correlated workload/barrier-task evidence from both **current** Workers,
+a complete event log and successful jobs/stages/task metrics, source/archive/XML
+correlation, and the independent oracle (1,024 source rows, 682 contributing records,
+eight correctly typed aggregates). Require `_SUCCESS`, exactly two committed
+Parquet files with independently validated bytes/schema, replication two and
+both-DataNode placement, proven application/driver/executor termination, unchanged
+HDFS identities/baseline payload, and preservation of historical evidence/fixture.
+Review driver properties and executor launch logs for inherited JVM temp and any
+conflicting flags. On failure retain the new evidence/fixture and stop for review.
+**T03 remains unpassed until this live acceptance and its evidence actually pass.**
