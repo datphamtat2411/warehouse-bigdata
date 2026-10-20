@@ -199,6 +199,46 @@ and accepts only 1–600. The wrapper adds an outer timeout.
 Stopping a Worker must fail readiness immediately through its independent
 endpoint, even before the Master expires its cached registration.
 
+### Readiness command bounds and failure interpretation
+
+All three wrapper readiness calls use Compose `exec -T --interactive=false` with
+STDIN redirected from `/dev/null`: the HDFS prerequisite and Spark registration
+probe during `up`, and the Spark `ready` probe during `check`. They receive immediate
+EOF rather than waiting for or consuming an invoking terminal or open pipe.
+STDIN redirection is scoped to those readiness calls.
+
+The host wrapper uses GNU `timeout` with its normal process-group behavior and
+`--kill-after=2s`. A command that outlives its TERM deadline receives KILL after
+another two seconds, including invocation-owned descendants in that process group:
+
+| Readiness call | In-container deadline | Host TERM deadline | KILL grace | Host bound |
+|---|---|---|---|---|
+| `up`: HDFS `wait-ready 30` | 30s | 45s | 2s | 47s |
+| `up`: Spark `wait-ready 180` | 180s | 195s | 2s | 197s |
+| `check`: Spark `ready` | 6s | 15s | 2s | 17s |
+
+On failure, Spark-only `ps --all` and `logs --tail 100` diagnostics each receive
+**12s TERM + 2s KILL grace**. The original failing status is saved before diagnostics
+and the `ERR` trap is disabled to prevent re-entry. Diagnostic failure or timeout
+does not replace that status. A failed `check` therefore has a configured bound of
+**17 + 14 + 14 = 45 seconds**, plus normal shell overhead, leaving approximately
+15 seconds under T03's existing 60-second caller deadline. Startup readiness bounds
+exclude the independent build/start stage and any subsequent failure diagnostics.
+
+A printed success marker is not proof of completion: readiness requires the command
+to exit **0**. Native failures propagate unchanged; GNU timeout normally returns
+**124** when its deadline expires and may produce **137** when KILL escalation is
+required. These host-command bounds retain the substantive readiness checks above:
+exactly two current, independently reachable Workers with matching registrations
+and resources.
+
+The historical intermittent Compose `exec` hang was **not reproduced** in the
+bounded diagnostic probes on **2026-10-20**; its root cause remains **unproven**.
+A separate synthetic command that printed success-like output and ignored TERM
+confirmed that TERM-only timeout could continue waiting; adding KILL grace bounded
+that command. STDIN isolation and forced-kill grace are defensive mitigations,
+not a confirmed cure for the historical Compose incident.
+
 ## Short-lived submission runtime — M02 T02
 
 The `spark-submit` profile selects a separate, ephemeral driver service. It has no

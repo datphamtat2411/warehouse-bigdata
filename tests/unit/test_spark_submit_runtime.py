@@ -150,6 +150,7 @@ def test_external_cwd_attached_ephemeral_run_and_exact_forwarding(sandbox: dict)
         "spark",
         "exec",
         "-T",
+        "--interactive=false",
         "spark-master",
         "/opt/python/bin/python3.11",
         "/opt/warehouse-spark/healthcheck.py",

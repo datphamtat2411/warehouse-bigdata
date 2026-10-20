@@ -14,13 +14,13 @@ esac
 repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 compose=(docker compose -f "$repository/infrastructure/compose.yaml" --profile spark)
 services=(spark-master spark-worker-1 spark-worker-2)
-probe=(exec -T spark-master /opt/python/bin/python3.11 /opt/warehouse-spark/healthcheck.py)
+probe=(exec -T --interactive=false spark-master /opt/python/bin/python3.11 /opt/warehouse-spark/healthcheck.py)
 
 diagnostics() {
-    timeout 15 "${compose[@]}" ps --all "${services[@]}" >&2 || true
-    timeout 15 "${compose[@]}" logs --no-color --tail 100 "${services[@]}" >&2 || true
+    timeout --kill-after=2s 12 "${compose[@]}" ps --all "${services[@]}" >&2 || true
+    timeout --kill-after=2s 12 "${compose[@]}" logs --no-color --tail 100 "${services[@]}" >&2 || true
 }
-trap 'result=$?; diagnostics; exit "$result"' ERR
+trap 'result=$?; trap - ERR; diagnostics; exit "$result"' ERR
 
 case $action in
     up)
@@ -33,13 +33,13 @@ case $action in
         fi
         printf 'Docker memory: %s MiB; HDFS + Spark limits: 7168 MiB.\n' "$((memory / 1024 / 1024))"
         # An existing, initialized HDFS deployment is a prerequisite, never a startup target.
-        timeout 45 "${compose[@]}" exec -T hdfs-namenode bash \
-            /opt/warehouse-hdfs/healthcheck.sh wait-ready 30
+        timeout --kill-after=2s 45 "${compose[@]}" exec -T --interactive=false hdfs-namenode bash \
+            /opt/warehouse-hdfs/healthcheck.sh wait-ready 30 </dev/null
         timeout 600 "${compose[@]}" up --detach --build --no-deps "${services[@]}"
-        timeout 195 "${compose[@]}" "${probe[@]}" wait-ready 180
+        timeout --kill-after=2s 195 "${compose[@]}" "${probe[@]}" wait-ready 180 </dev/null
         ;;
     stop) timeout 200 "${compose[@]}" stop --timeout 60 "${services[@]}" ;;
     status) timeout 15 "${compose[@]}" ps --all "${services[@]}" ;;
     logs) timeout 15 "${compose[@]}" logs --no-color --tail 100 "${services[@]}" ;;
-    check) timeout 15 "${compose[@]}" "${probe[@]}" ready ;;
+    check) timeout --kill-after=2s 15 "${compose[@]}" "${probe[@]}" ready </dev/null ;;
 esac
