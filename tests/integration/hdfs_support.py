@@ -417,6 +417,7 @@ class HDFSVerification:
         self.pending_services: tuple[str, ...] = ()
         self.errors: list[str] = []
         self.test_failure: BaseException | None = None
+        self.retention_reasons: list[str] = []
 
     def compose(
         self, *args: str, timeout: float = DIAGNOSTIC_TIMEOUT
@@ -822,7 +823,15 @@ class HDFSVerification:
         after = self.verify_fixture("after-recovery")
         assert_persistent(before, after, recreated=False)
 
+    def retain_fixture(self, reason: str) -> None:
+        require(isinstance(reason, str) and reason.strip(), "Fixture retention needs a reason.")
+        if reason not in self.retention_reasons:
+            self.retention_reasons.append(reason)
+            self.errors.append(f"Fixture retained at {self.fixture.path}: {reason}")
+            self.evidence.event("fixture-retained", path=self.fixture.path, reason=reason)
+
     def remove_fixture(self) -> None:
+        require(not self.retention_reasons, "Fixture cleanup refused: retained for investigation.")
         self.fixture.remove(
             lambda path: self.hdfs("dfs", "-rm", "-r", "-skipTrash", path, timeout=IO_TIMEOUT)
         )
@@ -848,7 +857,9 @@ class HDFSVerification:
             except Exception as error:
                 self.errors.append(f"Restoration failed during cleanup: {error}")
         if self.fixture.owned:
-            if self.pending_services:
+            if getattr(self, "retention_reasons", []):
+                pass  # Retention was recorded as a failure when requested; never delete this path.
+            elif self.pending_services:
                 self.errors.append(
                     f"Fixture retained until daemons are restored: {self.fixture.path}"
                 )
@@ -916,6 +927,7 @@ def verification_run(
                         "restoration_cleanup_errors": verification.errors,
                         "fixture": verification.fixture.path,
                         "fixture_remaining": verification.fixture.owned,
+                        "retention_reasons": verification.retention_reasons,
                         "fixture_creation_uncertain": verification.fixture.attempted
                         and verification.fixture.created_path is None,
                         "client": verification.client,

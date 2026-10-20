@@ -479,3 +479,37 @@ def test_recovery_requires_new_contact_and_block_report_not_cached_live_count() 
     assert not hdfs.has_renewed_contact(node, threshold)
     fresh = REPORT.replace("Mon Oct 19 10:00:00 UTC 2026", "Mon Oct 19 10:00:02 UTC 2026")
     assert hdfs.has_renewed_contact(hdfs.parse_report(fresh)["hdfs-datanode-2"], threshold)
+
+
+def test_retained_spark_fixture_is_not_deleted_and_fails_outcome(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(hdfs, "ROOT", tmp_path)
+    monkeypatch.setattr(hdfs.HDFSVerification, "prepare", lambda self: None)
+    removed = []
+    monkeypatch.setattr(hdfs.HDFSVerification, "remove_fixture", lambda self: removed.append("fixture"))
+    monkeypatch.setattr(hdfs.HDFSVerification, "remove_client", lambda self: removed.append("client"))
+    with pytest.raises(hdfs.VerificationError, match="retained"):
+        with hdfs.verification_run("offline-spark-retain", disruptions=False, parallel=False) as run:
+            run.fixture.create(lambda path: None)
+            run.retain_fixture("Spark application termination is unproven")
+    assert removed == ["client"]
+    outcome = json.loads((run.evidence.directory / "outcome.json").read_text())
+    assert outcome["status"] == "failed"
+    assert outcome["fixture_remaining"]
+    assert outcome["retention_reasons"] == ["Spark application termination is unproven"]
+    assert run.fixture.path in " ".join(outcome["restoration_cleanup_errors"])
+
+
+def test_retention_cannot_grant_ownership_or_hide_the_original_failure(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(hdfs, "ROOT", tmp_path)
+    monkeypatch.setattr(hdfs.HDFSVerification, "prepare", lambda self: None)
+    original = RuntimeError("Spark task evidence missing")
+    with pytest.raises(RuntimeError) as caught:
+        with hdfs.verification_run("offline-spark-original", disruptions=False, parallel=False) as run:
+            run.retain_fixture("Event log retrieval incomplete")
+            raise original
+    assert caught.value is original
+    assert not run.fixture.owned
+    outcome = json.loads((run.evidence.directory / "outcome.json").read_text())
+    assert outcome["status"] == "failed"
+    assert "Spark task evidence missing" in outcome["failure"]
+    assert outcome["retention_reasons"] == ["Event log retrieval incomplete"]

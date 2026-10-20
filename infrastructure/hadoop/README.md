@@ -437,21 +437,159 @@ results, and ownership evidence; do not initialize storage or remove volumes.
    opt-in scenario only after prerequisites are restored; do not mark an interrupted
    or partially cleaned run as passed.
 
-## M02 connectivity handoff
+## M02 connectivity handoff — distributed Spark–HDFS verification
 
-- [ ] Join the existing external bridge **`warehouse-bigdata`**; verify service DNS.
-- [ ] Supply **`WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020`** explicitly to the
-  shared loader. Record the base-path contract **`/data/warehouse`** and any explicit
-  override; configuration loading alone does not establish connectivity.
-- [ ] Mount the current `core-site.xml` and `hdfs-site.xml` read-only under
-  `/opt/hadoop/etc/hadoop`, retain image-provided Hadoop/Java configuration, and
-  record client identity **UID 1000 / GID 100** for the tested setup.
-- [ ] Demonstrate metadata/RPC access **and both DataNodes' direct TCP `9866` block
-  access**, followed by independent-client byte/hash and per-block replica evidence.
-- [ ] Carry the actual evidence directory and executed/skipped/blocked scenario
-  results into the handoff. Do not imply a maintenance scenario ran from baseline
-  success alone.
+M02 T03 adds one opt-in, non-disruptive scenario over the existing M01 HDFS harness,
+M02 T01 Standalone cluster, and T02 attached submission interface. The implementation
+is not a recorded live acceptance result. A selected scenario fails if prerequisites
+or proof are unavailable; default pytest and CI remain service-free.
 
-Future clients, including Spark **drivers and executors**, need both metadata and
-block connectivity. T03 does not deploy Spark, prove Spark compatibility, ingest
-M5, or authorize writing approved analytical outputs.
+### Prerequisites and commands
+
+Use serial pytest execution, reserve the existing HDFS maintenance lock, and avoid
+concurrent external writers or lifecycle operations. No disruption flag is needed.
+Require the initialized, write-ready NameNode and both current DataNodes on the
+existing `warehouse-bigdata` bridge, plus the current Master and both one-core /
+1024 MiB Workers. Their current IDs, running container/image identities, resources,
+read-only XML mounts, and registration are inspected. Registration alone cannot
+pass application acceptance.
+
+Prepare T01/T02 through their existing interfaces before requesting the live test.
+In particular, rebuild the prepared driver image after application source changes:
+
+```bash
+docker compose -f infrastructure/compose.yaml --profile spark-submit build spark-submit
+bash scripts/spark-cluster.sh check
+```
+
+The test never builds images, starts services, repairs configuration, installs host
+PySpark, changes resource caps, or substitutes a local Spark master. Both endpoints
+must be supplied explicitly and must match the exact internal endpoints below.
+The default `/data/warehouse` base path and any explicit override are recorded;
+fixture paths are never derived from that setting. Both Hadoop XML files stay
+unchanged and read-only.
+
+Offline implementation gate:
+
+```bash
+uv run --locked pytest -q tests/unit/test_spark_verification.py tests/unit/test_hdfs_verification.py
+```
+
+Explicit live acceptance gate, from the repository root:
+
+```bash
+WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 uv run --locked pytest -q -m integration tests/integration/test_spark_hdfs.py
+```
+
+### Fixture, workload, and required proof
+
+Only an exclusively owned `/t03-integration-<uuid>/spark/` subtree is provisioned.
+It is labelled **synthetic verification data** and contains four JSONL files of 256
+rows each, with integer fields `record_id`, `bucket`, `quantity`, and
+`unit_price_cents`. For record IDs 0–1023, the fixed arithmetic rules are:
+
+- `bucket = record_id % 8`, `quantity = record_id % 5 + 1`;
+- `unit_price_cents = 100 + 7 * (record_id % 17)`;
+- keep `record_id % 3 != 0`; sum quantity and integer `quantity * unit_price_cents`
+  and count records per bucket.
+
+Inputs are readable but not writable by Spark. Only the fixture-scoped `work/`
+and `events/` destinations are mode 777, accommodating Spark **185:185** and the
+independent Hadoop client **1000:100**. Approved data paths and M01 storage volumes
+are not modified. Storage identities and the harness's original payload are
+checked again after the application.
+
+`warehouse_bigdata/jobs/verify_spark_hdfs.py` is submitted through T02 with fixed
+parallelism/shuffle partitions 2 and adaptive SQL disabled. Its common module
+configures uncompressed, non-rolling HDFS event logging **before SparkContext
+creation**, reads an explicit integer schema, performs DataFrame transformations,
+writes Parquet with `errorifexists`, and uses a fresh uncached DataFrame to reread
+it. The host independently checks actual rows, types, input/output counts, unique
+keys, nulls, and exact integer aggregates: **682 contributing records, eight keys**.
+The host Python oracle is independent of Spark; it is deliberately not the literal
+local-Spark comparison described by DIST-08, because this task forbids local execution.
+
+One diagnostic barrier stage consumes `input_df.repartition(2).rdd`. Its two
+concurrent one-CPU tasks must use both one-core Workers; each consumes non-empty
+fixture rows and exchanges partition/task-attempt/hostname evidence using
+`allGather`. The driver and each task check NameNode RPC and both DataNode transfer
+endpoints, then launch a fresh, bounded, 64 MiB-heap bundled Java Hadoop client to
+read actual HDFS bytes. Their byte counts and SHA-256 must match the host-created
+input. No scheduling sleeps or repeated attempts to obtain incidental placement
+are used.
+
+Success additionally requires:
+
+- An active Master/Worker JSON snapshot matching the application, both current
+  Worker IDs, and actual executor placements.
+- A complete pinned Spark 3.5.7 event log with matching run/application identities,
+  effective settings, application start/end, all three run-scoped phase groups,
+  completed stages/jobs, and successful workload tasks on both Workers. Returned
+  barrier task-attempt IDs must match successful tasks in the same two-task barrier
+  stage on the expected executors. Failed/retried attempts remain separate.
+- Fresh independent-client reads of every input and Parquet data file, matching
+  sizes, and per-file `fsck` proof of non-zero blocks replicated on both current
+  DataNode transfer addresses. Parquet semantics are compared with the oracle;
+  physical output hashes are retained as evidence, not compared across runs.
+- Confirmed T02 driver removal and absence of the application and its executors
+  from current active state before fixture deletion, plus successful scoped cleanup.
+
+### Bounds and evidence inspection
+
+Submission is limited to **300 seconds**, then TERM gives T02 **45 seconds** for
+its own cancellation/driver cleanup, within a **360-second host deadline**. The
+coordinator does not remove drivers itself. Barrier admission uses five checks at
+two-second intervals; synchronization is limited to 45 seconds. TCP requests are
+limited to two seconds, JSON snapshots to ten seconds, each probe JVM to 20 seconds,
+and termination confirmation to 30 seconds. Existing HDFS command/placement bounds
+also apply. Event retrieval is bounded to 60 seconds and rejects empty, truncated,
+in-progress, or **over-16-MiB** evidence; each data file is capped at 1 MiB.
+
+Inspect the actual `artifacts/test-runs/<run-id>/` from pytest's evidence note:
+
+- `spark-prerequisites.json`, `spark-submission.json`, `spark-submit-command.json`, and
+  `spark-application-records.json`: container/prepared-image identities,
+  configuration/command-source hashes, actual imported and baked source hashes,
+  executor-archive member/hash evidence, XML hashes, and actual runtime versions.
+  A stale driver image fails source comparison against the checkout.
+- `spark-fixture.json` and `spark-correctness.json`: fixture provenance, fixed
+  rules, independent expected values, and actual Parquet reread values.
+- `spark-events.jsonl` and `spark-event-log.json`: independently retrieved raw
+  events and their byte/hash identity. `spark-execution.json` correlates jobs,
+  stages, successful probe tasks, per-Worker/executor task counts, input/shuffle
+  bytes, execution/elapsed/GC time, and spill. Equal task counts are not required.
+- `spark-data-files.json`, `spark-hdfs-preservation.json`, and
+  `spark-termination.json`: independent content/replica evidence, unchanged HDFS
+  identities/payload, and actual final application/driver state.
+- Existing numbered raw `.stdout`/`.stderr`, `commands.jsonl`, `events.jsonl`, and
+  `outcome.json`: exact commands and bounds, original failure, separate evidence or
+  cleanup errors, retention reasons, and the exact remaining fixture path.
+
+Missing evidence, incorrect data, timeout, and cleanup failure cannot produce a
+passing outcome. Tooling/offline success does not establish live distributed
+execution. This fixed single-host infrastructure fixture makes no M5 ingestion,
+speedup, operational savings, HA, or physical multi-host fault-tolerance claim.
+
+### Retained-fixture recovery
+
+If application termination or evidence collection is unproven, `retain_fixture`
+prevents deletion and records a **failed** outcome with the exact path and reason.
+The original error is preserved separately from finalization/cleanup errors. The
+temporary Hadoop client is still removed through its existing ownership checks.
+
+1. Re-establish exclusive access and inspect the run's raw commands, structured
+   startup identity, `spark-termination.json`, and `outcome.json`.
+2. Confirm the exact `warehouse-spark-submit-<token>` driver is absent or stopped;
+   if present, match its exact name and `io.warehouse-bigdata.spark-submit.owner`
+   label to that token. Resolve cancellation/removal through T02's existing
+   ownership-scoped interface. Inspect current Master/Worker JSON and establish
+   that this run's application/executors are no longer active before deleting any
+   possible write destination. Do not infer termination from an exited host command.
+3. Retrieve complete event/data evidence with bounded fresh-client operations where
+   possible. Preserve and report incomplete proof as a failed run.
+4. Check the original successful exclusive `mkdir` evidence before removing only
+   its exact `/t03-integration-<uuid>` directory using the bounded M01 recovery
+   procedure above. A familiar prefix alone is not ownership. Never delete an
+   ancestor, an approved analytical path, a wildcard, or a storage volume.
+5. Record remaining blockers and use a new opt-in run after prerequisites are
+   restored. Do not relabel the interrupted/retained outcome as passed.
