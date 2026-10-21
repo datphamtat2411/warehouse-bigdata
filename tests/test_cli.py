@@ -169,3 +169,40 @@ def test_ingest_m5_raw_requires_all_artifact_paths(capsys: pytest.CaptureFixture
 
     assert exc_info.value.code == 2
     assert "--profile-path" in capsys.readouterr().err
+
+
+def test_ingest_m5_forwards_source_provenance_and_optional_run_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ingest = Mock(return_value=0)
+    monkeypatch.setattr("warehouse_bigdata.cli.run_ingest_m5", ingest)
+
+    assert main(
+        [
+            "ingest-m5",
+            "--source-dir",
+            "/inputs/m5",
+            "--source-url",
+            "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
+            "--downloaded-at-utc",
+            "2026-10-21T12:34:56Z",
+            "--pipeline-run-id",
+            "run-combined",
+        ]
+    ) == 0
+    ingest.assert_called_once_with(
+        Path("/inputs/m5"),
+        "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
+        "2026-10-21T12:34:56Z",
+        "run-combined",
+    )
+
+
+def test_ingest_m5_requires_truthful_provenance(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["ingest-m5", "--source-dir", "/inputs/m5"])
+
+    assert exc_info.value.code == 2
+    error = capsys.readouterr().err
+    assert "--source-url" in error
+    assert "--downloaded-at-utc" in error

@@ -7,6 +7,7 @@ from importlib import metadata
 from pathlib import Path
 
 from warehouse_bigdata.common.spark_submit import run_spark_submit
+from warehouse_bigdata.jobs.ingest_m5 import run_ingest_m5
 from warehouse_bigdata.jobs.ingest_m5_raw import run_ingest_m5_raw
 from warehouse_bigdata.jobs.profile_m5_source import run_profile_m5_source
 
@@ -38,6 +39,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     profile.add_argument("--source-dir", required=True, type=Path, metavar="PATH")
     profile.add_argument("--source-url", required=True, metavar="URL")
     profile.add_argument("--downloaded-at-utc", required=True, metavar="TIMESTAMP")
+    workflow = commands.add_parser(
+        "ingest-m5",
+        help="Profile an extracted M5 package, ingest immutable raw files, and publish its run manifest.",
+    )
+    workflow.add_argument("--source-dir", required=True, type=Path, metavar="PATH")
+    workflow.add_argument("--source-url", required=True, metavar="URL")
+    workflow.add_argument("--downloaded-at-utc", required=True, metavar="TIMESTAMP")
+    workflow.add_argument("--pipeline-run-id", metavar="ID")
     ingest = commands.add_parser(
         "ingest-m5-raw",
         help="Stage and validate profiled M5 CSV files in immutable HDFS raw storage.",
@@ -60,6 +69,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except (OSError, ValueError) as error:
             profile.error(str(error))
+    if arguments.command == "ingest-m5":
+        try:
+            return run_ingest_m5(
+                arguments.source_dir,
+                arguments.source_url,
+                arguments.downloaded_at_utc,
+                arguments.pipeline_run_id,
+            )
+        except (OSError, ValueError, RuntimeError) as error:
+            workflow.error(str(error))
     if arguments.command == "ingest-m5-raw":
         try:
             return run_ingest_m5_raw(

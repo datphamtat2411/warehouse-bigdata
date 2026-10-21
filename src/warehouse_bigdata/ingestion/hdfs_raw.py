@@ -25,6 +25,7 @@ from warehouse_bigdata.common.hdfs_client import (
 )
 from warehouse_bigdata.contracts.manifests import (
     HDFS_ARTIFACT_PATHS,
+    PIPELINE_RUN_MANIFEST,
     SOURCE_MANIFEST,
     VALIDATED,
 )
@@ -110,6 +111,61 @@ class RawIngestionResult:
     staging_path: str | None
     manifests: tuple[Mapping[str, object], ...]
     integrity: HdfsIntegrityEvidence
+
+
+def render_run_manifest_path(base_path: str, pipeline_run_id: str) -> str:
+    """Render one Contract v1 run-manifest path without creating it."""
+    if not isinstance(pipeline_run_id, str) or not _PIPELINE_RUN_ID.fullmatch(pipeline_run_id):
+        raise HdfsRawIngestionError("pipeline_run_id must be a bounded safe identifier")
+    return _render_path(base_path, "run_manifest", pipeline_run_id=pipeline_run_id)
+
+
+def publish_run_manifest(
+    manifest: Mapping[str, object],
+    *,
+    integrity: HdfsIntegrityEvidence,
+    client: HdfsCliClient | Any | None = None,
+    config: HDFSConfig | None = None,
+) -> str:
+    """Exclusively create and independently verify one validated run manifest."""
+    source_version = _string_or_error(manifest.get("source_version"), "run manifest source_version")
+    pipeline_run_id = _string_or_error(
+        manifest.get("pipeline_run_id"), "run manifest pipeline_run_id"
+    )
+    try:
+        validate_manifest(
+            PIPELINE_RUN_MANIFEST,
+            manifest,
+            lineage_context={
+                "required_status": VALIDATED,
+                "source_version": source_version,
+                "pipeline_run_id": pipeline_run_id,
+            },
+        )
+    except ContractValidationError as error:
+        raise HdfsRawIngestionError(f"invalid PIPELINE_RUN_MANIFEST: {error}") from error
+    if integrity.source_version != source_version:
+        raise HdfsRawIngestionError("run manifest source_version does not match HDFS integrity evidence")
+
+    settings = load_hdfs_config() if config is None else config
+    hdfs = HdfsCliClient() if client is None else client
+    path = render_run_manifest_path(settings.base_path, pipeline_run_id)
+    expected_uri = _hdfs_uri(settings.uri, path)
+    if manifest.get("artifact_uri") != expected_uri:
+        raise HdfsRawIngestionError("run manifest artifact_uri does not match its Contract v1 path")
+    payload = _json_bytes(manifest)
+    addresses = {node.address for node in integrity.datanodes}
+    try:
+        if _exists(hdfs, path):
+            raise HdfsRawIngestionError(f"run manifest path already exists; refusing to overwrite: {path}")
+        hdfs.mkdir_parents(str(PurePosixPath(path).parent))
+        hdfs.upload_bytes(payload, path)
+        _verify_metadata_file(hdfs, path, payload, addresses)
+    except HdfsRawIngestionError:
+        raise
+    except (HdfsCommandError, OSError, ValueError, KeyError, TypeError) as error:
+        raise HdfsRawIngestionError(f"run manifest publication failed: {error}") from error
+    return path
 
 
 def preflight_source_artifacts(

@@ -396,6 +396,46 @@ They do not start cluster services or a Spark application. Distributed executor
 placement, HDFS read/write workloads, M5 ETL, and MLlib implementation remain
 outside T02 acceptance.
 
+## M5 raw HDFS read verification
+
+`warehouse_bigdata/jobs/verify_m5_raw_hdfs.py` is a minimal, opt-in Spark Standalone
+application for a validated M5 raw snapshot. It accepts an explicit HDFS raw URI and
+the exact content-derived `source_version`, checks the effective Hadoop endpoint,
+replication, and hostname-based DataNode setting, then reads the stored source manifest
+and sales header from HDFS through Spark. It rejects `file://`, relative, and
+wrong-endpoint paths before importing PySpark; there is no local fallback or Spark
+transformation.
+
+After `ingest-m5` has published a raw snapshot, rebuild the prepared driver image when
+application sources changed and submit only after the existing HDFS and Spark services
+are ready:
+
+```bash
+WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
+WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
+bash scripts/spark-submit.sh -- \
+  warehouse_bigdata/jobs/verify_m5_raw_hdfs.py \
+  --raw-uri hdfs://hdfs-namenode:8020/data/warehouse/raw/m5/source_version=sha256-... \
+  --source-version sha256:...
+```
+
+The job emits one `WAREHOUSE_M5_RAW` evidence record and does not create or delete
+approved/raw data. The real-source integration command also verifies independent HDFS
+byte/hash evidence and both-DataNode placement before this Spark submission:
+
+```bash
+WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
+WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
+WAREHOUSE_M5_SOURCE_DIR=/path/to/m5-csvs \
+WAREHOUSE_M5_SOURCE_URL=https://www.kaggle.com/competitions/m5-forecasting-accuracy/data \
+WAREHOUSE_M5_DOWNLOADED_AT_UTC=2026-10-21T12:34:56Z \
+uv run --locked pytest -q -m integration tests/integration/test_m5_ingestion.py
+```
+
+This is a non-disruptive check against already running services. The local Compose
+deployment demonstrates distributed software roles on one physical host, not physical
+multi-host fault tolerance or a full M5 ETL workload.
+
 ## T01 focused verification and live acceptance
 
 Offline checks (no Docker daemon or network needed for pytest):

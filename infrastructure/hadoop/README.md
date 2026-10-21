@@ -6,7 +6,43 @@ roles, not physical-host fault tolerance, HA, production security, or proven hos
 capacity. T02 supplies side-effect-free Python configuration loading; T03 supplies
 opt-in independent-client, replication, persistence, and interruption/recovery
 verification. M02's bounded synthetic Spark–HDFS acceptance passed on 2026-10-21,
-as recorded in the M02 handoff below; source-data ingestion remains a later gate.
+as recorded in the M02 handoff below; curated source-data processing remains a later
+gate.
+
+## M5 raw ingestion
+
+The M5 workflow consumes an already-acquired local CSV directory. It profiles the source
+before creating an HDFS client, uploads through the existing bounded Hadoop client, and
+publishes only a Contract v1 run manifest after independent size, SHA-256, replication,
+and block-placement checks pass. The source directory is mounted read-only by the host
+wrapper; Kaggle downloading is not part of this workflow.
+
+With the existing initialized HDFS and Spark services ready, and the prepared
+`spark-submit` image already built, run from the repository root:
+
+```bash
+WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
+WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
+bash scripts/ingest-m5.sh \
+  --source-dir /path/to/m5-csvs \
+  --source-url https://www.kaggle.com/competitions/m5-forecasting-accuracy/data \
+  --downloaded-at-utc 2026-10-21T12:34:56Z
+```
+
+The attempt writes local evidence below `artifacts/m5-ingestion/<pipeline_run_id>/` and
+uses `/data/warehouse/raw/m5/source_version=<content-derived-id>/` plus
+`/data/warehouse/manifests/runs/<pipeline_run_id>.json`. A matching source rerun gets a
+new pipeline run ID and reuses the validated raw snapshot. Existing raw files and run
+manifests are never overwritten. Profile, upload, integrity, and publication failures
+are recorded as `FAILED`; no incomplete upload is reported as `VALIDATED`.
+
+The opt-in integration test requires explicit `WAREHOUSE_M5_SOURCE_DIR`,
+`WAREHOUSE_M5_SOURCE_URL`, and `WAREHOUSE_M5_DOWNLOADED_AT_UTC` values. It checks the
+stored source-manifest lineage, remote byte sizes and SHA-256 values, replication factor
+2, and every block's locations on both current DataNodes before requesting the separate
+Spark Standalone HDFS read. It leaves validated M5 raw snapshots in place and changes no
+volumes or unrelated paths. This cluster is distributed across containers on one host;
+it does not demonstrate physical multi-host fault tolerance.
 
 ## Runtime and interfaces
 

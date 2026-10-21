@@ -12,9 +12,10 @@ tooling, design specifications, a persistent local HDFS deployment with a passin
 four-scenario integration suite, and an opt-in Spark Standalone deployment with
 passing live infrastructure acceptance, a short-lived Spark submission runtime,
 and a bounded synthetic distributed Spark–HDFS acceptance that passed on
-**2026-10-21**. Local M5 source profiling and manifest generation are implemented;
-M5 ingestion, the data pipeline, other services, model training, database publication,
-and dashboard are not implemented yet.
+**2026-10-21**. Local M5 source profiling, immutable raw HDFS ingestion, Contract v1
+run manifests, and an opt-in real-M5 Spark Standalone read verification are implemented;
+curated ETL, other services, model training, database publication, and the dashboard are
+not implemented yet.
 
 ## Project Objectives
 
@@ -145,15 +146,17 @@ first real implementation requires them.
 M01 T01, T02, and T03 are implemented. The reported manual execution on the local
 Docker-based Hadoop cluster on **2026-10-19** passed all four HDFS integration
 scenarios: **4 passed in 384.85 seconds**. M02 T01/T02/T03 acceptance is complete for
-the bounded local infrastructure/synthetic-workload scope recorded above. M5
-ingestion and end-to-end data-pipeline acceptance remain future gates. See the
+the bounded local infrastructure/synthetic-workload scope recorded above. M5 raw
+ingestion is implemented; curated end-to-end data-pipeline acceptance remains a future
+gate. See the
 [HDFS operations guide](infrastructure/hadoop/README.md#t03-integration-verification)
 for the execution snapshot and operational procedures.
 
 ### Planned but not implemented
 
-- M5 download, ingestion into HDFS, and Spark ETL. Local profiling and source manifest
-  generation are implemented for already-acquired CSV packages.
+- M5 downloading and Spark ETL. Local profiling, immutable raw HDFS ingestion, and
+  source/run manifest generation are implemented for already-acquired CSV packages;
+  the real-M5 Spark check only verifies HDFS reads and source metadata.
 - Spark MLlib training, chronological evaluation, and seven-day forecast artifacts.
 - Inventory simulation, replenishment, and constrained allocation execution.
 - ClickHouse schemas, shard publication, and analytical queries.
@@ -189,9 +192,10 @@ uv run --locked pytest -q
 uv build
 ```
 
-The CLI provides packaging/help/version checks, local M5 source profiling, and the
-explicit `spark-submit` subcommand for the prepared container runtime. Profile an
-already-acquired source package without downloading or modifying its CSV files:
+The CLI provides packaging/help/version checks, local M5 source profiling, the combined
+M5 raw-ingestion workflow, and the explicit `spark-submit` subcommand for the prepared
+container runtime. Profile an already-acquired source package without downloading or
+modifying its CSV files:
 
 ```bash
 uv run --locked warehouse-bigdata profile-m5-source \
@@ -203,8 +207,64 @@ uv run --locked warehouse-bigdata profile-m5-source \
 The command writes `source_profile.json` and `source_manifests.json` below the
 ignored `WAREHOUSE_ARTIFACTS_DIR` run directory. For HDFS initialization, startup,
 smoke checks, and safe lifecycle operations, follow the
-[HDFS operations guide](infrastructure/hadoop/README.md). There is no operational
-data pipeline yet.
+[HDFS operations guide](infrastructure/hadoop/README.md). The combined raw-ingestion
+workflow is documented below; curated transformations remain out of scope.
+
+### M5 Raw Ingestion And Verification
+
+The combined workflow accepts an extracted, already-acquired M5 directory. The source
+URL must be the official Kaggle dataset URL and `--downloaded-at-utc` must be a truthful
+UTC timestamp. The wrapper mounts the source read-only and writes run-scoped evidence
+under the ignored local `artifacts/` directory. HDFS and Spark services, plus the
+prepared submission image, must already be running/prepared; the wrapper starts only
+its short-lived client with `--no-deps`:
+
+```bash
+WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
+WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
+bash scripts/ingest-m5.sh \
+  --source-dir /path/to/m5-csvs \
+  --source-url https://www.kaggle.com/competitions/m5-forecasting-accuracy/data \
+  --downloaded-at-utc 2026-10-21T12:34:56Z
+```
+
+Each attempt receives a unique `pipeline_run_id`. Its local profile, quality report, and
+`PIPELINE_RUN_MANIFEST` are stored below `artifacts/m5-ingestion/<pipeline_run_id>/`.
+The raw HDFS path is keyed by the content-derived `source_version`; a matching rerun
+gets a new run ID and returns `REUSED` without overwriting the validated raw snapshot or
+the prior run manifest. A failed profile stops before HDFS client construction. HDFS,
+integrity, or run-manifest publication failures remain `FAILED`, even when an already
+promoted raw snapshot is left immutable.
+
+After ingestion, the minimal distributed read check can be run explicitly with the raw
+URI and exact source identity printed by the workflow:
+
+```bash
+bash scripts/spark-submit.sh -- \
+  warehouse_bigdata/jobs/verify_m5_raw_hdfs.py \
+  --raw-uri hdfs://hdfs-namenode:8020/data/warehouse/raw/m5/source_version=sha256-... \
+  --source-version sha256:...
+```
+
+The Spark job requires a `spark://` Standalone master, checks effective HDFS
+configuration, and reads `source_manifests.json` and the stored sales header from the
+explicit HDFS URI. It rejects local paths and never substitutes local files. An opt-in
+real-source acceptance test additionally checks remote byte hashes, replication and
+both-DataNode block placement:
+
+```bash
+WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
+WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
+WAREHOUSE_M5_SOURCE_DIR=/path/to/m5-csvs \
+WAREHOUSE_M5_SOURCE_URL=https://www.kaggle.com/competitions/m5-forecasting-accuracy/data \
+WAREHOUSE_M5_DOWNLOADED_AT_UTC=2026-10-21T12:34:56Z \
+uv run --locked pytest -q -m integration tests/integration/test_m5_ingestion.py
+```
+
+The live check is non-disruptive and leaves validated M5 raw snapshots and run
+manifests in HDFS for review; it does not initialize services, delete volumes, or
+remove validated raw data. The Docker Compose cluster remains a single-host distributed
+software demonstration, not physical multi-host fault tolerance.
 
 ### Opt-in Spark infrastructure
 

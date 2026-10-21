@@ -17,10 +17,14 @@ from warehouse_bigdata.common.hdfs_client import (
     RemoteFileHash,
     RemoteFileStat,
 )
-from warehouse_bigdata.contracts.manifests import SOURCE_MANIFEST, VALIDATED
+from warehouse_bigdata.common.config import HDFSConfig
+from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, SOURCE_MANIFEST, VALIDATED
+from warehouse_bigdata.contracts.validation import validate_manifest
 from warehouse_bigdata.ingestion.hdfs_raw import (
     HdfsRawIngestionError,
     ingest_m5_raw,
+    publish_run_manifest,
+    render_run_manifest_path,
 )
 from warehouse_bigdata.ingestion.m5_source import RECOGNIZED_M5_FILES, compute_source_version
 
@@ -376,3 +380,73 @@ def test_uncertain_exclusive_creation_does_not_grant_cleanup_ownership(tmp_path:
         _ingest(tmp_path, client, "run-uncertain")
 
     assert not any(call[0] == "remove" for call in client.calls)
+
+
+def _run_manifest(run_id: str, source_version: str, artifact_uri: str) -> dict[str, object]:
+    return {
+        "manifest_schema_version": "1.0",
+        "contract_name": PIPELINE_RUN_MANIFEST.name,
+        "contract_version": PIPELINE_RUN_MANIFEST.version,
+        "manifest_kind": PIPELINE_RUN_MANIFEST.manifest_kind,
+        "status": VALIDATED,
+        "producer": "warehouse-bigdata:ingest-m5-orchestration",
+        "artifact_uri": artifact_uri,
+        "artifact_checksum": None,
+        "schema_fingerprint": "sha256:" + "1" * 64,
+        "grain": "One M5 ingestion pipeline execution",
+        "logical_unique_key": "pipeline_run_id",
+        "row_count": 1,
+        "required_field_null_counts": "{}",
+        "code_revision": "warehouse-bigdata:ingest-m5-v1",
+        "configuration_digest": "warehouse-bigdata:ingest-m5-config-v1",
+        "created_at": DOWNLOADED_AT,
+        "completed_at": DOWNLOADED_AT,
+        "coverage_and_exclusion_counts": "{}",
+        "pipeline_run_id": run_id,
+        "source_version": source_version,
+        "output_dataset_names": "[\"raw_m5\"]",
+        "output_dataset_uris": "[\"hdfs://hdfs-namenode:8020/data/warehouse/raw\"]",
+        "quality_report_uri": "file:///tmp/quality.json",
+    }
+
+
+def test_run_manifest_publication_is_exclusive_and_independently_verified(tmp_path: Path) -> None:
+    client = FakeHdfs()
+    source, profile, manifests = _artifacts(tmp_path)
+    raw = ingest_m5_raw(
+        source,
+        profile,
+        manifests,
+        "run-manifest-source",
+        client=client,
+        now=lambda: DOWNLOADED_AT,
+    )
+    config = HDFSConfig("hdfs://hdfs-namenode:8020", "/data/warehouse")
+    path = render_run_manifest_path(config.base_path, "run-manifest-publish")
+    manifest = _run_manifest("run-manifest-publish", raw.source_version, config.uri + path)
+    validate_manifest(PIPELINE_RUN_MANIFEST, manifest)
+
+    published = publish_run_manifest(
+        manifest,
+        integrity=raw.integrity,
+        client=client,
+        config=config,
+    )
+
+    assert published == path
+    assert client.files[path]
+    before = client.files[path]
+    with pytest.raises(HdfsRawIngestionError, match="refusing to overwrite"):
+        publish_run_manifest(
+            manifest,
+            integrity=raw.integrity,
+            client=client,
+            config=config,
+        )
+    assert client.files[path] == before
+
+
+def test_run_manifest_path_preserves_safe_pipeline_run_identity() -> None:
+    assert render_run_manifest_path("/data/warehouse", "run-20261021") == (
+        "/data/warehouse/manifests/runs/run-20261021.json"
+    )
