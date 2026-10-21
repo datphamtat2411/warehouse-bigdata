@@ -205,7 +205,9 @@ def run_verification(*, run_id: str, fixture_root: str, probe_sha256: str) -> di
     """Run the fixed DataFrame round trip and return only actual, bounded evidence."""
     validate_request(run_id, fixture_root, probe_sha256)
     from pyspark import SparkContext
-    from pyspark.sql import SparkSession, functions as F, types as T
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
+    from pyspark.sql import types as T
 
     if SparkContext._active_spark_context is not None:
         raise RuntimeError("Event logging must be configured before SparkContext creation.")
