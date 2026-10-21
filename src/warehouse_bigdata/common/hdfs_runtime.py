@@ -15,8 +15,7 @@ from warehouse_bigdata.common.config import ConfigurationError, HDFSConfig
 from warehouse_bigdata.common.hdfs_client import HdfsCliClient, HdfsCommandError
 
 HADOOP_CLIENT_IMAGE = (
-    "apache/hadoop:3.4.3@sha256:"
-    "127774dadab40ce84df7ac668a7a8c99945688b3fe336f1388f4477ca33e1529"
+    "apache/hadoop:3.4.3@sha256:127774dadab40ce84df7ac668a7a8c99945688b3fe336f1388f4477ca33e1529"
 )
 HADOOP_CLIENT_NETWORK = "warehouse-bigdata"
 HADOOP_CLIENT_USER = "1000:100"
@@ -116,7 +115,9 @@ def _inspect_container(container_name: str) -> dict[str, Any]:
         payload = json.loads(result.stdout)
         info = payload[0]
     except (IndexError, TypeError, json.JSONDecodeError) as error:
-        raise ConfigurationError("Docker returned malformed Hadoop CLI client inspection data.") from error
+        raise ConfigurationError(
+            "Docker returned malformed Hadoop CLI client inspection data."
+        ) from error
     if not isinstance(info, dict):
         raise ConfigurationError("Docker returned a non-object Hadoop CLI client inspection.")
     return info
@@ -160,11 +161,7 @@ def _validate_container(info: Mapping[str, Any], runtime: HdfsCliRuntimeConfig) 
     mounts = info.get("Mounts")
     if not isinstance(mounts, list):
         raise ConfigurationError("Hadoop CLI client has no inspectable Hadoop XML mounts.")
-    selected = {
-        mount.get("Destination"): mount
-        for mount in mounts
-        if isinstance(mount, Mapping)
-    }
+    selected = {mount.get("Destination"): mount for mount in mounts if isinstance(mount, Mapping)}
     if set(selected) != set(HADOOP_CLIENT_XML_TARGETS):
         raise ConfigurationError(
             "Hadoop CLI client must mount only the two Hadoop XML configuration files."

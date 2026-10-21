@@ -171,12 +171,8 @@ class FakeHdfs:
     def report(self) -> dict[str, DataNodeReport]:
         self.calls.append(("report",))
         return {
-            "hdfs-datanode-1": DataNodeReport(
-                "hdfs-datanode-1", "10.0.0.1:9866", "now", "now"
-            ),
-            "hdfs-datanode-2": DataNodeReport(
-                "hdfs-datanode-2", "10.0.0.2:9866", "now", "now"
-            ),
+            "hdfs-datanode-1": DataNodeReport("hdfs-datanode-1", "10.0.0.1:9866", "now", "now"),
+            "hdfs-datanode-2": DataNodeReport("hdfs-datanode-2", "10.0.0.2:9866", "now", "now"),
         }
 
     def exists(self, path: str) -> bool:
@@ -281,11 +277,7 @@ class FakeHdfs:
             if child == path or child.startswith(path + "/"):
                 del self.files[child]
         self.directories.difference_update(
-            {
-                child
-                for child in self.directories
-                if child == path or child.startswith(path + "/")
-            }
+            {child for child in self.directories if child == path or child.startswith(path + "/")}
         )
 
 
@@ -416,7 +408,14 @@ def test_matching_rerun_is_idempotent_without_overwrite_or_new_stage(tmp_path: P
 
     assert second.status == "REUSED"
     assert second.raw_path == first.raw_path
-    mutating = {"mkdir_parents", "mkdir_exclusive", "upload_file", "upload_bytes", "rename", "remove"}
+    mutating = {
+        "mkdir_parents",
+        "mkdir_exclusive",
+        "upload_file",
+        "upload_bytes",
+        "rename",
+        "remove",
+    }
     assert not any(call[0] in mutating for call in client.calls[before:])
 
 
@@ -429,7 +428,14 @@ def test_conflicting_existing_snapshot_is_rejected_without_modification(tmp_path
     with pytest.raises(HdfsRawIngestionError, match="calendar.csv"):
         _ingest(tmp_path, client, "run-conflict")
 
-    mutating = {"mkdir_parents", "mkdir_exclusive", "upload_file", "upload_bytes", "rename", "remove"}
+    mutating = {
+        "mkdir_parents",
+        "mkdir_exclusive",
+        "upload_file",
+        "upload_bytes",
+        "rename",
+        "remove",
+    }
     assert not any(call[0] in mutating for call in client.calls[before:])
 
 
@@ -447,7 +453,14 @@ def test_existing_snapshot_rejects_conflicting_acquisition_provenance(tmp_path: 
         )
 
     assert first.status == "PROMOTED"
-    mutating = {"mkdir_parents", "mkdir_exclusive", "upload_file", "upload_bytes", "rename", "remove"}
+    mutating = {
+        "mkdir_parents",
+        "mkdir_exclusive",
+        "upload_file",
+        "upload_bytes",
+        "rename",
+        "remove",
+    }
     assert not any(call[0] in mutating for call in client.calls[before:])
 
 
@@ -483,8 +496,8 @@ def _run_manifest(run_id: str, source_version: str, artifact_uri: str) -> dict[s
         "coverage_and_exclusion_counts": "{}",
         "pipeline_run_id": run_id,
         "source_version": source_version,
-        "output_dataset_names": "[\"raw_m5\"]",
-        "output_dataset_uris": "[\"hdfs://hdfs-namenode:8020/data/warehouse/raw\"]",
+        "output_dataset_names": '["raw_m5"]',
+        "output_dataset_uris": '["hdfs://hdfs-namenode:8020/data/warehouse/raw"]',
         "quality_report_uri": "file:///tmp/quality.json",
     }
 

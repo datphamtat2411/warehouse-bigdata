@@ -53,7 +53,9 @@ def run_verification(raw_uri: str, source_version: str) -> dict[str, object]:
     try:
         context = spark.sparkContext
         if context.master != spark_config.master_url or not context.master.startswith("spark://"):
-            raise RuntimeError("Spark verification did not run on the configured Standalone master.")
+            raise RuntimeError(
+                "Spark verification did not run on the configured Standalone master."
+            )
         hadoop = context._jsc.hadoopConfiguration()
         configuration = {
             key: hadoop.get(key)
@@ -88,10 +90,15 @@ def run_verification(raw_uri: str, source_version: str) -> dict[str, object]:
                 validate_manifest(
                     SOURCE_MANIFEST,
                     manifest,
-                    lineage_context={"required_status": VALIDATED, "source_version": source_version},
+                    lineage_context={
+                        "required_status": VALIDATED,
+                        "source_version": source_version,
+                    },
                 )
             except ContractValidationError as error:
-                raise RuntimeError(f"stored source manifest failed Contract v1 validation: {error}") from error
+                raise RuntimeError(
+                    f"stored source manifest failed Contract v1 validation: {error}"
+                ) from error
             filename = manifest["source_file"]
             if not isinstance(filename, str) or filename in filenames:
                 raise RuntimeError("stored source manifest contains duplicate source files")
@@ -101,9 +108,7 @@ def run_verification(raw_uri: str, source_version: str) -> dict[str, object]:
             filenames.append(filename)
 
         header_rows = (
-            spark.read.text(f"{raw_uri.rstrip('/')}/sales_train_evaluation.csv")
-            .limit(1)
-            .collect()
+            spark.read.text(f"{raw_uri.rstrip('/')}/sales_train_evaluation.csv").limit(1).collect()
         )
         if not header_rows:
             raise RuntimeError("sales_train_evaluation.csv has no readable header")

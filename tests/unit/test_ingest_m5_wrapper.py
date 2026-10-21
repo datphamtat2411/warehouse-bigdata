@@ -20,27 +20,27 @@ def _fake_runtime(tmp_path: Path) -> tuple[Path, Path, Path]:
     fake_docker.write_text(
         "#!/usr/bin/env bash\n"
         "set -eu\n"
-        "printf '%s\\n' \"$*\" >> \"$FAKE_DOCKER_LOG\"\n"
-        "case \"${1:-}\" in\n"
+        'printf \'%s\\n\' "$*" >> "$FAKE_DOCKER_LOG"\n'
+        'case "${1:-}" in\n'
         "  info) exit 0 ;;\n"
         "  image|network) exit 0 ;;\n"
         "  create)\n"
         "    name= label=\n"
         "    while [[ $# -gt 0 ]]; do\n"
-        "      case \"$1\" in\n"
+        '      case "$1" in\n'
         "        --name) name=$2; shift 2 ;;\n"
         "        --label) label=$2; shift 2 ;;\n"
         "        *) shift ;;\n"
         "      esac\n"
         "    done\n"
-        "    printf '%s\\n%s\\n' \"$name\" \"$label\" > \"$FAKE_CLIENT_STATE\"\n"
-        "    [[ \"${FAKE_CREATE_FAILURE:-0}\" == 1 ]] && exit 1\n"
+        '    printf \'%s\\n%s\\n\' "$name" "$label" > "$FAKE_CLIENT_STATE"\n'
+        '    [[ "${FAKE_CREATE_FAILURE:-0}" == 1 ]] && exit 1\n'
         "    exit 0\n"
         "    ;;\n"
         "  inspect)\n"
-        "    if [[ \"$*\" == *--format* ]]; then\n"
-        "      mapfile -t state < \"$FAKE_CLIENT_STATE\"\n"
-        "      printf '/%s|%s\\n' \"${state[0]}\" \"${state[1]#*=}\"\n"
+        '    if [[ "$*" == *--format* ]]; then\n'
+        '      mapfile -t state < "$FAKE_CLIENT_STATE"\n'
+        '      printf \'/%s|%s\\n\' "${state[0]}" "${state[1]#*=}"\n'
         "    fi\n"
         "    exit 0\n"
         "    ;;\n"
@@ -52,9 +52,7 @@ def _fake_runtime(tmp_path: Path) -> tuple[Path, Path, Path]:
     fake_docker.chmod(0o755)
     fake_uv = fake_bin / "uv"
     fake_uv.write_text(
-        "#!/usr/bin/env bash\n"
-        "set -eu\n"
-        "printf '%s\\n' \"$*\" >> \"$FAKE_UV_LOG\"\n",
+        '#!/usr/bin/env bash\nset -eu\nprintf \'%s\\n\' "$*" >> "$FAKE_UV_LOG"\n',
         encoding="utf-8",
     )
     fake_uv.chmod(0o755)
@@ -115,7 +113,9 @@ def test_wrapper_creates_owned_client_forwards_arguments_and_cleans_it(tmp_path:
     assert result.returncode == 0, result.stderr
     docker_invocations = docker_log.read_text(encoding="utf-8").splitlines()
     assert any(" create " in f" {line} " for line in docker_invocations)
-    assert any("--label io.warehouse-bigdata.hdfs-cli.owner=" in line for line in docker_invocations)
+    assert any(
+        "--label io.warehouse-bigdata.hdfs-cli.owner=" in line for line in docker_invocations
+    )
     assert not any("compose" in line or " run " in f" {line} " for line in docker_invocations)
     assert any(" rm --force warehouse-hdfs-cli-" in f" {line} " for line in docker_invocations)
 

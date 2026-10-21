@@ -216,7 +216,10 @@ class HdfsCliClient:
         except OSError as error:
             raise HdfsCommandError(f"HDFS command unavailable: {argv[0]!r}: {error}") from error
 
-        if len(completed.stdout) > self.metadata_limit or len(completed.stderr) > self.metadata_limit:
+        if (
+            len(completed.stdout) > self.metadata_limit
+            or len(completed.stderr) > self.metadata_limit
+        ):
             raise HdfsCommandError("HDFS metadata command output exceeded the bounded limit.")
         if check and completed.returncode != 0:
             detail = completed.stderr.decode(errors="replace")[-2000:]
@@ -341,7 +344,9 @@ class HdfsCliClient:
 
     def checksum(self, remote_path: str) -> str:
         """Return the bounded raw HDFS checksum record for a file."""
-        output = self._run(("dfs", "-checksum", remote_path)).stdout.decode(errors="replace").strip()
+        output = (
+            self._run(("dfs", "-checksum", remote_path)).stdout.decode(errors="replace").strip()
+        )
         if not output or "\n" in output:
             raise HdfsCommandError(f"Malformed HDFS checksum output for {remote_path!r}.")
         fields = output.split("\t")
@@ -376,9 +381,9 @@ class HdfsCliClient:
         expected_replication: int = EXPECTED_REPLICATION,
     ) -> tuple[BlockPlacement, ...]:
         """Audit every block and current location for one remote file."""
-        output = self._run(
-            ("fsck", remote_path, "-files", "-blocks", "-locations")
-        ).stdout.decode(errors="replace")
+        output = self._run(("fsck", remote_path, "-files", "-blocks", "-locations")).stdout.decode(
+            errors="replace"
+        )
         return parse_fsck(output, addresses, expected_replication=expected_replication)
 
     def exists(self, remote_path: str) -> bool:
@@ -425,9 +430,12 @@ class HdfsCliClient:
     def remove(self, remote_path: str) -> None:
         """Remove one exact non-root path; callers must already prove ownership."""
         parts = remote_path.split("/")
-        if not remote_path.startswith("/") or remote_path in {"", "/"} or any(
-            part in {"", ".", ".."} for part in parts[1:]
-        ) or any(character in remote_path for character in "*?["):
+        if (
+            not remote_path.startswith("/")
+            or remote_path in {"", "/"}
+            or any(part in {"", ".", ".."} for part in parts[1:])
+            or any(character in remote_path for character in "*?[")
+        ):
             raise HdfsCommandError(f"Unsafe HDFS cleanup path: {remote_path!r}.")
         self._run(("dfs", "-rm", "-r", "-skipTrash", remote_path))
 

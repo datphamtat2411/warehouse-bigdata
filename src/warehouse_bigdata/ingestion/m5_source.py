@@ -170,22 +170,23 @@ _SOURCE_FILE_SPECS: Final = (
 )
 _SOURCE_FILE_SPECS_BY_NAME: Final = {spec.filename: spec for spec in _SOURCE_FILE_SPECS}
 RECOGNIZED_M5_FILES: Final = frozenset(_SOURCE_FILE_SPECS_BY_NAME)
-REQUIRED_M5_FILES: Final = frozenset(
-    spec.filename for spec in _SOURCE_FILE_SPECS if spec.required
+REQUIRED_M5_FILES: Final = frozenset(spec.filename for spec in _SOURCE_FILE_SPECS if spec.required)
+_CONFIGURATION_DIGEST: Final = (
+    "sha256:"
+    + hashlib.sha256(
+        json.dumps(
+            {
+                "source_schema_version": SOURCE_SCHEMA_VERSION,
+                "files": [
+                    {"filename": spec.filename, "header": list(spec.header)}
+                    for spec in _SOURCE_FILE_SPECS
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 )
-_CONFIGURATION_DIGEST: Final = "sha256:" + hashlib.sha256(
-    json.dumps(
-        {
-            "source_schema_version": SOURCE_SCHEMA_VERSION,
-            "files": [
-                {"filename": spec.filename, "header": list(spec.header)}
-                for spec in _SOURCE_FILE_SPECS
-            ],
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-).hexdigest()
 
 
 def compute_source_version(file_hashes: Mapping[str, str]) -> str:
@@ -271,9 +272,7 @@ def profile_m5_source(
 
     source_version = compute_source_version(file_hashes)
     status = VALIDATED if not blocking_counts else FAILED
-    findings = tuple(
-        f"{name}={count}" for name, count in sorted(blocking_counts.items()) if count
-    )
+    findings = tuple(f"{name}={count}" for name, count in sorted(blocking_counts.items()) if count)
     profile_document = _build_profile_document(
         provenance,
         status,
@@ -522,9 +521,16 @@ def _validate_header(
     profile["header"] = header
     profile["schema_fingerprint"] = _fingerprint_header(actual)
     if actual != expected:
-        _invalid(profile, blocking_counts, "header_mismatches", "CSV header does not match its M5 schema")
+        _invalid(
+            profile, blocking_counts, "header_mismatches", "CSV header does not match its M5 schema"
+        )
     if duplicates:
-        _invalid(profile, blocking_counts, "duplicate_header_names", "CSV header contains duplicate names")
+        _invalid(
+            profile,
+            blocking_counts,
+            "duplicate_header_names",
+            "CSV header contains duplicate names",
+        )
 
 
 def _scan_sales_rows(
@@ -893,9 +899,7 @@ def _duplicate(
     blocking_counts[category] = blocking_counts.get(category, 0) + 1
     diagnostics = cast(list[dict[str, object]], profile["diagnostics"])
     if len(diagnostics) < MAX_DIAGNOSTICS:
-        diagnostics.append(
-            {"category": category, "message": message, "row_number": row_number}
-        )
+        diagnostics.append({"category": category, "message": message, "row_number": row_number})
 
 
 def _finalize_file_profile(
@@ -905,12 +909,12 @@ def _finalize_file_profile(
     if spec is not None and profile.get("header") is not None:
         header = cast(dict[str, object], profile["header"])
         if header.get("actual") is not None:
-            profile["schema_fingerprint"] = _fingerprint_header(
-                cast(list[str], header["actual"])
-            )
+            profile["schema_fingerprint"] = _fingerprint_header(cast(list[str], header["actual"]))
     invalid_counts = cast(dict[str, int], profile["invalid_counts"])
     duplicate_counts = cast(dict[str, int], profile["duplicate_counts"])
-    profile["validation_status"] = VALIDATED if not invalid_counts and not duplicate_counts else FAILED
+    profile["validation_status"] = (
+        VALIDATED if not invalid_counts and not duplicate_counts else FAILED
+    )
 
 
 def _build_profile_document(
@@ -933,9 +937,7 @@ def _build_profile_document(
     evaluation_coverage = cast(dict[str, object], evaluation_profile.get("coverage", {}))
     validation_coverage = cast(dict[str, object], validation_profile.get("coverage", {}))
     measurements = {
-        "present_csv_files": sum(
-            1 for profile in file_profiles.values() if profile.get("present")
-        ),
+        "present_csv_files": sum(1 for profile in file_profiles.values() if profile.get("present")),
         "evaluation_series": measured_row_count("sales_train_evaluation.csv"),
         "validation_series": measured_row_count("sales_train_validation.csv"),
         "evaluation_days": evaluation_coverage.get("observed_day_count", 0),
@@ -1031,15 +1033,20 @@ def _build_manifests(
         try:
             validate_manifest(SOURCE_MANIFEST, manifest)
         except ContractValidationError as error:
-            raise RuntimeError(f"generated invalid SOURCE_MANIFEST for {filename}: {error}") from error
+            raise RuntimeError(
+                f"generated invalid SOURCE_MANIFEST for {filename}: {error}"
+            ) from error
         manifests.append(manifest)
     return manifests
 
 
 def _fingerprint_header(header: list[str]) -> str:
-    return "sha256:" + hashlib.sha256(
-        json.dumps(header, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(header, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    )
 
 
 def _json_string(value: object) -> str:

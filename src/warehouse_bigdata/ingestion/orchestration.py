@@ -317,7 +317,9 @@ def _failure_artifacts(
 ) -> tuple[dict[str, object], Path, Path]:
     quality_path = _write_quality_report(
         attempt_root,
-        _quality_document(profile_result, raw_result, status=FAILED, failure_details=failure_details),
+        _quality_document(
+            profile_result, raw_result, status=FAILED, failure_details=failure_details
+        ),
     )
     manifest = _build_pipeline_manifest(
         run_id,
@@ -353,13 +355,17 @@ def _build_pipeline_manifest(
         artifact_path = render_run_manifest_path(config.base_path, run_id)
         artifact_uri = config.uri.rstrip("/") + artifact_path
     else:
-        artifact_uri = quality_report_uri.removesuffix("quality_report.json") + "pipeline_run_manifest.json"
+        artifact_uri = (
+            quality_report_uri.removesuffix("quality_report.json") + "pipeline_run_manifest.json"
+        )
 
     raw_uri = None
     if config is not None and isinstance(raw_path, str):
         raw_uri = config.uri.rstrip("/") + raw_path
     raw_manifests = getattr(raw_result, "manifests", None)
-    row_count = len(raw_manifests) if isinstance(raw_manifests, tuple) else len(profile_result.manifests)
+    row_count = (
+        len(raw_manifests) if isinstance(raw_manifests, tuple) else len(profile_result.manifests)
+    )
     profile = profile_result.profile
     output_names = ["raw_m5"] if raw_uri is not None else []
     output_uris = [raw_uri] if raw_uri is not None else []
@@ -419,7 +425,9 @@ def _build_pipeline_manifest(
             },
         )
     except ContractValidationError as error:
-        raise IngestionOrchestrationError(f"generated invalid PIPELINE_RUN_MANIFEST: {error}") from error
+        raise IngestionOrchestrationError(
+            f"generated invalid PIPELINE_RUN_MANIFEST: {error}"
+        ) from error
     return manifest
 
 

@@ -42,7 +42,16 @@ CSV_CHUNK_SIZE: Final = 1024 * 1024
 _SOURCE_VERSION = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 _PIPELINE_RUN_ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _MUTABLE_MANIFEST_FIELDS = frozenset(
-    {"artifact_uri", "artifact_checksum", "size_bytes", "status", "producer", "code_revision", "created_at", "completed_at"}
+    {
+        "artifact_uri",
+        "artifact_checksum",
+        "size_bytes",
+        "status",
+        "producer",
+        "code_revision",
+        "created_at",
+        "completed_at",
+    }
 )
 
 
@@ -147,7 +156,9 @@ def publish_run_manifest(
     except ContractValidationError as error:
         raise HdfsRawIngestionError(f"invalid PIPELINE_RUN_MANIFEST: {error}") from error
     if integrity.source_version != source_version:
-        raise HdfsRawIngestionError("run manifest source_version does not match HDFS integrity evidence")
+        raise HdfsRawIngestionError(
+            "run manifest source_version does not match HDFS integrity evidence"
+        )
 
     settings = load_hdfs_config() if config is None else config
     path = render_run_manifest_path(settings.base_path, pipeline_run_id)
@@ -159,7 +170,9 @@ def publish_run_manifest(
     try:
         hdfs = create_hdfs_cli_client(settings) if client is None else client
         if _exists(hdfs, path):
-            raise HdfsRawIngestionError(f"run manifest path already exists; refusing to overwrite: {path}")
+            raise HdfsRawIngestionError(
+                f"run manifest path already exists; refusing to overwrite: {path}"
+            )
         hdfs.mkdir_parents(str(PurePosixPath(path).parent))
         hdfs.upload_bytes(payload, path)
         _verify_metadata_file(hdfs, path, payload, addresses)
@@ -185,7 +198,9 @@ def preflight_source_artifacts(
         raise HdfsRawIngestionError("source profile must have status VALIDATED")
     scope = profile.get("validation_scope")
     if not isinstance(scope, Mapping) or scope.get("hdfs_validated") is not False:
-        raise HdfsRawIngestionError("source profile must remain local-only with hdfs_validated=false")
+        raise HdfsRawIngestionError(
+            "source profile must remain local-only with hdfs_validated=false"
+        )
 
     source_version = _required_string(profile, "source_version")
     if not _SOURCE_VERSION.fullmatch(source_version):
@@ -222,16 +237,16 @@ def preflight_source_artifacts(
     if not isinstance(profile_files, Mapping):
         raise HdfsRawIngestionError("source profile files must be a mapping")
     if set(profile_files) != set(RECOGNIZED_M5_FILES):
-        raise HdfsRawIngestionError("source profile file set does not match the recognized M5 package")
+        raise HdfsRawIngestionError(
+            "source profile file set does not match the recognized M5 package"
+        )
 
     try:
         entries = tuple(source.iterdir())
     except OSError as error:
         raise HdfsRawIngestionError(f"cannot list source directory {source}: {error}") from error
     local_paths = {
-        entry.name: entry
-        for entry in entries
-        if entry.is_file() and entry.suffix.lower() == ".csv"
+        entry.name: entry for entry in entries if entry.is_file() and entry.suffix.lower() == ".csv"
     }
     unexpected = set(local_paths) - set(RECOGNIZED_M5_FILES)
     if unexpected:
@@ -260,7 +275,9 @@ def preflight_source_artifacts(
             raise HdfsRawIngestionError("source manifests must contain JSON objects")
         filename = raw_manifest.get("source_file")
         if not isinstance(filename, str) or filename in manifests:
-            raise HdfsRawIngestionError("source manifests contain a missing or duplicate source_file")
+            raise HdfsRawIngestionError(
+                "source manifests contain a missing or duplicate source_file"
+            )
         if filename not in present_names:
             raise HdfsRawIngestionError(f"source manifest contains unexpected file {filename!r}")
         try:
@@ -270,10 +287,14 @@ def preflight_source_artifacts(
                 lineage_context={"required_status": VALIDATED, "source_version": source_version},
             )
         except ContractValidationError as error:
-            raise HdfsRawIngestionError(f"invalid SOURCE_MANIFEST for {filename}: {error}") from error
+            raise HdfsRawIngestionError(
+                f"invalid SOURCE_MANIFEST for {filename}: {error}"
+            ) from error
         for field_name, expected in shared.items():
             if raw_manifest.get(field_name) != expected:
-                raise HdfsRawIngestionError(f"source metadata mismatch for {filename}: {field_name}")
+                raise HdfsRawIngestionError(
+                    f"source metadata mismatch for {filename}: {field_name}"
+                )
         if raw_manifest.get("source_version") != source_version:
             raise HdfsRawIngestionError(f"source_version mismatch for {filename}")
         manifests[filename] = MappingProxyType(dict(raw_manifest))
@@ -291,8 +312,14 @@ def preflight_source_artifacts(
             raise HdfsRawIngestionError(f"local profile for {filename} is not VALIDATED")
         expected_size = raw_profile.get("size_bytes")
         expected_hash = raw_profile.get("sha256")
-        if not isinstance(expected_size, int) or expected_size < 0 or not isinstance(expected_hash, str):
-            raise HdfsRawIngestionError(f"local profile integrity fields are invalid for {filename}")
+        if (
+            not isinstance(expected_size, int)
+            or expected_size < 0
+            or not isinstance(expected_hash, str)
+        ):
+            raise HdfsRawIngestionError(
+                f"local profile integrity fields are invalid for {filename}"
+            )
         _validate_sha256(expected_hash, f"local profile {filename}")
         before_size, digest = _hash_local_file(path)
         after_size = _safe_stat_size(path, filename)
@@ -433,7 +460,9 @@ def ingest_m5_raw(
             expected_children = {f"{staging_path}/{local.source_file}" for local in bundle.files}
             expected_children.update(f"{staging_path}/{name}" for name in metadata)
             if set(hdfs.list_children(staging_path)) != expected_children:
-                raise HdfsRawIngestionError("staging candidate is incomplete or contains unexpected files")
+                raise HdfsRawIngestionError(
+                    "staging candidate is incomplete or contains unexpected files"
+                )
             hdfs.rename(staging_path, raw_path)
             stage_owned = False
             manifests, final_integrity = _validate_snapshot(
@@ -560,7 +589,9 @@ def _verify_metadata_file(
     if stat.replication != EXPECTED_REPLICATION:
         raise HdfsRawIngestionError(f"metadata replication mismatch for {remote_path}")
     remote_hash = client.hash_remote(remote_path)
-    if not isinstance(remote_hash, RemoteFileHash) or remote_hash.sha256 != _sha256(expected_payload):
+    if not isinstance(remote_hash, RemoteFileHash) or remote_hash.sha256 != _sha256(
+        expected_payload
+    ):
         raise HdfsRawIngestionError(f"metadata SHA-256 mismatch for {remote_path}")
     if client.read_remote(remote_path) != expected_payload:
         raise HdfsRawIngestionError(f"metadata content mismatch for {remote_path}")
@@ -592,7 +623,10 @@ def _build_remote_manifest(
         validate_manifest(
             SOURCE_MANIFEST,
             record,
-            lineage_context={"required_status": VALIDATED, "source_version": record["source_version"]},
+            lineage_context={
+                "required_status": VALIDATED,
+                "source_version": record["source_version"],
+            },
         )
     except ContractValidationError as error:
         raise HdfsRawIngestionError(
@@ -613,7 +647,9 @@ def _validate_snapshot(
     children = set(client.list_children(raw_path))
     expected_children = {f"{raw_path}/{name}" for name in expected_names}
     if children != expected_children:
-        raise HdfsRawIngestionError("existing raw snapshot is incomplete or contains conflicting contents")
+        raise HdfsRawIngestionError(
+            "existing raw snapshot is incomplete or contains conflicting contents"
+        )
     addresses = {node.address for node in nodes.values()}
     manifest_path = f"{raw_path}/source_manifests.json"
     sidecar_path = f"{raw_path}/hdfs_integrity.json"
@@ -628,10 +664,14 @@ def _validate_snapshot(
             raise HdfsRawIngestionError("existing source manifests contain a malformed record")
         filename = raw_manifest.get("source_file")
         if not isinstance(filename, str) or filename in by_file:
-            raise HdfsRawIngestionError("existing source manifests contain duplicate source_file values")
+            raise HdfsRawIngestionError(
+                "existing source manifests contain duplicate source_file values"
+            )
         by_file[filename] = raw_manifest
     if set(by_file) != expected_names - {"source_manifests.json", "hdfs_integrity.json"}:
-        raise HdfsRawIngestionError("existing source manifest file set conflicts with local artifacts")
+        raise HdfsRawIngestionError(
+            "existing source manifest file set conflicts with local artifacts"
+        )
 
     remote_files = []
     for local_file in bundle.files:
@@ -660,7 +700,9 @@ def _validate_snapshot(
         files=tuple(remote_files),
         created_at=_string_or_error(sidecar.get("created_at"), "sidecar created_at"),
     )
-    return tuple(MappingProxyType(dict(by_file[local.source_file])) for local in bundle.files), integrity
+    return tuple(
+        MappingProxyType(dict(by_file[local.source_file])) for local in bundle.files
+    ), integrity
 
 
 def _assert_existing_manifest(
@@ -672,18 +714,35 @@ def _assert_existing_manifest(
         validate_manifest(
             SOURCE_MANIFEST,
             stored,
-            lineage_context={"required_status": VALIDATED, "source_version": local_file.manifest["source_version"]},
+            lineage_context={
+                "required_status": VALIDATED,
+                "source_version": local_file.manifest["source_version"],
+            },
         )
     except ContractValidationError as error:
         raise HdfsRawIngestionError(f"existing source manifest is invalid: {error}") from error
     if stored.get("source_file") != local_file.source_file:
-        raise HdfsRawIngestionError("existing source manifest source_file conflicts with local artifacts")
+        raise HdfsRawIngestionError(
+            "existing source manifest source_file conflicts with local artifacts"
+        )
     if stored.get("artifact_uri") != evidence.artifact_uri:
-        raise HdfsRawIngestionError(f"existing source manifest URI conflicts for {local_file.source_file}")
-    if stored.get("artifact_checksum") != evidence.sha256 or stored.get("size_bytes") != evidence.size_bytes:
-        raise HdfsRawIngestionError(f"existing source manifest integrity conflicts for {local_file.source_file}")
+        raise HdfsRawIngestionError(
+            f"existing source manifest URI conflicts for {local_file.source_file}"
+        )
+    if (
+        stored.get("artifact_checksum") != evidence.sha256
+        or stored.get("size_bytes") != evidence.size_bytes
+    ):
+        raise HdfsRawIngestionError(
+            f"existing source manifest integrity conflicts for {local_file.source_file}"
+        )
     for field_name, expected in local_file.manifest.items():
-        if field_name in {"source_name", "source_url", "downloaded_at_utc", "source_schema_version"}:
+        if field_name in {
+            "source_name",
+            "source_url",
+            "downloaded_at_utc",
+            "source_schema_version",
+        }:
             if stored.get(field_name) != expected:
                 raise HdfsRawIngestionError(
                     f"existing source manifest provenance conflicts for "
@@ -691,7 +750,9 @@ def _assert_existing_manifest(
                 )
             continue
         if field_name not in _MUTABLE_MANIFEST_FIELDS and stored.get(field_name) != expected:
-            raise HdfsRawIngestionError(f"existing source manifest metadata conflicts for {local_file.source_file}")
+            raise HdfsRawIngestionError(
+                f"existing source manifest metadata conflicts for {local_file.source_file}"
+            )
 
 
 def _assert_existing_sidecar(
@@ -701,7 +762,9 @@ def _assert_existing_sidecar(
     remote_files: list[RemoteFileEvidence],
 ) -> None:
     if sidecar.get("status") != VALIDATED or sidecar.get("source_version") != bundle.source_version:
-        raise HdfsRawIngestionError("existing HDFS integrity sidecar is not a matching validated snapshot")
+        raise HdfsRawIngestionError(
+            "existing HDFS integrity sidecar is not a matching validated snapshot"
+        )
     if sidecar.get("raw_path") != raw_path or sidecar.get("replication") != EXPECTED_REPLICATION:
         raise HdfsRawIngestionError("existing HDFS integrity sidecar path or replication conflicts")
     raw_files = sidecar.get("files")

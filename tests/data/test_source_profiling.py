@@ -139,9 +139,7 @@ def test_success_profile_preserves_zero_sales_and_validates_every_manifest(
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     _write_canonical_source(source_dir)
-    original_bytes = {
-        path.name: path.read_bytes() for path in source_dir.glob("*.csv")
-    }
+    original_bytes = {path.name: path.read_bytes() for path in source_dir.glob("*.csv")}
 
     result = _profile(source_dir)
 
@@ -151,9 +149,7 @@ def test_success_profile_preserves_zero_sales_and_validates_every_manifest(
     assert evaluation["zero_sales_count"] == 1941 * 2 - 1
     assert evaluation["invalid_counts"] == {}
     assert result.manifests
-    assert {manifest["source_version"] for manifest in result.manifests} == {
-        result.source_version
-    }
+    assert {manifest["source_version"] for manifest in result.manifests} == {result.source_version}
     assert result.profile["downloaded_at_utc"] == TIMESTAMP
     assert isinstance(result.profile["profiled_at_utc"], str)
     for manifest in result.manifests:

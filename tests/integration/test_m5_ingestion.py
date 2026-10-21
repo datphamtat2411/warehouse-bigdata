@@ -81,7 +81,9 @@ def _assert_remote_source_evidence(client: HdfsCliClient, source_dir: Path, raw_
         assert remote_hash.size_bytes == expected_size
         assert remote_hash.sha256 == "sha256:" + expected_hash
         assert blocks and sum(block.length for block in blocks) == expected_size
-        assert all(len(block.locations) == 2 and set(block.locations) == addresses for block in blocks)
+        assert all(
+            len(block.locations) == 2 and set(block.locations) == addresses for block in blocks
+        )
 
 
 def _submit_spark_read(hdfs: HDFSVerification, raw_uri: str, source_version: str) -> dict:
@@ -101,7 +103,9 @@ def _submit_spark_read(hdfs: HDFSVerification, raw_uri: str, source_version: str
         source_version,
     ]
     completed = hdfs.runner.run(command, timeout=360, check=False)
-    require(completed.returncode == 0, f"M5 Spark verification failed: {completed.stderr[-2000:]!r}")
+    require(
+        completed.returncode == 0, f"M5 Spark verification failed: {completed.stderr[-2000:]!r}"
+    )
     records = [
         json.loads(line.removeprefix("WAREHOUSE_M5_RAW "))
         for line in completed.stdout.decode().splitlines()
@@ -186,6 +190,7 @@ def test_real_m5_ingestion_manifest_integrity_and_spark_hdfs_read(
     )
     assert rerun.status == VALIDATED
     assert rerun.raw_path == result.raw_path
-    assert rerun.artifact_paths["pipeline_run_manifest"] != result.artifact_paths[
-        "pipeline_run_manifest"
-    ]
+    assert (
+        rerun.artifact_paths["pipeline_run_manifest"]
+        != result.artifact_paths["pipeline_run_manifest"]
+    )

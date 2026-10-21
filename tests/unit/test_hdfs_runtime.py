@@ -59,7 +59,9 @@ def _patch_runtime(
     values: dict[str, str] | None = None,
 ) -> list[list[str]]:
     calls: list[list[str]] = []
-    monkeypatch.setattr("warehouse_bigdata.common.hdfs_runtime.shutil.which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "warehouse_bigdata.common.hdfs_runtime.shutil.which", lambda _: "/usr/bin/docker"
+    )
 
     def run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(args)
@@ -162,7 +164,9 @@ def test_factory_rejects_wrong_effective_configuration(
 
 
 def test_factory_reports_absent_container(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("warehouse_bigdata.common.hdfs_runtime.shutil.which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "warehouse_bigdata.common.hdfs_runtime.shutil.which", lambda _: "/usr/bin/docker"
+    )
 
     def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args, 1, "", "No such container")

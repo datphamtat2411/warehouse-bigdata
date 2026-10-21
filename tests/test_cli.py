@@ -110,17 +110,20 @@ def test_profile_m5_source_forwards_required_provenance(
     profile = Mock(return_value=7)
     monkeypatch.setattr("warehouse_bigdata.cli.run_profile_m5_source", profile)
 
-    assert main(
-        [
-            "profile-m5-source",
-            "--source-dir",
-            "/tmp/m5-source",
-            "--source-url",
-            "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
-            "--downloaded-at-utc",
-            "2026-10-21T12:34:56Z",
-        ]
-    ) == 7
+    assert (
+        main(
+            [
+                "profile-m5-source",
+                "--source-dir",
+                "/tmp/m5-source",
+                "--source-url",
+                "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
+                "--downloaded-at-utc",
+                "2026-10-21T12:34:56Z",
+            ]
+        )
+        == 7
+    )
     profile.assert_called_once_with(
         Path("/tmp/m5-source"),
         "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
@@ -142,15 +145,18 @@ def test_profile_m5_source_forwards_unknown_download_time_as_none(
     profile = Mock(return_value=0)
     monkeypatch.setattr("warehouse_bigdata.cli.run_profile_m5_source", profile)
 
-    assert main(
-        [
-            "profile-m5-source",
-            "--source-dir",
-            "/tmp/m5-source",
-            "--source-url",
-            "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "profile-m5-source",
+                "--source-dir",
+                "/tmp/m5-source",
+                "--source-url",
+                "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
+            ]
+        )
+        == 0
+    )
     profile.assert_called_once_with(
         Path("/tmp/m5-source"),
         "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
@@ -164,19 +170,22 @@ def test_ingest_m5_raw_forwards_explicit_artifact_paths(
     ingest = Mock(return_value=0)
     monkeypatch.setattr("warehouse_bigdata.cli.run_ingest_m5_raw", ingest)
 
-    assert main(
-        [
-            "ingest-m5-raw",
-            "--source-dir",
-            "/inputs/m5",
-            "--profile-path",
-            "/artifacts/source_profile.json",
-            "--manifest-path",
-            "/artifacts/source_manifests.json",
-            "--pipeline-run-id",
-            "run-20261021",
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "ingest-m5-raw",
+                "--source-dir",
+                "/inputs/m5",
+                "--profile-path",
+                "/artifacts/source_profile.json",
+                "--manifest-path",
+                "/artifacts/source_manifests.json",
+                "--pipeline-run-id",
+                "run-20261021",
+            ]
+        )
+        == 0
+    )
     ingest.assert_called_once_with(
         Path("/inputs/m5"),
         Path("/artifacts/source_profile.json"),
@@ -199,19 +208,22 @@ def test_ingest_m5_forwards_source_provenance_and_optional_run_id(
     ingest = Mock(return_value=0)
     monkeypatch.setattr("warehouse_bigdata.cli.run_ingest_m5", ingest)
 
-    assert main(
-        [
-            "ingest-m5",
-            "--source-dir",
-            "/inputs/m5",
-            "--source-url",
-            "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
-            "--downloaded-at-utc",
-            "2026-10-21T12:34:56Z",
-            "--pipeline-run-id",
-            "run-combined",
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "ingest-m5",
+                "--source-dir",
+                "/inputs/m5",
+                "--source-url",
+                "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
+                "--downloaded-at-utc",
+                "2026-10-21T12:34:56Z",
+                "--pipeline-run-id",
+                "run-combined",
+            ]
+        )
+        == 0
+    )
     ingest.assert_called_once_with(
         Path("/inputs/m5"),
         "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
@@ -226,15 +238,18 @@ def test_ingest_m5_forwards_unknown_download_time_as_none(
     ingest = Mock(return_value=0)
     monkeypatch.setattr("warehouse_bigdata.cli.run_ingest_m5", ingest)
 
-    assert main(
-        [
-            "ingest-m5",
-            "--source-dir",
-            "/inputs/m5",
-            "--source-url",
-            "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "ingest-m5",
+                "--source-dir",
+                "/inputs/m5",
+                "--source-url",
+                "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
+            ]
+        )
+        == 0
+    )
     ingest.assert_called_once_with(
         Path("/inputs/m5"),
         "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
