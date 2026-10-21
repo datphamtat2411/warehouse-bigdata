@@ -82,6 +82,7 @@ def _run(
     calls: list[tuple[str, object]] | None = None,
     publication_error: str | None = None,
     downloaded_at_utc: str | None = TIMESTAMP,
+    client: object | None = object(),
 ):
     events = [] if calls is None else calls
     monkeypatch.setattr(
@@ -121,10 +122,28 @@ def _run(
         downloaded_at_utc,
         artifact_root=tmp_path / "artifacts",
         hdfs_config=HDFS_CONFIG,
-        client=object(),
+        client=client,
         clock=lambda: TIMESTAMP,
         pipeline_run_id=pipeline_run_id,
     ), events
+
+
+def test_orchestration_uses_the_production_client_factory_when_not_injected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[HDFSConfig] = []
+    monkeypatch.setattr(
+        orchestration,
+        "create_hdfs_cli_client",
+        lambda config: calls.append(config) or object(),
+    )
+
+    result, events = _run(tmp_path, monkeypatch, client=None)
+
+    assert result.status == VALIDATED
+    assert calls == [HDFS_CONFIG]
+    assert [event[0] for event in events] == ["profile", "write", "ingest", "publish"]
 
 
 def test_task01_artifacts_are_written_before_hdfs_ingestion(tmp_path, monkeypatch) -> None:

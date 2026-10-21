@@ -16,6 +16,7 @@ from typing import Any
 
 from warehouse_bigdata.common.config import HDFSConfig, load_hdfs_config, load_paths_config
 from warehouse_bigdata.common.hdfs_client import HdfsCliClient
+from warehouse_bigdata.common.hdfs_runtime import create_hdfs_cli_client
 from warehouse_bigdata.contracts.manifests import FAILED, PIPELINE_RUN_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import ContractValidationError, validate_manifest
 from warehouse_bigdata.ingestion.hdfs_raw import (
@@ -146,7 +147,7 @@ def run_m5_ingestion(
     hdfs: HdfsCliClient | Any | None = client
     try:
         settings = load_hdfs_config() if settings is None else settings
-        hdfs = HdfsCliClient() if hdfs is None else hdfs
+        hdfs = create_hdfs_cli_client(settings) if hdfs is None else hdfs
         raw_result = ingest_m5_raw(
             Path(source_dir),
             source_artifacts["source_profile"],

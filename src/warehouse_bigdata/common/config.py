@@ -62,6 +62,7 @@ class PathsConfig:
     """Configuration for local generated-artifact paths."""
 
     artifacts_dir: Path
+    scratch_dir: Path = Path("artifacts/scratch")
 
 
 def load_runtime_config(env: Mapping[str, str] | None = None) -> RuntimeConfig:
@@ -138,8 +139,10 @@ def load_paths_config(env: Mapping[str, str] | None = None) -> PathsConfig:
     """Load local artifact paths without resolving or creating them."""
     settings = _settings(env)
     artifacts_dir = _read(settings, "WAREHOUSE_ARTIFACTS_DIR", default="artifacts")
+    scratch_dir = _read(settings, "WAREHOUSE_SCRATCH_DIR", default="artifacts/scratch")
     _validate_local_path(artifacts_dir, "WAREHOUSE_ARTIFACTS_DIR")
-    return PathsConfig(artifacts_dir=Path(artifacts_dir))
+    _validate_local_path(scratch_dir, "WAREHOUSE_SCRATCH_DIR")
+    return PathsConfig(artifacts_dir=Path(artifacts_dir), scratch_dir=Path(scratch_dir))
 
 
 def _settings(env: Mapping[str, str] | None) -> Mapping[str, str]:

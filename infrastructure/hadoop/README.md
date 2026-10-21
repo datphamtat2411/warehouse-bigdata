@@ -14,19 +14,45 @@ gate.
 The M5 workflow consumes an already-acquired local CSV directory. It profiles the source
 before creating an HDFS client, uploads through the existing bounded Hadoop client, and
 publishes only a Contract v1 run manifest after independent size, SHA-256, replication,
-and block-placement checks pass. The source directory is mounted read-only by the host
-wrapper; Kaggle downloading is not part of this workflow.
+and block-placement checks pass. The source directory is read by host-side Python;
+Kaggle downloading is not part of this workflow.
+
+The supported launcher is a host workflow, not a Compose application container. It requires
+Ubuntu-local `uv`, Bash, `realpath`, `od`, `mktemp`, Docker Engine, and a reachable Docker
+daemon. The existing initialized HDFS daemons must already be write-ready. It reuses the
+pinned Apache Hadoop 3.4.3 image, the existing `warehouse-bigdata` bridge, and the two
+read-only `core-site.xml`/`hdfs-site.xml` binds. It does not start, recreate, or reinitialize
+HDFS or Spark services.
+
+Export these host variables explicitly (or source `.env` into the shell); the launcher
+supplies the client container variables itself:
+
+| Variable | Requirement |
+|---|---|
+| `WAREHOUSE_HDFS_URI` | Required; normally `hdfs://hdfs-namenode:8020`, matching `core-site.xml` |
+| `WAREHOUSE_HDFS_BASE_PATH` | Optional; defaults to `/data/warehouse` |
+| `WAREHOUSE_ARTIFACTS_DIR` | Optional writable Ubuntu-local evidence directory |
+| `WAREHOUSE_SCRATCH_DIR` | Optional writable disk-backed Ubuntu-local scratch; defaults to `artifacts/scratch` |
+| `WAREHOUSE_HDFS_CLI_CONTAINER` / `WAREHOUSE_HDFS_CLI_OWNER` | Launcher-owned; do not set manually |
 
 With the existing initialized HDFS and Spark services ready, and the prepared
-`spark-submit` image already built, run from the repository root:
+Spark runtime available for the later verification, run from the repository root:
 
 ```bash
 WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
-WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
 bash scripts/ingest-m5.sh \
   --source-dir /path/to/m5-csvs \
   --source-url https://www.kaggle.com/competitions/m5-forecasting-accuracy/data
 ```
+
+The launcher creates one uniquely named, run-labeled Hadoop client with no HDFS storage
+volume. Python runs on the Ubuntu host and sends Hadoop CLI operations through the explicit
+`docker exec -i <client> hdfs ...` prefix, so CSV uploads and remote hashes remain streamed.
+The client is checked for the pinned image, running/healthy state, bridge membership,
+ownership label, effective Hadoop settings, and read-only XML mounts before ingestion. On
+success, failure, or interruption, cleanup removes only the exact client whose name and
+ownership label match this invocation. An absent, unhealthy, or misconfigured client fails
+before HDFS mutation.
 
 The attempt writes local evidence below `artifacts/m5-ingestion/<pipeline_run_id>/` and
 uses `/data/warehouse/raw/m5/source_version=<content-derived-id>/` plus
@@ -39,7 +65,14 @@ are recorded as `FAILED`; no incomplete upload is reported as `VALIDATED`.
 known; otherwise the profile and every source manifest retain `downloaded_at_utc: null`.
 The pipeline records profiling time separately and does not infer or verify Kaggle's
 download time. The live source workflow still requires the original CSVs, the official
-source URL, and the already-running HDFS/Spark prerequisites.
+source URL, and the already-running HDFS/Spark prerequisites. Source profiling creates its
+SQLite price-key index only below `WAREHOUSE_SCRATCH_DIR`, verifies that directory with an
+owned write probe, and removes the run-owned temporary directory after profiling.
+
+`scripts/ingest-m5-raw.sh` is retired so there is no second container lifecycle or ingestion
+implementation. The `warehouse-bigdata ingest-m5-raw` command remains available for focused
+tests and explicitly configured low-level callers; normal operation should use the combined
+launcher.
 
 The opt-in integration test requires explicit `WAREHOUSE_M5_SOURCE_DIR`,
 `WAREHOUSE_M5_SOURCE_URL` values plus the already-running HDFS/Spark prerequisites. It checks the
@@ -48,6 +81,25 @@ stored source-manifest lineage, remote byte sizes and SHA-256 values, replicatio
 Spark Standalone HDFS read. It leaves validated M5 raw snapshots in place and changes no
 volumes or unrelated paths. This cluster is distributed across containers on one host;
 it does not demonstrate physical multi-host fault tolerance.
+
+For the live M03 acceptance, first run the launcher above and retain its
+`artifacts/m5-ingestion/<pipeline_run_id>/` evidence. Then submit the existing Spark
+verification job, using the returned actual raw HDFS URI and `source_version`:
+
+```bash
+WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
+WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
+bash scripts/spark-submit.sh -- \
+  warehouse_bigdata/jobs/verify_m5_raw_hdfs.py \
+  --raw-uri hdfs://hdfs-namenode:8020/data/warehouse/raw/m5/source_version=sha256-... \
+  --source-version sha256:...
+```
+
+This uses the existing Spark submission image and Standalone topology and must read the
+actual promoted HDFS path. Do not substitute a local path or start/reinitialize services
+as part of the acceptance. A live run remains blocked until real M5 CSVs, healthy HDFS and
+Spark services, the prepared Spark submission image, and explicit approval for the live
+acceptance are available.
 
 ## Runtime and interfaces
 

@@ -37,6 +37,7 @@ ALL_VARIABLES = {
     "WAREHOUSE_CLICKHOUSE_USER",
     "WAREHOUSE_CLICKHOUSE_PASSWORD",
     "WAREHOUSE_ARTIFACTS_DIR",
+    "WAREHOUSE_SCRATCH_DIR",
 }
 
 
@@ -290,6 +291,7 @@ def test_component_loaders_are_independent() -> None:
     assert load_spark_config({"WAREHOUSE_SPARK_MASTER_URL": "local[*]"}).master_url == "local[*]"
     assert load_clickhouse_config(clickhouse_environment()).host == "localhost"
     assert load_paths_config({}).artifacts_dir == Path("artifacts")
+    assert load_paths_config({}).scratch_dir == Path("artifacts/scratch")
 
 
 def test_configuration_objects_are_immutable() -> None:

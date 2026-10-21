@@ -20,6 +20,7 @@ from warehouse_bigdata.common.hdfs_client import (
 )
 from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, SOURCE_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import validate_manifest
+from warehouse_bigdata.ingestion import hdfs_raw
 from warehouse_bigdata.ingestion.hdfs_raw import (
     HdfsRawIngestionError,
     ingest_m5_raw,
@@ -338,6 +339,33 @@ def test_preflight_accepts_consistent_null_acquisition_provenance(tmp_path: Path
     assert result.status == "PROMOTED"
     assert result.manifests
     assert all(manifest["downloaded_at_utc"] is None for manifest in result.manifests)
+
+
+def test_raw_ingestion_uses_the_production_client_factory_when_not_injected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, profile, manifests = _artifacts(tmp_path)
+    client = FakeHdfs()
+    config = HDFSConfig("hdfs://hdfs-namenode:8020", "/data/warehouse")
+    calls: list[HDFSConfig] = []
+    monkeypatch.setattr(
+        hdfs_raw,
+        "create_hdfs_cli_client",
+        lambda received: calls.append(received) or client,
+    )
+
+    result = ingest_m5_raw(
+        source,
+        profile,
+        manifests,
+        "run-factory",
+        config=config,
+        now=lambda: DOWNLOADED_AT,
+    )
+
+    assert result.status == "PROMOTED"
+    assert calls == [config]
 
 
 def test_preflight_rejects_profile_manifest_provenance_mismatch(tmp_path: Path) -> None:

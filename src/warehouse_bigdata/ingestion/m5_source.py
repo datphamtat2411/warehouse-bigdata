@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Final, cast
 from urllib.parse import urlsplit
 
+from warehouse_bigdata.common.config import load_paths_config
 from warehouse_bigdata.contracts.manifests import FAILED, SOURCE_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import ContractValidationError, validate_manifest
 
@@ -203,7 +204,12 @@ def compute_source_version(file_hashes: Mapping[str, str]) -> str:
     return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
 
-def profile_m5_source(source_dir: Path, provenance: SourceProvenance) -> SourceProfileResult:
+def profile_m5_source(
+    source_dir: Path,
+    provenance: SourceProvenance,
+    *,
+    scratch_dir: Path | None = None,
+) -> SourceProfileResult:
     """Profile local M5 CSVs without downloading, rewriting, or normalizing them."""
     source_path = Path(source_dir)
     if not source_path.exists():
@@ -224,7 +230,11 @@ def profile_m5_source(source_dir: Path, provenance: SourceProvenance) -> SourceP
     except OSError as error:
         raise ValueError(f"cannot list source directory {source_path}: {error}") from error
 
-    with tempfile.TemporaryDirectory(prefix="warehouse-m5-price-index-") as temp_dir:
+    scratch = _prepare_scratch_directory(scratch_dir)
+    with tempfile.TemporaryDirectory(
+        prefix="warehouse-m5-price-index-",
+        dir=scratch,
+    ) as temp_dir:
         price_database = sqlite3.connect(str(Path(temp_dir) / "price-keys.sqlite3"))
         try:
             price_database.execute(
@@ -256,7 +266,7 @@ def profile_m5_source(source_dir: Path, provenance: SourceProvenance) -> SourceP
             price_database.close()
 
     for spec in _SOURCE_FILE_SPECS:
-        if spec.required and spec.filename not in file_profiles:
+        if spec.filename not in file_profiles:
             _add_missing_file_profile(spec, file_profiles, blocking_counts)
 
     source_version = compute_source_version(file_hashes)
@@ -413,14 +423,15 @@ def _add_missing_file_profile(
         "invalid_counts": {},
         "coverage": {},
         "diagnostics": [],
-        "validation_status": FAILED,
+        "validation_status": VALIDATED if not spec.required else FAILED,
     }
-    _invalid(
-        profile,
-        blocking_counts,
-        "missing_required_files",
-        "required source CSV is missing",
-    )
+    if spec.required:
+        _invalid(
+            profile,
+            blocking_counts,
+            "missing_required_files",
+            "required source CSV is missing",
+        )
     file_profiles[spec.filename] = profile
 
 
@@ -461,6 +472,30 @@ def _try_hash_file(
         _invalid(profile, blocking_counts, "file_read_errors", f"cannot hash file: {error}")
         return None
     return f"sha256:{digest.hexdigest()}"
+
+
+def _prepare_scratch_directory(scratch_dir: Path | None) -> Path:
+    configured = load_paths_config().scratch_dir if scratch_dir is None else Path(scratch_dir)
+    try:
+        configured.mkdir(parents=True, exist_ok=True)
+        if not configured.is_dir():
+            raise ValueError(f"scratch path is not a directory: {configured}")
+        descriptor, probe_name = tempfile.mkstemp(
+            prefix=".warehouse-m5-scratch-probe-",
+            dir=configured,
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(b"scratch")
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            Path(probe_name).unlink(missing_ok=True)
+    except (OSError, ValueError) as error:
+        if isinstance(error, ValueError):
+            raise
+        raise ValueError(f"scratch directory is not usable: {configured}: {error}") from error
+    return configured
 
 
 def _validate_header(

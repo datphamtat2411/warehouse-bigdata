@@ -12,8 +12,11 @@ import pytest
 
 from warehouse_bigdata.contracts.manifests import SOURCE_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import validate_manifest
+from warehouse_bigdata.ingestion.hdfs_raw import preflight_source_artifacts
 from warehouse_bigdata.ingestion.m5_source import (
     OFFICIAL_SOURCE_URL,
+    RECOGNIZED_M5_FILES,
+    REQUIRED_M5_FILES,
     SourceProvenance,
     compute_source_version,
     profile_m5_source,
@@ -168,6 +171,59 @@ def test_success_profile_preserves_zero_sales_and_validates_every_manifest(
     )
     assert {path.name: path.read_bytes() for path in source_dir.glob("*.csv")} == original_bytes
     assert all(path.is_relative_to(tmp_path / "artifacts") for path in artifact_paths.values())
+
+
+def test_three_file_profile_records_absent_optional_files_and_passes_hdfs_preflight(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    _write_canonical_source(source_dir)
+
+    result = _profile(source_dir)
+    artifacts = write_source_artifacts(result, tmp_path / "artifacts")
+
+    assert set(result.file_profiles) == RECOGNIZED_M5_FILES
+    for filename in {"sales_train_validation.csv", "sample_submission.csv"}:
+        assert result.file_profiles[filename]["present"] is False
+        assert result.file_profiles[filename]["validation_status"] == VALIDATED
+        assert filename not in {manifest["source_file"] for manifest in result.manifests}
+
+    bundle = preflight_source_artifacts(
+        source_dir,
+        artifacts["source_profile"],
+        artifacts["source_manifests"],
+    )
+    assert {item.source_file for item in bundle.files} == REQUIRED_M5_FILES
+
+
+def test_profile_uses_and_cleans_explicit_scratch_directory(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    _write_canonical_source(source_dir)
+    scratch_dir = tmp_path / "ubuntu-local-scratch"
+
+    result = _profile(source_dir)
+    explicit = profile_m5_source(
+        source_dir,
+        _provenance(),
+        scratch_dir=scratch_dir,
+    )
+
+    assert explicit.source_version == result.source_version
+    assert scratch_dir.is_dir()
+    assert tuple(scratch_dir.iterdir()) == ()
+
+
+def test_profile_rejects_unusable_scratch_path(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    _write_canonical_source(source_dir)
+    scratch_file = tmp_path / "scratch-file"
+    scratch_file.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="scratch"):
+        profile_m5_source(source_dir, _provenance(), scratch_dir=scratch_file)
 
 
 def test_unknown_download_time_is_null_and_profile_time_is_recorded(tmp_path: Path) -> None:

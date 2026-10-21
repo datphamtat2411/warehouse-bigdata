@@ -219,14 +219,13 @@ workflow is documented below; curated transformations remain out of scope.
 The combined workflow accepts an extracted, already-acquired M5 directory. The source
 URL must be the official Kaggle dataset URL. Pass `--downloaded-at-utc` only when the
 actual UTC acquisition time is known; omitting it records JSON `null` rather than a
-fabricated time. The wrapper mounts the source read-only and writes run-scoped evidence
-under the ignored local `artifacts/` directory. HDFS and Spark services, plus the
-prepared submission image, must already be running/prepared; the wrapper starts only
-its short-lived client with `--no-deps`:
+fabricated time. The host launcher reads the source locally, writes run-scoped evidence
+under the ignored local `artifacts/` directory, and uses a disk-backed
+`WAREHOUSE_SCRATCH_DIR` for SQLite profiling indexes. HDFS must already be running and
+write-ready; the launcher creates only its uniquely named Hadoop CLI client:
 
 ```bash
 WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
-WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
 bash scripts/ingest-m5.sh \
   --source-dir /path/to/m5-csvs \
   --source-url https://www.kaggle.com/competitions/m5-forecasting-accuracy/data
@@ -239,6 +238,14 @@ gets a new run ID and returns `REUSED` without overwriting the validated raw sna
 the prior run manifest. A failed profile stops before HDFS client construction. HDFS,
 integrity, or run-manifest publication failures remain `FAILED`, even when an already
 promoted raw snapshot is left immutable.
+
+The launcher uses the pinned Apache Hadoop 3.4.3 image, the existing `warehouse-bigdata`
+bridge, and read-only Hadoop XML binds. Python remains on the Ubuntu host and all Hadoop
+CLI transfers use `docker exec -i` through the owned client. The client is inspected for
+ownership, health, image, network, effective configuration, and read-only mounts, then
+removed only when its exact name and run label match. `scripts/ingest-m5-raw.sh` is retired
+to avoid a second ingestion runtime; use the combined launcher or the explicitly configured
+Python CLI for focused low-level tests.
 
 After ingestion, the minimal distributed read check can be run explicitly with the raw
 URI and exact source identity printed by the workflow:
@@ -398,8 +405,9 @@ all local modes. The Standalone endpoint `spark://spark-master:7077` is reachabl
 the Compose bridge and requires Docker service DNS. ClickHouse requires its host,
 port, database, and user, while its password
 is optional and empty by default. Local generated artifacts use
-`WAREHOUSE_ARTIFACTS_DIR`, which defaults to `artifacts`; this is a local filesystem
-path and is distinct from the HDFS base path.
+`WAREHOUSE_ARTIFACTS_DIR`, which defaults to `artifacts`, and profiling scratch uses
+`WAREHOUSE_SCRATCH_DIR`, which defaults to `artifacts/scratch`; both are local filesystem
+paths distinct from the HDFS base path.
 
 Invalid or missing values raise `ConfigurationError` with the variable and expected
 format. Required HDFS, Spark, and ClickHouse endpoints remain blank in

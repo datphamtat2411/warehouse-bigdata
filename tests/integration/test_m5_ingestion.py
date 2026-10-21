@@ -53,6 +53,14 @@ def _raw_uri(config, raw_path: str) -> str:
     return config.uri.rstrip("/") + raw_path
 
 
+def _stream_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _assert_remote_source_evidence(client: HdfsCliClient, source_dir: Path, raw_path: str) -> None:
     nodes = client.report()
     addresses = {node.address for node in nodes.values()}
@@ -63,15 +71,16 @@ def _assert_remote_source_evidence(client: HdfsCliClient, source_dir: Path, raw_
     }
     for filename, local_path in local_files.items():
         remote_path = f"{raw_path}/{filename}"
-        expected = local_path.read_bytes()
+        expected_size = local_path.stat().st_size
+        expected_hash = _stream_sha256(local_path)
         stat = client.stat(remote_path)
         remote_hash = client.hash_remote(remote_path)
         blocks = client.fsck(remote_path, addresses, expected_replication=2)
-        assert stat.size_bytes == len(expected)
+        assert stat.size_bytes == expected_size
         assert stat.replication == 2
-        assert remote_hash.size_bytes == len(expected)
-        assert remote_hash.sha256 == "sha256:" + hashlib.sha256(expected).hexdigest()
-        assert blocks and sum(block.length for block in blocks) == len(expected)
+        assert remote_hash.size_bytes == expected_size
+        assert remote_hash.sha256 == "sha256:" + expected_hash
+        assert blocks and sum(block.length for block in blocks) == expected_size
         assert all(len(block.locations) == 2 and set(block.locations) == addresses for block in blocks)
 
 

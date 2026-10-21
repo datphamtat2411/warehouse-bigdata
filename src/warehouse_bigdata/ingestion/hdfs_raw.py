@@ -23,6 +23,7 @@ from warehouse_bigdata.common.hdfs_client import (
     RemoteFileHash,
     RemoteFileStat,
 )
+from warehouse_bigdata.common.hdfs_runtime import create_hdfs_cli_client
 from warehouse_bigdata.contracts.manifests import (
     HDFS_ARTIFACT_PATHS,
     PIPELINE_RUN_MANIFEST,
@@ -149,7 +150,6 @@ def publish_run_manifest(
         raise HdfsRawIngestionError("run manifest source_version does not match HDFS integrity evidence")
 
     settings = load_hdfs_config() if config is None else config
-    hdfs = HdfsCliClient() if client is None else client
     path = render_run_manifest_path(settings.base_path, pipeline_run_id)
     expected_uri = _hdfs_uri(settings.uri, path)
     if manifest.get("artifact_uri") != expected_uri:
@@ -157,6 +157,7 @@ def publish_run_manifest(
     payload = _json_bytes(manifest)
     addresses = {node.address for node in integrity.datanodes}
     try:
+        hdfs = create_hdfs_cli_client(settings) if client is None else client
         if _exists(hdfs, path):
             raise HdfsRawIngestionError(f"run manifest path already exists; refusing to overwrite: {path}")
         hdfs.mkdir_parents(str(PurePosixPath(path).parent))
@@ -348,12 +349,12 @@ def ingest_m5_raw(
         raise HdfsRawIngestionError("pipeline_run_id must be a bounded safe identifier")
     bundle = preflight_source_artifacts(source_dir, profile_path, manifest_path)
     settings = load_hdfs_config() if config is None else config
-    hdfs = HdfsCliClient() if client is None else client
     timestamp = _utc_now if now is None else now
     raw_path = _render_path(settings.base_path, "raw_m5", source_version=bundle.source_version)
     staging_path = _render_path(settings.base_path, "staging", pipeline_run_id=pipeline_run_id)
 
     try:
+        hdfs = create_hdfs_cli_client(settings) if client is None else client
         nodes = _verify_cluster_prerequisites(hdfs, settings)
         if _exists(hdfs, raw_path):
             if not _is_directory(hdfs, raw_path):
