@@ -1,4 +1,5 @@
 from importlib import import_module, metadata
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -101,3 +102,35 @@ def test_spark_submit_forwards_application_arguments_without_reparsing(
     submit.assert_called_once_with(
         "warehouse_bigdata/jobs/future.py", arguments, ["spark.sql.shuffle.partitions=4"]
     )
+
+
+def test_profile_m5_source_forwards_required_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = Mock(return_value=7)
+    monkeypatch.setattr("warehouse_bigdata.cli.run_profile_m5_source", profile)
+
+    assert main(
+        [
+            "profile-m5-source",
+            "--source-dir",
+            "/tmp/m5-source",
+            "--source-url",
+            "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
+            "--downloaded-at-utc",
+            "2026-10-21T12:34:56Z",
+        ]
+    ) == 7
+    profile.assert_called_once_with(
+        Path("/tmp/m5-source"),
+        "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
+        "2026-10-21T12:34:56Z",
+    )
+
+
+def test_profile_m5_source_requires_provenance(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["profile-m5-source", "--source-dir", "/tmp/m5-source"])
+
+    assert exc_info.value.code == 2
+    assert "--source-url" in capsys.readouterr().err

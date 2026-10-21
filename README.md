@@ -12,8 +12,9 @@ tooling, design specifications, a persistent local HDFS deployment with a passin
 four-scenario integration suite, and an opt-in Spark Standalone deployment with
 passing live infrastructure acceptance, a short-lived Spark submission runtime,
 and a bounded synthetic distributed Spark–HDFS acceptance that passed on
-**2026-10-21**. M5 ingestion, the data pipeline, other services,
-model training, database publication, and dashboard are not implemented yet.
+**2026-10-21**. Local M5 source profiling and manifest generation are implemented;
+M5 ingestion, the data pipeline, other services, model training, database publication,
+and dashboard are not implemented yet.
 
 ## Project Objectives
 
@@ -151,7 +152,8 @@ for the execution snapshot and operational procedures.
 
 ### Planned but not implemented
 
-- M5 download, profiling, ingestion into HDFS, and Spark ETL.
+- M5 download, ingestion into HDFS, and Spark ETL. Local profiling and source manifest
+  generation are implemented for already-acquired CSV packages.
 - Spark MLlib training, chronological evaluation, and seven-day forecast artifacts.
 - Inventory simulation, replenishment, and constrained allocation execution.
 - ClickHouse schemas, shard publication, and analytical queries.
@@ -187,8 +189,19 @@ uv run --locked pytest -q
 uv build
 ```
 
-The CLI provides packaging/help/version checks and the explicit `spark-submit`
-subcommand for the prepared container runtime. For HDFS initialization, startup,
+The CLI provides packaging/help/version checks, local M5 source profiling, and the
+explicit `spark-submit` subcommand for the prepared container runtime. Profile an
+already-acquired source package without downloading or modifying its CSV files:
+
+```bash
+uv run --locked warehouse-bigdata profile-m5-source \
+  --source-dir /path/to/m5-csvs \
+  --source-url https://www.kaggle.com/competitions/m5-forecasting-accuracy/data \
+  --downloaded-at-utc 2026-10-21T12:34:56Z
+```
+
+The command writes `source_profile.json` and `source_manifests.json` below the
+ignored `WAREHOUSE_ARTIFACTS_DIR` run directory. For HDFS initialization, startup,
 smoke checks, and safe lifecycle operations, follow the
 [HDFS operations guide](infrastructure/hadoop/README.md). There is no operational
 data pipeline yet.

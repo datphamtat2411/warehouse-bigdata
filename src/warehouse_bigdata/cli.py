@@ -4,8 +4,10 @@ import argparse
 import sys
 from collections.abc import Sequence
 from importlib import metadata
+from pathlib import Path
 
 from warehouse_bigdata.common.spark_submit import run_spark_submit
+from warehouse_bigdata.jobs.profile_m5_source import run_profile_m5_source
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -28,9 +30,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     submit.add_argument(
         "application", nargs=argparse.REMAINDER, metavar="-- APPLICATION.py [ARGS...]"
     )
+    profile = commands.add_parser(
+        "profile-m5-source",
+        help="Profile already-acquired local M5 CSV files and emit source manifests.",
+    )
+    profile.add_argument("--source-dir", required=True, type=Path, metavar="PATH")
+    profile.add_argument("--source-url", required=True, metavar="URL")
+    profile.add_argument("--downloaded-at-utc", required=True, metavar="TIMESTAMP")
     arguments = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     if arguments.command == "spark-submit":
         if len(arguments.application) < 2 or arguments.application[0] != "--":
             submit.error("a required -- APPLICATION.py [APPLICATION_ARGS...] boundary is missing")
         return run_spark_submit(arguments.application[1], arguments.application[2:], arguments.conf)
+    if arguments.command == "profile-m5-source":
+        try:
+            return run_profile_m5_source(
+                arguments.source_dir,
+                arguments.source_url,
+                arguments.downloaded_at_utc,
+            )
+        except (OSError, ValueError) as error:
+            profile.error(str(error))
     return 0
