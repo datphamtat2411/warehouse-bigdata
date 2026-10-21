@@ -21,7 +21,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = '-m "not integration"'
+addopts = '--import-mode=importlib -m "not integration"'
 markers = [
     "integration: opt-in checks against existing running services",
     "hdfs_disruptive: serial HDFS lifecycle/failure checks requiring an explicit maintenance window",
