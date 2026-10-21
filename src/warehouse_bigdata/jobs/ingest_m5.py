@@ -11,7 +11,7 @@ from warehouse_bigdata.ingestion.orchestration import run_m5_ingestion
 def run_ingest_m5(
     source_dir: Path,
     source_url: str,
-    downloaded_at_utc: str,
+    downloaded_at_utc: str | None = None,
     pipeline_run_id: str | None = None,
 ) -> int:
     """Run one M5 profiling, HDFS-ingestion, and run-manifest workflow."""

@@ -84,6 +84,14 @@ Lifecycle meanings are separate:
 
 `_SUCCESS` or a successful process exit does not imply validation or approval. Failed/incomplete artifacts never update the approved pointer. A retry receives a new immutable execution or publication identity. The previous approved publication remains active when a candidate fails.
 
+`source_manifest` Contract v1 keeps `downloaded_at_utc` as a required field, but the
+field is intentionally nullable. A non-null value remains subject to `TimestampUTC`
+validation; JSON `null` means the actual acquisition time is unknown and is not a source
+quality failure. Existing timestamp-bearing v1 manifests remain valid, and this
+nullability relaxation does not change the Contract v1 identity or version. The profile
+artifact's `profiled_at_utc` is separate profiling evidence and is not added as a
+redundant source-manifest lifecycle field.
+
 ## HDFS Artifact Conventions
 
 The catalog records logical locations only; it does not create HDFS directories.
@@ -146,6 +154,7 @@ The implementation follows the canonical choices written in the reviewed plan. T
 | CONTRACT-012 | Bind application reads to one approved publication context rather than independent latest-ID parameters. | Implemented per plan |
 | CONTRACT-013 | Represent `policy_id` and `policy_version` as separate identities. | Approved for FND-06 implementation |
 | CONTRACT-014 | Carry `evaluation_run_id` on independently rerunnable evaluation artifacts. | Approved for FND-06 implementation |
+| CONTRACT-015 | Keep `source_manifest.downloaded_at_utc` present but nullable; validate non-null values as `TimestampUTC` and preserve explicit timestamps. | Implemented as a compatible Contract v1 clarification |
 
 ## Owning Documents
 

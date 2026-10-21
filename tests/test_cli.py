@@ -128,12 +128,34 @@ def test_profile_m5_source_forwards_required_provenance(
     )
 
 
-def test_profile_m5_source_requires_provenance(capsys: pytest.CaptureFixture[str]) -> None:
+def test_profile_m5_source_requires_source_url(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc_info:
         main(["profile-m5-source", "--source-dir", "/tmp/m5-source"])
 
     assert exc_info.value.code == 2
     assert "--source-url" in capsys.readouterr().err
+
+
+def test_profile_m5_source_forwards_unknown_download_time_as_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = Mock(return_value=0)
+    monkeypatch.setattr("warehouse_bigdata.cli.run_profile_m5_source", profile)
+
+    assert main(
+        [
+            "profile-m5-source",
+            "--source-dir",
+            "/tmp/m5-source",
+            "--source-url",
+            "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
+        ]
+    ) == 0
+    profile.assert_called_once_with(
+        Path("/tmp/m5-source"),
+        "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
+        None,
+    )
 
 
 def test_ingest_m5_raw_forwards_explicit_artifact_paths(
@@ -198,11 +220,36 @@ def test_ingest_m5_forwards_source_provenance_and_optional_run_id(
     )
 
 
-def test_ingest_m5_requires_truthful_provenance(capsys: pytest.CaptureFixture[str]) -> None:
+def test_ingest_m5_forwards_unknown_download_time_as_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ingest = Mock(return_value=0)
+    monkeypatch.setattr("warehouse_bigdata.cli.run_ingest_m5", ingest)
+
+    assert main(
+        [
+            "ingest-m5",
+            "--source-dir",
+            "/inputs/m5",
+            "--source-url",
+            "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
+        ]
+    ) == 0
+    ingest.assert_called_once_with(
+        Path("/inputs/m5"),
+        "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
+        None,
+        None,
+    )
+
+
+def test_ingest_m5_requires_source_url_but_not_download_time(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     with pytest.raises(SystemExit) as exc_info:
         main(["ingest-m5", "--source-dir", "/inputs/m5"])
 
     assert exc_info.value.code == 2
     error = capsys.readouterr().err
     assert "--source-url" in error
-    assert "--downloaded-at-utc" in error
+    assert "required: --downloaded-at-utc" not in error

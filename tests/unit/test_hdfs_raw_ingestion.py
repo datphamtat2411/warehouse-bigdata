@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from warehouse_bigdata.common.config import HDFSConfig
 from warehouse_bigdata.common.hdfs_client import (
     BlockPlacement,
     DataNodeReport,
@@ -17,7 +18,6 @@ from warehouse_bigdata.common.hdfs_client import (
     RemoteFileHash,
     RemoteFileStat,
 )
-from warehouse_bigdata.common.config import HDFSConfig
 from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, SOURCE_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import validate_manifest
 from warehouse_bigdata.ingestion.hdfs_raw import (
@@ -41,7 +41,11 @@ def _digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
-def _artifacts(root: Path) -> tuple[Path, Path, Path]:
+def _artifacts(
+    root: Path,
+    *,
+    downloaded_at_utc: str | None = DOWNLOADED_AT,
+) -> tuple[Path, Path, Path]:
     source = root / "source"
     source.mkdir(exist_ok=True)
     for filename, payload in DATA.items():
@@ -104,7 +108,7 @@ def _artifacts(root: Path) -> tuple[Path, Path, Path]:
                 "source_version": source_version,
                 "source_name": "m5-forecasting-accuracy",
                 "source_url": SOURCE_URL,
-                "downloaded_at_utc": DOWNLOADED_AT,
+                "downloaded_at_utc": downloaded_at_utc,
                 "source_file": filename,
                 "size_bytes": path.stat().st_size,
                 "source_schema_version": "m5-source-v1",
@@ -118,7 +122,7 @@ def _artifacts(root: Path) -> tuple[Path, Path, Path]:
         "source_version": source_version,
         "source_name": "m5-forecasting-accuracy",
         "source_url": SOURCE_URL,
-        "downloaded_at_utc": DOWNLOADED_AT,
+        "downloaded_at_utc": downloaded_at_utc,
         "source_schema_version": "m5-source-v1",
         "validation_scope": {
             "scope": "local_source_files",
@@ -284,8 +288,14 @@ class FakeHdfs:
         )
 
 
-def _ingest(root: Path, client: FakeHdfs, run_id: str = "run-one"):
-    source, profile, manifests = _artifacts(root)
+def _ingest(
+    root: Path,
+    client: FakeHdfs,
+    run_id: str = "run-one",
+    *,
+    downloaded_at_utc: str | None = DOWNLOADED_AT,
+):
+    source, profile, manifests = _artifacts(root, downloaded_at_utc=downloaded_at_utc)
     return ingest_m5_raw(
         source,
         profile,
@@ -316,6 +326,29 @@ def test_source_version_mismatch_is_rejected_before_hdfs_mutation(tmp_path: Path
 
     with pytest.raises(HdfsRawIngestionError, match="source_version"):
         ingest_m5_raw(source, profile, manifests, "run-version", client=client)
+
+    assert client.calls == []
+
+
+def test_preflight_accepts_consistent_null_acquisition_provenance(tmp_path: Path) -> None:
+    client = FakeHdfs()
+
+    result = _ingest(tmp_path, client, "run-null-provenance", downloaded_at_utc=None)
+
+    assert result.status == "PROMOTED"
+    assert result.manifests
+    assert all(manifest["downloaded_at_utc"] is None for manifest in result.manifests)
+
+
+def test_preflight_rejects_profile_manifest_provenance_mismatch(tmp_path: Path) -> None:
+    source, profile, manifests = _artifacts(tmp_path, downloaded_at_utc=None)
+    records = json.loads(manifests.read_text(encoding="utf-8"))
+    records[0]["downloaded_at_utc"] = DOWNLOADED_AT
+    manifests.write_text(json.dumps(records), encoding="utf-8")
+    client = FakeHdfs()
+
+    with pytest.raises(HdfsRawIngestionError, match="downloaded_at_utc"):
+        ingest_m5_raw(source, profile, manifests, "run-mismatched-provenance", client=client)
 
     assert client.calls == []
 
@@ -368,6 +401,24 @@ def test_conflicting_existing_snapshot_is_rejected_without_modification(tmp_path
     with pytest.raises(HdfsRawIngestionError, match="calendar.csv"):
         _ingest(tmp_path, client, "run-conflict")
 
+    mutating = {"mkdir_parents", "mkdir_exclusive", "upload_file", "upload_bytes", "rename", "remove"}
+    assert not any(call[0] in mutating for call in client.calls[before:])
+
+
+def test_existing_snapshot_rejects_conflicting_acquisition_provenance(tmp_path: Path) -> None:
+    client = FakeHdfs()
+    first = _ingest(tmp_path, client, "run-provenance-first")
+    before = len(client.calls)
+
+    with pytest.raises(HdfsRawIngestionError, match="provenance"):
+        _ingest(
+            tmp_path,
+            client,
+            "run-provenance-second",
+            downloaded_at_utc=None,
+        )
+
+    assert first.status == "PROMOTED"
     mutating = {"mkdir_parents", "mkdir_exclusive", "upload_file", "upload_bytes", "rename", "remove"}
     assert not any(call[0] in mutating for call in client.calls[before:])
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -119,15 +119,15 @@ def _write_canonical_source(
         )
 
 
-def _provenance() -> SourceProvenance:
+def _provenance(downloaded_at_utc: str | None = TIMESTAMP) -> SourceProvenance:
     return SourceProvenance(
         source_url=OFFICIAL_SOURCE_URL,
-        downloaded_at_utc=TIMESTAMP,
+        downloaded_at_utc=downloaded_at_utc,
     )
 
 
-def _profile(root: Path):
-    return profile_m5_source(root, _provenance())
+def _profile(root: Path, downloaded_at_utc: str | None = TIMESTAMP):
+    return profile_m5_source(root, _provenance(downloaded_at_utc))
 
 
 def test_success_profile_preserves_zero_sales_and_validates_every_manifest(
@@ -151,8 +151,11 @@ def test_success_profile_preserves_zero_sales_and_validates_every_manifest(
     assert {manifest["source_version"] for manifest in result.manifests} == {
         result.source_version
     }
+    assert result.profile["downloaded_at_utc"] == TIMESTAMP
+    assert isinstance(result.profile["profiled_at_utc"], str)
     for manifest in result.manifests:
         validate_manifest(SOURCE_MANIFEST, manifest)
+        assert manifest["downloaded_at_utc"] == TIMESTAMP
 
     artifact_paths = write_source_artifacts(result, tmp_path / "artifacts")
     profile_document = json.loads(artifact_paths["source_profile"].read_text(encoding="utf-8"))
@@ -165,6 +168,54 @@ def test_success_profile_preserves_zero_sales_and_validates_every_manifest(
     )
     assert {path.name: path.read_bytes() for path in source_dir.glob("*.csv")} == original_bytes
     assert all(path.is_relative_to(tmp_path / "artifacts") for path in artifact_paths.values())
+
+
+def test_unknown_download_time_is_null_and_profile_time_is_recorded(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    _write_canonical_source(source_dir)
+
+    result = _profile(source_dir, downloaded_at_utc=None)
+
+    assert result.status == VALIDATED
+    assert result.profile["downloaded_at_utc"] is None
+    profiled_at = result.profile["profiled_at_utc"]
+    assert isinstance(profiled_at, str)
+    assert datetime.fromisoformat(profiled_at.replace("Z", "+00:00")).tzinfo is not None
+    assert all(manifest["downloaded_at_utc"] is None for manifest in result.manifests)
+
+    artifact_paths = write_source_artifacts(result, tmp_path / "artifacts")
+    profile_document = json.loads(artifact_paths["source_profile"].read_text(encoding="utf-8"))
+    assert profile_document["downloaded_at_utc"] is None
+    assert profile_document["profiled_at_utc"] == profiled_at
+
+
+@pytest.mark.parametrize(
+    "downloaded_at_utc",
+    ["", "unknown", "N/A", "TBD", "2026-10-21T12:34:56", "2026-10-21T12:34:56+01:00"],
+)
+def test_invalid_download_timestamps_are_rejected(downloaded_at_utc: str) -> None:
+    with pytest.raises(ValueError, match="downloaded_at_utc"):
+        SourceProvenance(
+            source_url=OFFICIAL_SOURCE_URL,
+            downloaded_at_utc=downloaded_at_utc,
+        )
+
+
+def test_source_url_must_be_the_official_m5_source() -> None:
+    with pytest.raises(ValueError, match="official Kaggle URL"):
+        SourceProvenance(source_url="https://example.test/m5", downloaded_at_utc=None)
+
+
+def test_source_version_ignores_acquisition_timestamp(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    _write_canonical_source(source_dir)
+
+    known_time = _profile(source_dir, downloaded_at_utc=TIMESTAMP)
+    unknown_time = _profile(source_dir, downloaded_at_utc=None)
+
+    assert unknown_time.source_version == known_time.source_version
 
 
 def test_source_version_is_content_derived_and_order_independent() -> None:

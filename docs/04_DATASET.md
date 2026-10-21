@@ -63,13 +63,19 @@ Recommended acquisition is through the official Kaggle competition page or its a
 kaggle competitions download -c m5-forecasting-accuracy -p ./data/downloads
 ```
 
-After download and extraction, record a **source manifest**. Do not manually alter the original files; keep a read-only raw copy and work on versioned derived outputs.
+The pipeline does not perform this download and cannot verify Kaggle's download time. The
+supported manual acquisition workflow is to download and extract the package externally,
+then copy the original CSVs unchanged into `data/m5/source/` (or another explicit source
+directory). Keep that directory read-only for profiling and ingestion; work on versioned
+derived outputs instead of altering the source files. After the copy, record a **source
+manifest** through the profiling command.
 
 | Manifest field | Meaning | Required? |
 |---|---|---|
 | `source_name` | `M5 Forecasting - Accuracy` | Yes |
 | `source_url` | Official competition data URL | Yes |
-| `downloaded_at_utc` | Actual date/time of acquisition | Yes |
+| `downloaded_at_utc` | Actual UTC date/time of acquisition, when known; `null` means unknown | Optional (field remains present) |
+| `profiled_at_utc` | UTC time automatically observed when local profiling ran | Generated in `source_profile.json` |
 | `original_archive_name` | Downloaded archive filename if applicable | When applicable |
 | `source_file` | Individual original CSV filename | Yes |
 | `size_bytes` | Actual local file size in bytes | Yes |
@@ -78,11 +84,24 @@ After download and extraction, record a **source manifest**. Do not manually alt
 | `source_file_row_count` | Measured data rows excluding header | Yes |
 | `notes` | Extraction method, warnings, deviations | As needed |
 
+`downloaded_at_utc` is provenance metadata, not a data-quality result. Do not substitute
+the current time, file modification time, or ingestion time when the actual acquisition
+time is unavailable. `source_url` remains required and must be the official M5 Kaggle URL.
+`profiled_at_utc` describes the profiling operation and is distinct from acquisition time
+and manifest lifecycle fields such as `created_at` and `completed_at`.
+
 **Current status:** no locally executed manifest or verified file-level profile has been supplied. All fields requiring measurement remain **TBD** until ingestion.
 
 ### 2.3 Cross-module source identity
 
-`source_version` identifies the immutable acquired raw package and is created by J01. `source_snapshot_id` identifies the immutable validated curated derivation created after the J02/J03 quality gates. A curated or downstream artifact must retain the parent `source_version` in its manifest even when its row-level contract uses `source_snapshot_id`. These identifiers are not interchangeable: a new acquisition or a different validated derivation cannot silently reuse the other identity.
+`source_version` identifies the immutable acquired raw package and is created by J01 from
+the canonical sorted present filenames and their source-file SHA-256 checksums. It is
+stable for the same CSV bytes regardless of `downloaded_at_utc` or profiling time.
+`source_snapshot_id` identifies the immutable validated curated derivation created after
+the J02/J03 quality gates. A curated or downstream artifact must retain the parent
+`source_version` in its manifest even when its row-level contract uses
+`source_snapshot_id`. These identifiers are not interchangeable: a new acquisition or a
+different validated derivation cannot silently reuse the other identity.
 
 ---
 

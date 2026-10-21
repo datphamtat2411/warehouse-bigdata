@@ -38,14 +38,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     profile.add_argument("--source-dir", required=True, type=Path, metavar="PATH")
     profile.add_argument("--source-url", required=True, metavar="URL")
-    profile.add_argument("--downloaded-at-utc", required=True, metavar="TIMESTAMP")
+    profile.add_argument("--downloaded-at-utc", metavar="TIMESTAMP")
     workflow = commands.add_parser(
         "ingest-m5",
         help="Profile an extracted M5 package, ingest immutable raw files, and publish its run manifest.",
     )
     workflow.add_argument("--source-dir", required=True, type=Path, metavar="PATH")
     workflow.add_argument("--source-url", required=True, metavar="URL")
-    workflow.add_argument("--downloaded-at-utc", required=True, metavar="TIMESTAMP")
+    workflow.add_argument("--downloaded-at-utc", metavar="TIMESTAMP")
     workflow.add_argument("--pipeline-run-id", metavar="ID")
     ingest = commands.add_parser(
         "ingest-m5-raw",

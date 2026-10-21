@@ -194,18 +194,22 @@ uv build
 
 The CLI provides packaging/help/version checks, local M5 source profiling, the combined
 M5 raw-ingestion workflow, and the explicit `spark-submit` subcommand for the prepared
-container runtime. Profile an already-acquired source package without downloading or
-modifying its CSV files:
+container runtime. The pipeline does not download M5 data or verify when Kaggle delivery
+occurred. Use the supported manual workflow: download and extract the package externally,
+then copy the original CSVs unchanged into `data/m5/source/` (or another explicit source
+directory). Profile the already-acquired package without modifying its CSV files; the
+acquisition timestamp may be omitted when it is unknown:
 
 ```bash
 uv run --locked warehouse-bigdata profile-m5-source \
   --source-dir /path/to/m5-csvs \
-  --source-url https://www.kaggle.com/competitions/m5-forecasting-accuracy/data \
-  --downloaded-at-utc 2026-10-21T12:34:56Z
+  --source-url https://www.kaggle.com/competitions/m5-forecasting-accuracy/data
 ```
 
 The command writes `source_profile.json` and `source_manifests.json` below the
-ignored `WAREHOUSE_ARTIFACTS_DIR` run directory. For HDFS initialization, startup,
+ignored `WAREHOUSE_ARTIFACTS_DIR` run directory. `downloaded_at_utc` contains the supplied
+actual UTC acquisition time when known, otherwise JSON `null`; `profiled_at_utc` is the
+automatically recorded UTC time of profiling. For HDFS initialization, startup,
 smoke checks, and safe lifecycle operations, follow the
 [HDFS operations guide](infrastructure/hadoop/README.md). The combined raw-ingestion
 workflow is documented below; curated transformations remain out of scope.
@@ -213,8 +217,9 @@ workflow is documented below; curated transformations remain out of scope.
 ### M5 Raw Ingestion And Verification
 
 The combined workflow accepts an extracted, already-acquired M5 directory. The source
-URL must be the official Kaggle dataset URL and `--downloaded-at-utc` must be a truthful
-UTC timestamp. The wrapper mounts the source read-only and writes run-scoped evidence
+URL must be the official Kaggle dataset URL. Pass `--downloaded-at-utc` only when the
+actual UTC acquisition time is known; omitting it records JSON `null` rather than a
+fabricated time. The wrapper mounts the source read-only and writes run-scoped evidence
 under the ignored local `artifacts/` directory. HDFS and Spark services, plus the
 prepared submission image, must already be running/prepared; the wrapper starts only
 its short-lived client with `--no-deps`:
@@ -224,8 +229,7 @@ WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
 WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
 bash scripts/ingest-m5.sh \
   --source-dir /path/to/m5-csvs \
-  --source-url https://www.kaggle.com/competitions/m5-forecasting-accuracy/data \
-  --downloaded-at-utc 2026-10-21T12:34:56Z
+  --source-url https://www.kaggle.com/competitions/m5-forecasting-accuracy/data
 ```
 
 Each attempt receives a unique `pipeline_run_id`. Its local profile, quality report, and
@@ -257,7 +261,6 @@ WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
 WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
 WAREHOUSE_M5_SOURCE_DIR=/path/to/m5-csvs \
 WAREHOUSE_M5_SOURCE_URL=https://www.kaggle.com/competitions/m5-forecasting-accuracy/data \
-WAREHOUSE_M5_DOWNLOADED_AT_UTC=2026-10-21T12:34:56Z \
 uv run --locked pytest -q -m integration tests/integration/test_m5_ingestion.py
 ```
 

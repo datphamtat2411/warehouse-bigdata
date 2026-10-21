@@ -15,7 +15,7 @@ from warehouse_bigdata.ingestion.m5_source import (
 def run_profile_m5_source(
     source_dir: Path,
     source_url: str,
-    downloaded_at_utc: str,
+    downloaded_at_utc: str | None = None,
 ) -> int:
     """Profile a local source package and print its generated artifact paths."""
     provenance = SourceProvenance(

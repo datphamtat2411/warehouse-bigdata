@@ -70,6 +70,7 @@ def test_manifest_nullability_and_logical_types_are_enforced() -> None:
     nullable = deepcopy(source_manifest)
     nullable["artifact_checksum"] = None
     nullable["completed_at"] = None
+    nullable["downloaded_at_utc"] = None
     validate_manifest(contract, nullable)
 
     null_record = deepcopy(source_manifest)
@@ -77,6 +78,18 @@ def test_manifest_nullability_and_logical_types_are_enforced() -> None:
     with pytest.raises(ContractValidationError) as null_error:
         validate_manifest(contract, null_record)
     _assert_code(null_error.value, "NULL_NOT_ALLOWED")
+
+    non_nullable_timestamp = deepcopy(source_manifest)
+    non_nullable_timestamp["created_at"] = None
+    with pytest.raises(ContractValidationError) as timestamp_error:
+        validate_manifest(contract, non_nullable_timestamp)
+    _assert_code(timestamp_error.value, "NULL_NOT_ALLOWED")
+
+    malformed_download_timestamp = deepcopy(source_manifest)
+    malformed_download_timestamp["downloaded_at_utc"] = "not-a-timestamp"
+    with pytest.raises(ContractValidationError) as malformed_error:
+        validate_manifest(contract, malformed_download_timestamp)
+    _assert_code(malformed_error.value, "TYPE_MISMATCH")
 
     type_record = deepcopy(source_manifest)
     type_record["row_count"] = "8"

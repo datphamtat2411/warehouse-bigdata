@@ -10,7 +10,7 @@ import tempfile
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -57,7 +57,7 @@ class IngestionRunResult:
 def run_m5_ingestion(
     source_dir: Path,
     source_url: str,
-    downloaded_at_utc: str,
+    downloaded_at_utc: str | None = None,
     *,
     artifact_root: Path | None = None,
     hdfs_config: HDFSConfig | None = None,
@@ -280,7 +280,7 @@ def run_m5_ingestion(
 
 def _validated_or_generated_run_id(value: str | None) -> str:
     if value is None:
-        return f"ingest-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex}"
+        return f"ingest-{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex}"
     if not isinstance(value, str) or not _PIPELINE_RUN_ID.fullmatch(value):
         raise IngestionOrchestrationError("pipeline_run_id must be a bounded safe identifier")
     return value
@@ -542,4 +542,4 @@ def _atomic_write_json(path: Path, value: object) -> None:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")

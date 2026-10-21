@@ -246,6 +246,7 @@ _MANIFEST_NULLABLE_FIELDS: Final = frozenset(
         "schema_fingerprint",
         "completed_at",
         "scenario_seed",
+        "downloaded_at_utc",
     }
 )
 

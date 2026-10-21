@@ -81,12 +81,15 @@ def _run(
     pipeline_run_id: str = "run-one",
     calls: list[tuple[str, object]] | None = None,
     publication_error: str | None = None,
+    downloaded_at_utc: str | None = TIMESTAMP,
 ):
     events = [] if calls is None else calls
     monkeypatch.setattr(
         orchestration,
         "profile_m5_source",
-        lambda source_dir, provenance: events.append(("profile", source_dir))
+        lambda source_dir, provenance: events.append(
+            ("profile", source_dir, provenance.downloaded_at_utc)
+        )
         or _profile_result(profile_status),
     )
     monkeypatch.setattr(
@@ -115,7 +118,7 @@ def _run(
     return orchestration.run_m5_ingestion(
         tmp_path / "source",
         "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data",
-        TIMESTAMP,
+        downloaded_at_utc,
         artifact_root=tmp_path / "artifacts",
         hdfs_config=HDFS_CONFIG,
         client=object(),
@@ -131,6 +134,15 @@ def test_task01_artifacts_are_written_before_hdfs_ingestion(tmp_path, monkeypatc
     assert [event[0] for event in events] == ["profile", "write", "ingest", "publish"]
     assert result.artifact_paths["source_profile"].is_file()
     assert result.artifact_paths["source_manifests"].is_file()
+
+
+def test_combined_ingestion_succeeds_without_download_timestamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, events = _run(tmp_path, monkeypatch, downloaded_at_utc=None)
+
+    assert result.status == VALIDATED
+    assert events[0][2] is None
 
 
 def test_failed_profile_fails_fast_without_hdfs_client_or_ingestion(

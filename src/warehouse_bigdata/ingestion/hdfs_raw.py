@@ -7,7 +7,7 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Final
@@ -33,6 +33,7 @@ from warehouse_bigdata.contracts.validation import ContractValidationError, vali
 from warehouse_bigdata.ingestion.m5_source import (
     RECOGNIZED_M5_FILES,
     REQUIRED_M5_FILES,
+    SourceProvenance,
     compute_source_version,
 )
 
@@ -67,7 +68,7 @@ class LocalSourceBundle:
     source_version: str
     source_name: str
     source_url: str
-    downloaded_at_utc: str
+    downloaded_at_utc: str | None
     source_schema_version: str
     files: tuple[LocalSourceFile, ...]
 
@@ -188,9 +189,32 @@ def preflight_source_artifacts(
     source_version = _required_string(profile, "source_version")
     if not _SOURCE_VERSION.fullmatch(source_version):
         raise HdfsRawIngestionError("source profile source_version is not a valid SHA-256 identity")
+    source_name = _required_string(profile, "source_name")
+    source_url = _required_string(profile, "source_url")
+    source_schema_version = _required_string(profile, "source_schema_version")
+    if "downloaded_at_utc" not in profile:
+        raise HdfsRawIngestionError(
+            "source artifact field downloaded_at_utc must be present and may be null"
+        )
+    downloaded_at_utc = profile["downloaded_at_utc"]
+    if downloaded_at_utc is not None and not isinstance(downloaded_at_utc, str):
+        raise HdfsRawIngestionError(
+            "source artifact field downloaded_at_utc must be an ISO-8601 UTC timestamp or null"
+        )
+    try:
+        provenance = SourceProvenance(
+            downloaded_at_utc=downloaded_at_utc,
+            source_url=source_url,
+            source_name=source_name,
+            source_schema_version=source_schema_version,
+        )
+    except (TypeError, ValueError) as error:
+        raise HdfsRawIngestionError(f"invalid source profile provenance: {error}") from error
     shared = {
-        name: _required_string(profile, name)
-        for name in ("source_name", "source_url", "downloaded_at_utc", "source_schema_version")
+        "source_name": provenance.source_name,
+        "source_url": provenance.source_url,
+        "downloaded_at_utc": provenance.downloaded_at_utc,
+        "source_schema_version": provenance.source_schema_version,
     }
 
     profile_files = profile.get("files")
@@ -658,6 +682,13 @@ def _assert_existing_manifest(
     if stored.get("artifact_checksum") != evidence.sha256 or stored.get("size_bytes") != evidence.size_bytes:
         raise HdfsRawIngestionError(f"existing source manifest integrity conflicts for {local_file.source_file}")
     for field_name, expected in local_file.manifest.items():
+        if field_name in {"source_name", "source_url", "downloaded_at_utc", "source_schema_version"}:
+            if stored.get(field_name) != expected:
+                raise HdfsRawIngestionError(
+                    f"existing source manifest provenance conflicts for "
+                    f"{local_file.source_file}: {field_name}"
+                )
+            continue
         if field_name not in _MUTABLE_MANIFEST_FIELDS and stored.get(field_name) != expected:
             raise HdfsRawIngestionError(f"existing source manifest metadata conflicts for {local_file.source_file}")
 
@@ -836,7 +867,7 @@ def _jsonable(value: object) -> object:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _exists(client: Any, path: str) -> bool:

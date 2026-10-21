@@ -428,7 +428,6 @@ WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
 WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
 WAREHOUSE_M5_SOURCE_DIR=/path/to/m5-csvs \
 WAREHOUSE_M5_SOURCE_URL=https://www.kaggle.com/competitions/m5-forecasting-accuracy/data \
-WAREHOUSE_M5_DOWNLOADED_AT_UTC=2026-10-21T12:34:56Z \
 uv run --locked pytest -q -m integration tests/integration/test_m5_ingestion.py
 ```
 

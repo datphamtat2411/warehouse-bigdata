@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.hdfs_support import HDFSVerification, ROOT, require
+from tests.integration.hdfs_support import ROOT, HDFSVerification, require
 from warehouse_bigdata.common.config import load_hdfs_config, load_spark_config
 from warehouse_bigdata.common.hdfs_client import HdfsCliClient
 from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, VALIDATED
@@ -23,13 +23,13 @@ pytestmark = pytest.mark.integration
 SOURCE_DIR = os.environ.get("WAREHOUSE_M5_SOURCE_DIR")
 SOURCE_URL = os.environ.get("WAREHOUSE_M5_SOURCE_URL")
 DOWNLOADED_AT_UTC = os.environ.get("WAREHOUSE_M5_DOWNLOADED_AT_UTC")
-if not all((SOURCE_DIR, SOURCE_URL, DOWNLOADED_AT_UTC)):
+if not all((SOURCE_DIR, SOURCE_URL)):
     pytestmark = [
         pytest.mark.integration,
         pytest.mark.skip(
             reason=(
-                "Set WAREHOUSE_M5_SOURCE_DIR, WAREHOUSE_M5_SOURCE_URL, and "
-                "WAREHOUSE_M5_DOWNLOADED_AT_UTC for the live M5 acceptance."
+                "Set WAREHOUSE_M5_SOURCE_DIR and WAREHOUSE_M5_SOURCE_URL for the live "
+                "M5 acceptance; the HDFS/Spark prerequisites must also be running."
             )
         ),
     ]
@@ -105,7 +105,7 @@ def _submit_spark_read(hdfs: HDFSVerification, raw_uri: str, source_version: str
 def test_real_m5_ingestion_manifest_integrity_and_spark_hdfs_read(
     tmp_path: Path, hdfs: HDFSVerification
 ) -> None:
-    assert SOURCE_DIR is not None and SOURCE_URL is not None and DOWNLOADED_AT_UTC is not None
+    assert SOURCE_DIR is not None and SOURCE_URL is not None
     source_dir = Path(SOURCE_DIR).resolve(strict=True)
     hdfs_config = load_hdfs_config()
     spark_config = load_spark_config()

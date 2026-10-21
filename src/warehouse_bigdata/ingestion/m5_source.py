@@ -13,7 +13,7 @@ import tempfile
 import uuid
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Final, cast
 from urllib.parse import urlsplit
@@ -51,7 +51,7 @@ _SUBMISSION_IDENTIFIERS: Final = ("id",)
 class SourceProvenance:
     """Truthful provenance supplied for one local M5 source package."""
 
-    downloaded_at_utc: str
+    downloaded_at_utc: str | None = None
     source_url: str = OFFICIAL_SOURCE_URL
     source_name: str = M5_SOURCE_NAME
     source_schema_version: str = SOURCE_SCHEMA_VERSION
@@ -63,7 +63,10 @@ class SourceProvenance:
             raise ValueError(f"source_schema_version must be {SOURCE_SCHEMA_VERSION!r}.")
         if not _is_official_source_url(self.source_url):
             raise ValueError(f"source_url must be the official Kaggle URL: {OFFICIAL_SOURCE_URL}")
-        if _parse_utc_timestamp(self.downloaded_at_utc) is None:
+        if (
+            self.downloaded_at_utc is not None
+            and _parse_utc_timestamp(self.downloaded_at_utc) is None
+        ):
             raise ValueError("downloaded_at_utc must be an ISO-8601 UTC timestamp.")
 
 
@@ -207,6 +210,7 @@ def profile_m5_source(source_dir: Path, provenance: SourceProvenance) -> SourceP
         raise ValueError(f"source directory does not exist: {source_path}")
     if not source_path.is_dir():
         raise ValueError(f"source path is not a directory: {source_path}")
+    profiled_at_utc = _utc_now()
 
     blocking_counts: dict[str, int] = {}
     file_profiles: dict[str, dict[str, object]] = {}
@@ -267,6 +271,7 @@ def profile_m5_source(source_dir: Path, provenance: SourceProvenance) -> SourceP
         file_profiles,
         findings,
         blocking_counts,
+        profiled_at_utc,
     )
     manifests = _build_manifests(
         source_path,
@@ -880,6 +885,7 @@ def _build_profile_document(
     file_profiles: dict[str, dict[str, object]],
     findings: tuple[str, ...],
     blocking_counts: dict[str, int],
+    profiled_at_utc: str,
 ) -> dict[str, object]:
     def measured_row_count(filename: str) -> int:
         profile = file_profiles.get(filename)
@@ -889,7 +895,6 @@ def _build_profile_document(
 
     evaluation_profile = file_profiles.get("sales_train_evaluation.csv", {})
     validation_profile = file_profiles.get("sales_train_validation.csv", {})
-    calendar_profile = file_profiles.get("calendar.csv", {})
     evaluation_coverage = cast(dict[str, object], evaluation_profile.get("coverage", {}))
     validation_coverage = cast(dict[str, object], validation_profile.get("coverage", {}))
     measurements = {
@@ -914,6 +919,7 @@ def _build_profile_document(
         "source_name": provenance.source_name,
         "source_url": provenance.source_url,
         "downloaded_at_utc": provenance.downloaded_at_utc,
+        "profiled_at_utc": profiled_at_utc,
         "source_schema_version": provenance.source_schema_version,
         "validation_scope": {
             "scope": "local_source_files",
@@ -1018,7 +1024,7 @@ def _is_official_source_url(value: str) -> bool:
     )
 
 
-def _parse_utc_timestamp(value: str) -> datetime | None:
+def _parse_utc_timestamp(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
     try:
@@ -1031,7 +1037,7 @@ def _parse_utc_timestamp(value: str) -> datetime | None:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _atomic_write_json(path: Path, value: object) -> None:

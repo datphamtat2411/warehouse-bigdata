@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-    printf 'Usage: bash scripts/ingest-m5.sh --source-dir PATH --source-url URL --downloaded-at-utc TIMESTAMP [--pipeline-run-id ID]\n'
+    printf 'Usage: bash scripts/ingest-m5.sh --source-dir PATH --source-url URL [--downloaded-at-utc TIMESTAMP] [--pipeline-run-id ID]\n'
 }
 
 if [[ $# == 1 && $1 == --help ]]; then
@@ -14,6 +14,7 @@ fi
 source_dir=
 source_url=
 downloaded_at_utc=
+downloaded_at_utc_provided=0
 pipeline_run_id=
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -22,7 +23,10 @@ while [[ $# -gt 0 ]]; do
             case "$1" in
                 --source-dir) source_dir=$2 ;;
                 --source-url) source_url=$2 ;;
-                --downloaded-at-utc) downloaded_at_utc=$2 ;;
+                --downloaded-at-utc)
+                    downloaded_at_utc=$2
+                    downloaded_at_utc_provided=1
+                    ;;
                 --pipeline-run-id) pipeline_run_id=$2 ;;
             esac
             shift 2
@@ -34,7 +38,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z $source_dir || -z $source_url || -z $downloaded_at_utc ]]; then
+if [[ -z $source_dir || -z $source_url || $downloaded_at_utc_provided == 1 && -z $downloaded_at_utc ]]; then
     usage >&2
     exit 2
 fi
@@ -68,8 +72,10 @@ fi
 arguments=(
     --source-dir /opt/warehouse-input/source
     --source-url "$source_url"
-    --downloaded-at-utc "$downloaded_at_utc"
 )
+if [[ $downloaded_at_utc_provided == 1 ]]; then
+    arguments+=(--downloaded-at-utc "$downloaded_at_utc")
+fi
 if [[ -n $pipeline_run_id ]]; then
     arguments+=(--pipeline-run-id "$pipeline_run_id")
 fi

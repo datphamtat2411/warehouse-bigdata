@@ -25,8 +25,7 @@ WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
 WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
 bash scripts/ingest-m5.sh \
   --source-dir /path/to/m5-csvs \
-  --source-url https://www.kaggle.com/competitions/m5-forecasting-accuracy/data \
-  --downloaded-at-utc 2026-10-21T12:34:56Z
+  --source-url https://www.kaggle.com/competitions/m5-forecasting-accuracy/data
 ```
 
 The attempt writes local evidence below `artifacts/m5-ingestion/<pipeline_run_id>/` and
@@ -36,8 +35,14 @@ new pipeline run ID and reuses the validated raw snapshot. Existing raw files an
 manifests are never overwritten. Profile, upload, integrity, and publication failures
 are recorded as `FAILED`; no incomplete upload is reported as `VALIDATED`.
 
+`--downloaded-at-utc` is optional. Supply the actual UTC acquisition time when it is
+known; otherwise the profile and every source manifest retain `downloaded_at_utc: null`.
+The pipeline records profiling time separately and does not infer or verify Kaggle's
+download time. The live source workflow still requires the original CSVs, the official
+source URL, and the already-running HDFS/Spark prerequisites.
+
 The opt-in integration test requires explicit `WAREHOUSE_M5_SOURCE_DIR`,
-`WAREHOUSE_M5_SOURCE_URL`, and `WAREHOUSE_M5_DOWNLOADED_AT_UTC` values. It checks the
+`WAREHOUSE_M5_SOURCE_URL` values plus the already-running HDFS/Spark prerequisites. It checks the
 stored source-manifest lineage, remote byte sizes and SHA-256 values, replication factor
 2, and every block's locations on both current DataNodes before requesting the separate
 Spark Standalone HDFS read. It leaves validated M5 raw snapshots in place and changes no
