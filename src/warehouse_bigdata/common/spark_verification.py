@@ -29,9 +29,7 @@ HDFS_URI = "hdfs://hdfs-namenode:8020"
 WORKERS = ("spark-worker-1", "spark-worker-2")
 HDFS_ENDPOINTS = ("hdfs-namenode:8020", "hdfs-datanode-1:9866", "hdfs-datanode-2:9866")
 RECORD_PREFIX = "WAREHOUSE_SPARK_HDFS "
-FIXTURE_PATTERN = re.compile(
-    r"hdfs://hdfs-namenode:8020/t03-integration-[0-9a-f]{32}/spark\Z"
-)
+FIXTURE_PATTERN = re.compile(r"hdfs://hdfs-namenode:8020/t03-integration-[0-9a-f]{32}/spark\Z")
 
 
 def validate_request(run_id: str, fixture_root: str, probe_sha256: str, env=None) -> None:
@@ -72,6 +70,7 @@ def emit_record(kind: str, run_id: str, **values) -> None:
 
 def source_fingerprint() -> dict:
     """Hash actual imported code, baked submission files, executor archive, and XML."""
+
     def hashes(root, prefix="") -> dict[str, str]:
         result = {}
         for path in root.iterdir():
@@ -96,7 +95,9 @@ def source_fingerprint() -> dict:
         "archive_sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
         "xml_sha256": {
             name: hashlib.sha256(
-                (Path(os.environ.get("HADOOP_CONF_DIR", "/opt/hadoop/etc/hadoop")) / name).read_bytes()
+                (
+                    Path(os.environ.get("HADOOP_CONF_DIR", "/opt/hadoop/etc/hadoop")) / name
+                ).read_bytes()
             ).hexdigest()
             for name in ("core-site.xml", "hdfs-site.xml")
         },
@@ -128,9 +129,14 @@ def probe_hdfs(probe_uri: str, expected_sha256: str) -> dict:
     try:
         completed = subprocess.run(
             [
-                "java", "-Xms16m", "-Xmx64m", "-cp",
+                "java",
+                "-Xms16m",
+                "-Xmx64m",
+                "-cp",
                 "/opt/hadoop/etc/hadoop:/opt/spark/jars/*",
-                "org.apache.hadoop.fs.FsShell", "-cat", probe_uri,
+                "org.apache.hadoop.fs.FsShell",
+                "-cat",
+                probe_uri,
             ],
             capture_output=True,
             timeout=20,
@@ -232,24 +238,39 @@ def run_verification(*, run_id: str, fixture_root: str, probe_sha256: str) -> di
         ):
             if hadoop.get(key) != value:
                 raise RuntimeError(f"Actual Hadoop configuration mismatch: {key}")
-        context.setJobGroup(f"{run_id}:input-probe", "Synthetic fixture input and Worker probes", True)
-        schema = T.StructType([
-            T.StructField(name, T.IntegerType(), False)
-            for name in ("record_id", "bucket", "quantity", "unit_price_cents")
-        ])
-        input_df = spark.read.schema(schema).option("mode", "FAILFAST").json(fixture_root + "/input")
+        context.setJobGroup(
+            f"{run_id}:input-probe", "Synthetic fixture input and Worker probes", True
+        )
+        schema = T.StructType(
+            [
+                T.StructField(name, T.IntegerType(), False)
+                for name in ("record_id", "bucket", "quantity", "unit_price_cents")
+            ]
+        )
+        input_df = (
+            spark.read.schema(schema).option("mode", "FAILFAST").json(fixture_root + "/input")
+        )
         input_count = input_df.count()
         probe_uri = fixture_root + "/input/part-00.jsonl"
         driver_probe = probe_hdfs(probe_uri, probe_sha256)
-        probes = input_df.repartition(2).rdd.barrier().mapPartitions(
-            partial(_probe_partition, probe_uri=probe_uri, probe_sha256=probe_sha256)
-        ).collect()
+        probes = (
+            input_df.repartition(2)
+            .rdd.barrier()
+            .mapPartitions(
+                partial(_probe_partition, probe_uri=probe_uri, probe_sha256=probe_sha256)
+            )
+            .collect()
+        )
         active_cluster = read_cluster_snapshot()
 
-        context.setJobGroup(f"{run_id}:transform-write", "Synthetic integer aggregation to Parquet", True)
+        context.setJobGroup(
+            f"{run_id}:transform-write", "Synthetic integer aggregation to Parquet", True
+        )
         transformed = (
             input_df.filter(F.col("record_id") % 3 != 0)
-            .withColumn("line_amount_cents", F.col("quantity").cast("long") * F.col("unit_price_cents"))
+            .withColumn(
+                "line_amount_cents", F.col("quantity").cast("long") * F.col("unit_price_cents")
+            )
             .groupBy("bucket")
             .agg(
                 F.count("record_id").alias("record_count"),

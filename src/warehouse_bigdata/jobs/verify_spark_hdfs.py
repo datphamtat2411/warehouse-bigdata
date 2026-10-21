@@ -14,7 +14,9 @@ def main() -> None:
     result = run_verification(
         run_id=args.run_id, fixture_root=args.fixture_root, probe_sha256=args.probe_sha256
     )
-    emit_record("result", args.run_id, **{key: value for key, value in result.items() if key != "run_id"})
+    emit_record(
+        "result", args.run_id, **{key: value for key, value in result.items() if key != "run_id"}
+    )
 
 
 if __name__ == "__main__":
