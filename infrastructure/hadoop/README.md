@@ -5,7 +5,8 @@ DataNodes, with replication factor **2**. It demonstrates distributed software
 roles, not physical-host fault tolerance, HA, production security, or proven host
 capacity. T02 supplies side-effect-free Python configuration loading; T03 supplies
 opt-in independent-client, replication, persistence, and interruption/recovery
-verification. Spark and source-data ingestion acceptance remain later gates.
+verification. M02's bounded synthetic Spark–HDFS acceptance passed on 2026-10-21,
+as recorded in the M02 handoff below; source-data ingestion remains a later gate.
 
 ## Runtime and interfaces
 
@@ -370,10 +371,11 @@ Reported companion verification:
 - GitHub Actions `python-quality` passed for PR #1 at commit
   `c78431f5f40a6c4406371d11adae2f43ab5a1a8c`.
 
-These results establish the verified local HDFS infrastructure scope. Spark
-integration, M5 ingestion, and end-to-end data-pipeline acceptance remain separate,
-unverified gates. Carry a specific local evidence directory into a handoff only
-after verifying its existence and identity.
+These historical results establish the M01 local HDFS infrastructure scope. The
+separately executed M02 Spark integration acceptance is recorded in the handoff
+below; M5 ingestion and end-to-end data-pipeline acceptance remain unverified gates.
+Carry a specific local evidence directory into a handoff only after verifying its
+existence and identity.
 
 ## Bounded connectivity and registration diagnostics
 
@@ -440,11 +442,20 @@ results, and ownership evidence; do not initialize storage or remove volumes.
 ## M02 connectivity handoff — distributed Spark–HDFS verification
 
 M02 T03 adds one opt-in, non-disruptive scenario over the existing M01 HDFS harness,
-M02 T01 Standalone cluster, and T02 attached submission interface. The implementation
-is not a recorded live acceptance result. A selected scenario fails if prerequisites
-or proof are unavailable; default pytest and CI remain service-free.
+M02 T01 Standalone cluster, and T02 attached submission interface. One live execution
+**passed on 2026-10-21**: application `app-20261021012008-0000`, **1 passed in 309.02s**,
+30 successful tasks across both Workers, complete event-log/oracle/Parquet evidence,
+and HDFS preservation. The canonical
+[M02 execution record](../spark/README.md#historical-phase-2-live-acceptance--2026-10-21)
+references the retained evidence directory and its `phase2-review/report.md`, including
+the non-blocking observer exit 137 and audited VERSION timestamp-comment differences.
+A selected future scenario still fails if prerequisites or proof are unavailable;
+default pytest and CI remain service-free.
 
-### Prerequisites and commands
+### Prerequisites and commands for future runs
+
+The commands below are reproducible procedures. Another live acceptance execution
+requires separate explicit approval and must not be retried automatically.
 
 Use serial pytest execution, reserve the existing HDFS maintenance lock, and avoid
 concurrent external writers or lifecycle operations. No disruption flag is needed.

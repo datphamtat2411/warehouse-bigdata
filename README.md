@@ -10,9 +10,9 @@ recommendations through a batch-oriented distributed architecture.
 The repository currently contains project metadata, a Python package, developer
 tooling, design specifications, a persistent local HDFS deployment with a passing
 four-scenario integration suite, and an opt-in Spark Standalone deployment with
-passing live infrastructure acceptance, plus a short-lived Spark submission runtime.
-Distributed Spark application acceptance, M5
-ingestion, the data pipeline, other services,
+passing live infrastructure acceptance, a short-lived Spark submission runtime,
+and a bounded synthetic distributed Spark–HDFS acceptance that passed on
+**2026-10-21**. M5 ingestion, the data pipeline, other services,
 model training, database publication, and dashboard are not implemented yet.
 
 ## Project Objectives
@@ -53,7 +53,7 @@ serving layer, and Streamlit is planned as a read-oriented presentation layer.
 |---|---|---|
 | Project runtime | Python 3.11 and `uv` | Project metadata and `uv.lock` exist |
 | Distributed storage | Hadoop HDFS 3.4.3 | Persistent one-NameNode/two-DataNode deployment and configuration loaders implemented; complete four-scenario HDFS integration suite passed |
-| Distributed processing | Apache Spark 3.5.7 | Opt-in one-Master/two-Worker deployment, qualified Python 3.11 image, and client-mode submission runtime; live infrastructure acceptance passed; no jobs implemented |
+| Distributed processing | Apache Spark 3.5.7 | Opt-in one-Master/two-Worker deployment, qualified Python 3.11 image, client-mode submission runtime, and passing synthetic Spark–HDFS verification job; production ETL/MLlib jobs remain planned |
 | Forecasting | Spark MLlib `RandomForestRegressor` | Selected in design; no model is trained |
 | Analytical serving | ClickHouse Distributed, two shards and one replica per shard | Designed only; no SQL or deployment is implemented |
 | Application | Streamlit and Plotly | Designed only; no application code is implemented |
@@ -96,7 +96,7 @@ The tracked repository is intentionally small at this stage:
 | [`src/warehouse_bigdata/`](src/warehouse_bigdata/) | Tracked package and minimal CLI entry point |
 | [`docs/`](docs/01_PROJECT_OVERVIEW.md) | Design specifications and repository guidance |
 | [`infrastructure/`](infrastructure/) | HDFS deployment, Hadoop configuration, and opt-in Spark topology/runtime/probes; ClickHouse remains planned |
-| `tests/` | Focused offline checks, Spark registration/lifecycle checks, and opt-in HDFS integration fixtures/scenarios |
+| `tests/` | Focused offline checks, Spark registration/lifecycle checks, and opt-in HDFS and distributed Spark–HDFS integration scenarios |
 | [`scripts/`](scripts/) | Explicit HDFS initialization, scoped Spark lifecycle/submission commands, and focused smoke checks |
 | `app/`, `sql/`, `data/`, `artifacts/` | Planned areas described by the design; not currently present in the tracked tree |
 
@@ -131,13 +131,21 @@ first real implementation requires them.
 - M02 T02 Spark job submission runtime: a separate locked, non-editable driver image
   and project ZIP, an ephemeral Standalone client-mode Compose service, validated
   CLI submission, and an attached host launcher with ownership-scoped cancellation
-  cleanup. Runtime resources are bounded; application jobs and distributed
-  acceptance workloads are not included.
+  cleanup. Runtime resources are bounded; T03 supplies the separate distributed
+  verification workload and its acceptance evidence.
+- M02 T03 distributed Spark–HDFS acceptance: the ZSTD JNI rollout was historically
+  verified as `PHASE_1_VERIFIED`; one live execution on **2026-10-21** passed
+  (`app-20261021012008-0000`, **1 passed in 309.02s**, 30 successful tasks across both
+  Workers). The synthetic oracle, shuffle, Parquet/replication, complete event log,
+  executor JNI inheritance, termination and HDFS preservation were checked. See the
+  [dated M02 execution record](infrastructure/spark/README.md#historical-phase-2-live-acceptance--2026-10-21)
+  for evidence paths, measured resource observations and limitations.
 
 M01 T01, T02, and T03 are implemented. The reported manual execution on the local
 Docker-based Hadoop cluster on **2026-10-19** passed all four HDFS integration
-scenarios: **4 passed in 384.85 seconds**. Distributed Spark application acceptance, M5 ingestion, and
-end-to-end data-pipeline acceptance remain future gates. See the
+scenarios: **4 passed in 384.85 seconds**. M02 T01/T02/T03 acceptance is complete for
+the bounded local infrastructure/synthetic-workload scope recorded above. M5
+ingestion and end-to-end data-pipeline acceptance remain future gates. See the
 [HDFS operations guide](infrastructure/hadoop/README.md#t03-integration-verification)
 for the execution snapshot and operational procedures.
 
@@ -236,8 +244,10 @@ ephemeral container without starting dependencies. It uses explicit Standalone
 Python paths, and bounded resources. Application arguments and failure statuses
 are preserved; cancellation cleans up only the invocation-owned driver.
 See [T02 submission operations](infrastructure/spark/README.md#short-lived-submission-runtime--m02-t02)
-for supported `--conf`, limits, exit codes, and focused verification. Distributed
-application and Spark–HDFS read/write acceptance remain a separate gate.
+for supported `--conf`, limits, exit codes, and focused verification. The separately
+executed [M02 T03 acceptance](infrastructure/spark/README.md#historical-phase-2-live-acceptance--2026-10-21)
+passed for its bounded synthetic distributed read/write workload. Future live runs
+require their own explicit approval and current prerequisite checks.
 
 ### Opt-in HDFS integration verification
 
@@ -381,8 +391,9 @@ workflow.
   replica each would demonstrate sharding, not high availability.
 - M5 does not support claims about real Walmart stock, operational savings, purchase
   orders, or unconstrained demand.
-- Forecast accuracy, policy effectiveness, throughput, latency, data coverage, and
-  resource usage are unmeasured until the planned implementation is executed.
+- Forecast accuracy, policy effectiveness, and full-dataset throughput, latency,
+  data coverage and resource demand remain unmeasured. The recorded infrastructure
+  and synthetic M02 acceptance observations are not full M5 workload benchmarks.
 - The proposed design must fit a resource-constrained development host and may use
   declared, reproducible scope reductions. Any reduction must be disclosed rather
   than presented as full historical coverage.

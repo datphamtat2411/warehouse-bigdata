@@ -1,12 +1,15 @@
-# Spark Standalone operations — M02 T01/T02
+# Spark Standalone operations — M02 T01/T02/T03
 
 This deployment adds one Master and two explicitly configured Workers to the
 existing `warehouse-bigdata` Compose project and bridge. It is opt-in through the
 `spark` profile; default startup selects only the three HDFS daemons. T01 readiness
 means two current, reachable Worker processes registered with the expected
 resources. T02 adds a short-lived client-mode submission runtime, documented below.
-Distributed application execution and Spark–HDFS data correctness require T03
-acceptance; registration and submission packaging are not full NFR-02 evidence.
+T03's bounded synthetic distributed Spark–HDFS acceptance **passed on 2026-10-21**;
+the [historical execution record](#historical-phase-2-live-acceptance--2026-10-21)
+contains the application, task, correctness, and preservation evidence. Registration
+and submission packaging alone are not distributed application acceptance, and this
+fixture does not establish full-project NFR-02 or M5 processing acceptance.
 
 ## Prerequisites and lifecycle
 
@@ -449,7 +452,11 @@ fi
 
 ### Execution record
 
-Focused verification on **2026-10-20**:
+This is the historical **T01** record from **2026-10-20**, before the ZSTD JVM-temp
+partition below. Its Worker IDs, JVM flags, and scratch observations describe that
+execution, rather than the later T03 deployment policy.
+
+Focused verification on that date:
 
 - The exact three-file pytest command above passed: **97 passed in 3.31 seconds**.
 - Bash syntax checks passed for both wrappers.
@@ -487,7 +494,7 @@ after its graceful stop. Readiness correctly rejected the single-live-Worker
 state with `Expected exactly two ALIVE Workers`, despite that retained entry.
 Restoration produced a new current Worker 2 ID and returned to two live Workers:
 
-| Worker | Current registered ID after recovery |
+| Worker | Historical registered ID after T01 recovery |
 |---|---|
 | `spark-worker-1` | `worker-20261020035126-spark-worker-1-7078` |
 | `spark-worker-2` | `worker-20261020035201-spark-worker-2-7078` |
@@ -502,13 +509,18 @@ interruption/recovery; all matched. The preserved persistent attachments were:
 | `hdfs-datanode-1` | `73b10875bed2` | `warehouse-bigdata_hdfs-datanode-1-data` |
 | `hdfs-datanode-2` | `af32787e83ab` | `warehouse-bigdata_hdfs-datanode-2-data` |
 
-T01 infrastructure acceptance **passed** with no remaining deployment blocker.
-These idle-daemon/scratch observations do not measure application workload
-overhead or full-dataset capacity. No applications were submitted; distributed
-executor-task evidence, Spark–HDFS data read/write correctness, and M5 processing
-remain outside this task.
+T01 infrastructure acceptance **passed** with no remaining deployment blocker at
+that checkpoint. These idle-daemon/scratch observations do not measure application
+workload overhead or full-dataset capacity. No applications were submitted during
+the T01 checks; the later T03 record below supplies distributed executor-task and
+Spark–HDFS read/write evidence. M5 processing remains outside M02 acceptance.
 
-## M02 T03 ZSTD JNI unblocker — rollout pending
+## M02 T03 — completed rollout and distributed acceptance
+
+The Spark-only rollout was completed on **2026-10-20** and its historical evidence
+was accepted as **`PHASE_1_VERIFIED`**. One separately authorized live T03 execution
+passed on **2026-10-21**. The dated records below establish the completed M02 scope;
+the following verification and maintenance procedures are for future approved runs.
 
 ### Evidence and selected runtime policy
 
@@ -559,11 +571,151 @@ It costs 32 MiB of bulk scratch per Worker/driver and adds mount/environment
 configuration. `java.io.tmpdir` routes **general JVM temporary files too**; this is
 not a native-only directory. Mode `0700` excludes other identities, not untrusted
 code running as the same UID 185. Tmpfs remains charged to unchanged container RAM
-limits. Reduced bulk-scratch capacity and actual executor inheritance await T03.
+limits. The historical Phase 2 record below validates actual executor inheritance
+and observes the reduced scratch partition under the bounded synthetic workload;
+full-dataset capacity remains unmeasured.
 
-### Focused pre-rollout checks
+### Historical Phase 1 rollout — 2026-10-20
 
-The offline gate uses no Docker services:
+Session **`zstd-phase1-20261020T160900Z-402c3853`** ran from approximately
+16:09:26 to 16:14:55 UTC. Its **41 recorded commands exited 0**, with no supervisor
+timeout, across preflight, baseline, rollout, smoke, driver JNI, and finish phases.
+The subsequent historical review accepted this evidence as `PHASE_1_VERIFIED`.
+
+Evidence root:
+`artifacts/test-runs/zstd-rollout-20261020T160926Z-3ab814dc/`.
+Use its `commands.jsonl`, `session-manifest.json`, raw command outputs,
+`phase1-status.json`, and `phase1-report.json` together; phase labels alone are
+insufficient evidence.
+
+| Gate | Recorded result |
+|---|---|
+| Preflight/idle | Five-profile Compose preservation, approved local image/platform/resource checks, 10 GiB memory prerequisite, HDFS/Spark readiness, and no active application/driver; idle checked again immediately before recreation |
+| Scoped recreation | Command 0020 recreated exactly `spark-master`, `spark-worker-1`, and `spark-worker-2`, using `--no-deps --no-build --pull never --force-recreate`; all three received new container IDs on the unchanged runtime image |
+| Readiness/smoke | Both current Workers registered; infrastructure/resource/mount/JVM/connectivity checks passed |
+| JNI | Both Workers and the ephemeral driver completed real Spark ZSTD codec round trips, Java exit 0, `Native.isLoaded()=true`, and executable mappings under `/opt/warehouse-spark/native` |
+| Preservation | `hdfs-before.json`, `hdfs-after.json`, and `hdfs-after-jni.json` are byte-identical: three HDFS identities/volumes/attachments, storage VERSION hashes, the retained fixture listing/seven checksums, and 137 incident-artifact fingerprints |
+
+Worker JNI output is in `0029-worker-smoke.stdout`; driver output is in
+`0030-driver-native.stdout` and `driver-native.json`. This rollout submitted no
+T03 application. The earlier failed preflight remains preserved in
+`failed-session-archive/`; its status was not converted into a successful run.
+
+### Historical Phase 2 live acceptance — 2026-10-21
+
+One live execution used implementation commit
+**`e210f603e835b025c7e65962a5fe8cf32665b0a1`**, branch
+`feat/spark-infrastructure`, and the existing locked environment. The actual command
+was:
+
+```bash
+uv run --locked pytest -q -m integration tests/integration/test_spark_hdfs.py::test_distributed_spark_hdfs_round_trip
+```
+
+It exited **0**, reporting **`1 passed in 309.02s`**. The process monotonic duration
+was **309.455 seconds**. Recorded UTC endpoints were 01:17:46.080491–01:23:02.759518,
+which span **316.679 seconds**; that wall-clock/monotonic difference is retained
+explicitly, without assigning an unverified cause. The Spark application event
+timestamps span **50.100 seconds**, distinct from total fixture/setup/verification
+time. No retry or additional live test was executed.
+
+Evidence root:
+`artifacts/test-runs/t03-20261021T011746-test_distributed_spark_hdfs_round_trip-9862ce26e9ae4476b336f906c58f0c47/`.
+The final report is `phase2-review/report.md` beneath that root. Evidence is local,
+Git-ignored generated material and must remain available for review.
+
+| Acceptance check | Actual result |
+|---|---|
+| Application/driver | `app-20261021012008-0000` on `spark://spark-master:7077`; driver `warehouse-spark-submit-be30544474c47cc8d10f194914a862bf` |
+| Distributed work | **30 successful tasks**, **10 successful jobs**, **19 completed stages**, zero failed attempts; 18 shuffle-map tasks and 12 result tasks |
+| Both current Workers | Worker 1: executor 0, 15 successful tasks; Worker 2: executor 1, 15 successful tasks. Registrations were `worker-20261021010618-spark-worker-1-7078` and `worker-20261021010618-spark-worker-2-7078` |
+| Barrier correlation | Stage 3: task 5/partition 1 on Worker 1 and task 6/partition 0 on Worker 2, 512 rows each, agreeing allGather identities and matching successful event-log tasks |
+| Shuffle | **16,254 bytes written**, **8,124 remote bytes read**, **8,130 local bytes read** |
+| HDFS access | Driver and both executor probes freshly read 16,530 bytes with the host input SHA-256; NameNode RPC and both DataNode transfer endpoints were checked |
+| Independent oracle | **1,024 input rows**, **682 contributing records**, eight aggregate rows/eight unique keys, zero nulls; exact host-Python integer oracle matched the actual Parquet reread |
+| Schema/output | `bucket: int`; `record_count`, `quantity_total`, `amount_cents`: `bigint`; `_SUCCESS` and exactly two committed Parquet files, **1,366** and **1,430 bytes**, independently read and replicated on both current DataNodes |
+| Event log/source identity | **639,740 bytes**, **158 records**, complete `SparkListenerLogStart` through `SparkListenerApplicationEnd`; application/executor/job/stage/task identities and all three phase groups correlated; installed/baked/archive sources and Hadoop XML matched |
+| Termination/cleanup | Application `FINISHED`, driver removed, no matching active application/executors; only the successful run's owned fixture/client cleaned by the harness; no cleanup/restoration errors |
+| Preservation | All six service IDs, starts, images, configuration, mounts and restart counts matched across this run; three persistent volume records, five pre-run VERSION hashes, historical fixture/seven checksums and 137 incident files matched; 1,472 protected source/evidence files had zero differences |
+
+Primary proof is retained in `0053.stdout`/`0053.stderr`, `commands.jsonl`,
+`spark-application-records.json`, `spark-correctness.json`, `spark-events.jsonl`,
+`spark-event-log.json`, `spark-execution.json`, `spark-data-files.json`,
+`spark-termination.json`, `spark-hdfs-preservation.json`, and `outcome.json`.
+There are 88 harness command records and exactly one submission record. The event
+log SHA-256 is
+`c3d956bc3b6abaa8c74500104c724e10ed4d473819489c8e907c8b39b9b66673`.
+
+Actual executor process captures and launch logs show
+`JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=/opt/warehouse-spark/native`, `-Xmx512M`, and no
+conflicting explicit `/tmp` JVM-temp option. Both executor process maps contain
+executable `r-xp` ZSTD JNI mappings in the private mount. The driver also mapped
+ZSTD there and reported the same `java.io.tmpdir` in its event-log system properties.
+
+Read-only observation captured 27 samples per Worker and four successful driver
+samples. Largest observed cgroup peak counters and sampled tmpfs usage were:
+
+| Runtime | Peak counter / RAM limit, MiB | Private temp sampled maximum / cap, MiB | Bulk scratch sampled maximum / cap, MiB |
+|---|---:|---:|---:|
+| Worker 1 | 640.277 / 2048 | 1.375 / 32 | 0.2148 / 224 |
+| Worker 2 | 667.887 / 2048 | 1.1055 / 32 | 0.2031 / 224 |
+| Driver | 500.715 / 1536 | 1.1055 / 32 | 0.0977 / 96 |
+
+Observed memory-limit/OOM/kill counters were zero; final Worker counters remained
+zero. Both Workers had zero memory/disk task spills, and retained executor logs
+contained no native mapping, out-of-memory, or no-space errors. Counters include
+resident processes/observation overhead; sampled scratch maxima are not continuous
+high-water measurements. The removed driver's final counters were unavailable.
+See `phase2-review/resource-sample-*.json`, `executor-launch-logs.json`,
+`executor-resource-review.json`, and `postflight*.json` in the supplemental review
+directory for the underlying observations and comparisons.
+
+#### Audited metadata differences and non-blocking diagnostics
+
+- Before Phase 2 preflight, all six services had already restarted at approximately
+  **2026-10-21 01:06:10 UTC** with the same container IDs/images/configuration. The
+  current registrations above, rather than Phase 1's old Worker registrations, were
+  used for task correlation. No service restart/recreation occurred during Phase 2.
+- Unset Spark HostConfig `Dns`, `DnsOptions`, and `DnsSearch` fields appeared as
+  empty lists instead of historical nulls. Their semantic values were unchanged;
+  every other HostConfig field matched. This was a task-local comparison diagnosis,
+  not a runtime configuration change.
+- Startup refreshed timestamp comments in all five HDFS VERSION files. The audit
+  reproduced each historical SHA-256 by substituting the actual retained old
+  **timestamp comment** into the current noncomment bytes; cluster, namespace,
+  block-pool, storage and DataNode identities matched. Current verified byte hashes
+  became the Phase 2 baseline and matched exactly afterward. Proof is in
+  `phase2-review/version-comment-comparison.json` and
+  `storage-properties-diagnostic.json`. These audited differences do not waive
+  future unexplained identity/data/preservation mismatches.
+- A supplemental read-only driver sampling command exited **137** at
+  **01:20:57.784 UTC**, after ApplicationEnd at **01:20:56.684** and overlapping
+  ephemeral-driver teardown. The application/submission exited 0, removal was
+  confirmed and captured OOM counters were zero. This is a non-blocking interrupted
+  observation, not an application exit 137 or proof of an OOM kill; the exact kill
+  cause is not independently established. Raw record:
+  `phase2-review/command-0096-sample-017-5451cc967c2624dfc35f.json`.
+- Review erratum: `phase2-review/report.md` calls command 0054's message
+  `No such object`; actual **`0054.stderr` says `No such container`**. Its expected
+  exit **1** confirms the owned driver was absent. The wording difference does not
+  change the removal result; the original report is preserved unchanged.
+
+The successful owned fixture was
+`/t03-integration-d9674d7dc8b44efeaf9b7ae10d9128cb`; it was removed only after
+complete evidence and termination checks. Host-side evidence remains retained,
+along with the earlier failed incident/fixture. No assertion, codec, timeout,
+resource cap, image or runtime configuration was changed to obtain the pass.
+
+This completes the bounded **M02 T01/T02/T03** acceptance scope on a **single-host**
+multi-container deployment. It demonstrates real distributed software execution
+and synthetic-data correctness, not full M5 ingestion/ETL/MLlib, production capacity,
+speedup, operational savings, HA, physical multi-host fault tolerance, or every
+project-wide distributed-data gate. The oracle is independent host Python, not a
+claim that the literal DIST-08 local-Spark comparison was executed.
+
+### Future change verification: offline and disposable checks
+
+For later runtime changes, the following offline gate uses no Docker services:
 
 ```bash
 uv run --locked pytest -q tests/unit/test_spark_native_runtime.py tests/unit/test_spark_lifecycle.py tests/unit/test_spark_submit.py tests/unit/test_spark_submit_runtime.py tests/unit/test_spark_verification.py
@@ -601,11 +753,12 @@ loader deletes its own extraction on normal JVM exit; no shared scratch cleanup
 is performed. Smoke streams the same helper independently to each Worker with
 a 45-second TERM / 2-second KILL outer bound; existing smoke deadlines stay intact.
 
-### Commands for review: Spark-only maintenance window
+### Future Spark-only maintenance window
 
-**Do not execute this rollout without separate explicit approval.** Use an idle
-cluster and one exclusive Bash session at the repository root. Stop on any failed
-command, partial recreation, preservation mismatch, or incomplete JNI evidence;
+These are reproducible procedures for a future change, separate from the completed
+historical rollout above. **Do not execute without separate explicit approval.**
+Use an idle cluster and one exclusive Bash session at the repository root. Stop on
+any failed command, partial recreation, preservation mismatch, or incomplete JNI evidence;
 do not retry live T03 automatically. Existing historical T01 execution records
 above predate this new partition and do not qualify its deployment.
 
@@ -715,10 +868,18 @@ executable private-directory mappings, and match identity, effective mount flags
 permissions, capacities, JVM temp, and cgroup limits before requesting T03 approval.
 Do not use cluster-wide resets, volume removal, or fixture cleanup for this incident.
 
-### Separately approved, single opt-in T03 acceptance
+### Future opt-in T03 acceptance
 
-Only after reviewing successful rollout/JNI/preservation evidence and receiving
-**separate explicit approval**, execute exactly once:
+For a future live run, first verify current repository/source/image identities,
+healthy idle Spark and HDFS services, and protected historical evidence/fixtures.
+Supply `WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077`,
+`WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020`, and the recorded
+`WAREHOUSE_HDFS_BASE_PATH=/data/warehouse` through the process environment. The
+loaders do not read `.env` implicitly. Retain the existing 300-second submission,
+45-second cleanup-grace and 360-second host bounds.
+
+After reviewing the current rollout/JNI/preservation evidence and receiving
+**separate explicit approval for that live run**, execute exactly once:
 
 ```bash
 uv run --locked pytest -q -m integration tests/integration/test_spark_hdfs.py::test_distributed_spark_hdfs_round_trip
@@ -733,4 +894,6 @@ both-DataNode placement, proven application/driver/executor termination, unchang
 HDFS identities/baseline payload, and preservation of historical evidence/fixture.
 Review driver properties and executor launch logs for inherited JVM temp and any
 conflicting flags. On failure retain the new evidence/fixture and stop for review.
-**T03 remains unpassed until this live acceptance and its evidence actually pass.**
+For each future run, a nonzero status or incomplete evidence is a failed acceptance;
+retain its fixture according to the harness policy and stop for review. Historical
+acceptance is not authorization for an automatic rerun or repair.
