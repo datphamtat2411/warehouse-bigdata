@@ -31,6 +31,10 @@ from warehouse_bigdata.ingestion.m5_source import RECOGNIZED_M5_FILES, compute_s
 
 SOURCE_URL = "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data"
 DOWNLOADED_AT = "2026-10-21T12:34:56Z"
+TEST_HDFS_CONFIG = HDFSConfig(
+    uri="hdfs://hdfs-namenode:8020",
+    base_path="/data/warehouse",
+)
 DATA = {
     "calendar.csv": b"date,wm_yr_wk\n2011-01-29,11101\n",
     "sales_train_evaluation.csv": b"id,d_1\nseries,0\n",
@@ -295,8 +299,23 @@ def _ingest(
         manifests,
         run_id,
         client=client,
+        config=TEST_HDFS_CONFIG,
         now=lambda: DOWNLOADED_AT,
     )
+
+
+def test_fake_client_ingestion_does_not_require_hdfs_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("WAREHOUSE_HDFS_URI", raising=False)
+    monkeypatch.delenv("WAREHOUSE_HDFS_BASE_PATH", raising=False)
+    client = FakeHdfs()
+
+    result = _ingest(tmp_path, client)
+
+    assert result.status == "PROMOTED"
+    assert client.files[f"{result.raw_path}/calendar.csv"] == DATA["calendar.csv"]
 
 
 def test_preflight_rejects_changed_local_bytes_before_hdfs_mutation(tmp_path: Path) -> None:
@@ -379,7 +398,14 @@ def test_remote_mismatch_cleans_only_owned_staging_path(tmp_path: Path) -> None:
     client.corrupt_filename = "calendar.csv"
 
     with pytest.raises(HdfsRawIngestionError, match="SHA-256"):
-        ingest_m5_raw(source, profile, manifests, "run-corrupt", client=client)
+        ingest_m5_raw(
+            source,
+            profile,
+            manifests,
+            "run-corrupt",
+            client=client,
+            config=TEST_HDFS_CONFIG,
+        )
 
     assert ("remove", "/data/warehouse/staging/pipeline_run_id=run-corrupt") in client.calls
     assert not any(call[0] == "rename" for call in client.calls)
@@ -504,6 +530,7 @@ def _run_manifest(run_id: str, source_version: str, artifact_uri: str) -> dict[s
 
 def test_run_manifest_publication_is_exclusive_and_independently_verified(tmp_path: Path) -> None:
     client = FakeHdfs()
+    config = TEST_HDFS_CONFIG
     source, profile, manifests = _artifacts(tmp_path)
     raw = ingest_m5_raw(
         source,
@@ -511,9 +538,9 @@ def test_run_manifest_publication_is_exclusive_and_independently_verified(tmp_pa
         manifests,
         "run-manifest-source",
         client=client,
+        config=config,
         now=lambda: DOWNLOADED_AT,
     )
-    config = HDFSConfig("hdfs://hdfs-namenode:8020", "/data/warehouse")
     path = render_run_manifest_path(config.base_path, "run-manifest-publish")
     manifest = _run_manifest("run-manifest-publish", raw.source_version, config.uri + path)
     validate_manifest(PIPELINE_RUN_MANIFEST, manifest)

@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -291,22 +292,23 @@ def test_cancellation_is_finite_and_cleans_only_owned_driver(
 def test_packaging_helper_creates_reproducible_importable_project_zip(tmp_path: Path) -> None:
     source = tmp_path / "src"
     package = source / "warehouse_bigdata"
-    package.mkdir(parents=True)
-    for relative in (
-        "__init__.py",
-        "cli.py",
-        "common/__init__.py",
-        "common/config.py",
-        "common/spark_submit.py",
-    ):
-        target = package / relative
-        target.parent.mkdir(exist_ok=True)
-        target.write_bytes((ROOT / "src/warehouse_bigdata" / relative).read_bytes())
-    (package / "__pycache__").mkdir()
-    (package / "__pycache__/ignored.pyc").write_bytes(b"cache")
+    shutil.copytree(
+        ROOT / "src" / "warehouse_bigdata",
+        package,
+        ignore=shutil.ignore_patterns(
+            "__pycache__",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".mypy_cache",
+            "*.pyc",
+            "*.pyo",
+        ),
+    )
+    for cache in ("__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache"):
+        (package / cache).mkdir(exist_ok=True)
+        (package / cache / "ignored").write_text("cache")
+    (package / "ignored.pyc").write_bytes(b"bytecode")
     (package / "ignored.pyo").write_bytes(b"bytecode")
-    (package / ".pytest_cache").mkdir()
-    (package / ".pytest_cache/ignored").write_text("cache")
     archives = [tmp_path / "first.zip", tmp_path / "second.zip"]
     for archive in archives:
         subprocess.run(
@@ -323,6 +325,14 @@ def test_packaging_helper_creates_reproducible_importable_project_zip(tmp_path: 
         assert names == sorted(names)
         assert all(name.startswith("warehouse_bigdata/") for name in names)
         assert not any("cache" in name or name.endswith((".pyc", ".pyo")) for name in names)
+        assert {
+            "warehouse_bigdata/jobs/__init__.py",
+            "warehouse_bigdata/jobs/ingest_m5.py",
+            "warehouse_bigdata/jobs/ingest_m5_raw.py",
+            "warehouse_bigdata/jobs/profile_m5_source.py",
+            "warehouse_bigdata/ingestion/orchestration.py",
+            "warehouse_bigdata/common/hdfs_runtime.py",
+        } <= set(names)
     probe = subprocess.run(
         [
             sys.executable,
@@ -333,9 +343,22 @@ def test_packaging_helper_creates_reproducible_importable_project_zip(tmp_path: 
             import sys
             sys.path.insert(0, sys.argv[1])
             import warehouse_bigdata.cli
-            from warehouse_bigdata.common import config, spark_submit
-            assert '.zip/' in config.__file__
-            assert '.zip/' in spark_submit.__file__
+            from warehouse_bigdata.common import config, hdfs_runtime, spark_submit
+            from warehouse_bigdata.ingestion import orchestration
+            from warehouse_bigdata.jobs import ingest_m5, ingest_m5_raw, profile_m5_source
+            for module in (
+                warehouse_bigdata,
+                warehouse_bigdata.cli,
+                warehouse_bigdata.jobs,
+                config,
+                hdfs_runtime,
+                spark_submit,
+                orchestration,
+                ingest_m5,
+                ingest_m5_raw,
+                profile_m5_source,
+            ):
+                assert module.__file__.startswith(sys.argv[1] + '/warehouse_bigdata/'), module.__file__
             assert config.load_hdfs_config({'WAREHOUSE_HDFS_URI': 'hdfs://hdfs-namenode:8020'}).base_path == '/data/warehouse'
             """),
             str(archives[0]),
