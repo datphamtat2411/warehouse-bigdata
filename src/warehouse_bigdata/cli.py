@@ -7,6 +7,7 @@ from importlib import metadata
 from pathlib import Path
 
 from warehouse_bigdata.common.spark_submit import run_spark_submit
+from warehouse_bigdata.jobs.ingest_m5_raw import run_ingest_m5_raw
 from warehouse_bigdata.jobs.profile_m5_source import run_profile_m5_source
 
 
@@ -37,6 +38,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     profile.add_argument("--source-dir", required=True, type=Path, metavar="PATH")
     profile.add_argument("--source-url", required=True, metavar="URL")
     profile.add_argument("--downloaded-at-utc", required=True, metavar="TIMESTAMP")
+    ingest = commands.add_parser(
+        "ingest-m5-raw",
+        help="Stage and validate profiled M5 CSV files in immutable HDFS raw storage.",
+    )
+    ingest.add_argument("--source-dir", required=True, type=Path, metavar="PATH")
+    ingest.add_argument("--profile-path", required=True, type=Path, metavar="PATH")
+    ingest.add_argument("--manifest-path", required=True, type=Path, metavar="PATH")
+    ingest.add_argument("--pipeline-run-id", required=True, metavar="ID")
     arguments = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     if arguments.command == "spark-submit":
         if len(arguments.application) < 2 or arguments.application[0] != "--":
@@ -51,4 +60,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except (OSError, ValueError) as error:
             profile.error(str(error))
+    if arguments.command == "ingest-m5-raw":
+        try:
+            return run_ingest_m5_raw(
+                arguments.source_dir,
+                arguments.profile_path,
+                arguments.manifest_path,
+                arguments.pipeline_run_id,
+            )
+        except (OSError, ValueError, RuntimeError) as error:
+            ingest.error(str(error))
     return 0

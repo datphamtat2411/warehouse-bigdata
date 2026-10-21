@@ -134,3 +134,38 @@ def test_profile_m5_source_requires_provenance(capsys: pytest.CaptureFixture[str
 
     assert exc_info.value.code == 2
     assert "--source-url" in capsys.readouterr().err
+
+
+def test_ingest_m5_raw_forwards_explicit_artifact_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ingest = Mock(return_value=0)
+    monkeypatch.setattr("warehouse_bigdata.cli.run_ingest_m5_raw", ingest)
+
+    assert main(
+        [
+            "ingest-m5-raw",
+            "--source-dir",
+            "/inputs/m5",
+            "--profile-path",
+            "/artifacts/source_profile.json",
+            "--manifest-path",
+            "/artifacts/source_manifests.json",
+            "--pipeline-run-id",
+            "run-20261021",
+        ]
+    ) == 0
+    ingest.assert_called_once_with(
+        Path("/inputs/m5"),
+        Path("/artifacts/source_profile.json"),
+        Path("/artifacts/source_manifests.json"),
+        "run-20261021",
+    )
+
+
+def test_ingest_m5_raw_requires_all_artifact_paths(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["ingest-m5-raw", "--source-dir", "/inputs/m5"])
+
+    assert exc_info.value.code == 2
+    assert "--profile-path" in capsys.readouterr().err
