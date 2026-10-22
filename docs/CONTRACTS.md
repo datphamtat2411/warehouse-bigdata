@@ -25,6 +25,7 @@ This document is the navigation index for the machine-readable contracts in
 | `sales_daily` | J02 -> J03/J04/J08 | `(item_id, store_id, date)` within `source_snapshot_id` | Observed M5 unit sales |
 | `sales_enriched` | J03 -> J04/J08 | `(item_id, store_id, date)` within `source_snapshot_id` | Derived from observed M5 |
 | `store_daily_sales` | J03 -> J08/Streamlit | `(source_snapshot_id, store_id, date)` | Aggregate of observed M5 |
+| `category_monthly_sales` | J03 -> J08/analytics consumers | `(source_snapshot_id, cat_id, month_start)` | Aggregate of observed M5 |
 | `forecast_features` | J04 -> J05/J06 | `(item_id, store_id, target_date)` scoped by source, feature version, and role | Leakage-controlled derived features |
 | `forecast_daily` | J06 -> J07/J08/Streamlit | `(forecast_run_id, item_id, store_id, forecast_date)` | Predicted unit sales |
 | `forecast_metrics` | J05/J06 -> J08/Streamlit | `(evaluation_run_id, holdout_id, method_id, metric_name, horizon)` | Forecast-quality evaluation |
@@ -36,12 +37,19 @@ This document is the navigation index for the machine-readable contracts in
 
 The catalog preserves the distinction between observed `unit_sales`, predicted `predicted_units`, simulated stock/supply, calculated decisions, and evaluated historical outcomes. No row contract represents M5 sales as verified demand, inventory, orders, or customer transactions.
 
+`CATEGORY_MONTHLY_SALES` Contract v1 (`category_monthly_sales`, version `1.0`) has
+exactly four fields: `source_snapshot_id` STRING, `cat_id` STRING,
+`month_start` DATE, and `total_units` LONG. Its unique key is
+`(source_snapshot_id, cat_id, month_start)`; `total_units` is nonnegative and must
+reconcile exactly to the matching source snapshot's observed `unit_sales` total.
+
 ## Canonical Storage Mappings
 
 | Logical dataset | Serving dataset | Explicit mapping | Omitted or additional metadata |
 |---|---|---|---|
 | `sales_daily` | `sales_daily` | `date` -> `sale_date`; `unit_sales` remains `unit_sales` | `units_sold` is a query alias only; `series_id`, `day_key`, and `wm_yr_wk` remain in Parquet/manifest metadata |
 | `store_daily_sales` | `store_daily_sales` | `date` -> `sale_date`; `total_units` remains `total_units` | `units_sold` is a query alias only |
+| `category_monthly_sales` | `category_monthly_sales` | Logical fields are retained; `total_units` is a validated nonnegative Long | Source snapshot remains in the row and dataset manifest |
 | `forecast_daily` | `forecast_daily` | `predicted_units` remains `Float64`; no daily rounding | `forecast_status` is serving completeness metadata; `raw_prediction` remains in Parquet pending explicit serving-retention approval |
 | `inventory_scenario` | `inventory_scenario` | Logical and serving field names are unchanged | Scenario-generation metadata remains in its manifest |
 | `central_supply_scenario` | `central_supply_scenario` | Logical and serving field names are unchanged | Capacity is one product-level row and must not be summed per store |
@@ -101,6 +109,8 @@ The catalog records logical locations only; it does not create HDFS directories.
 /data/warehouse/staging/pipeline_run_id=<pipeline_run_id>/
 /data/warehouse/curated/sales_daily/source_snapshot_id=<source_snapshot_id>/
 /data/warehouse/curated/sales_enriched/source_snapshot_id=<source_snapshot_id>/
+/data/warehouse/curated/store_daily_sales/source_snapshot_id=<source_snapshot_id>/
+/data/warehouse/curated/category_monthly_sales/source_snapshot_id=<source_snapshot_id>/
 /data/warehouse/features/demand_forecasting/source_snapshot_id=<source_snapshot_id>/feature_version=<feature_version>/
 /data/warehouse/models/<model_run_id>/
 /data/warehouse/outputs/forecasts/<forecast_run_id>/
@@ -111,7 +121,12 @@ The catalog records logical locations only; it does not create HDFS directories.
 /data/warehouse/manifests/published/current.json
 ```
 
-Data paths are immutable by identity. Manifest paths contain metadata. `published/current.json` is an approval pointer, not a data directory.
+Data paths are immutable by identity. Each J03 curated dataset contains a validated
+`_dataset_manifest.json` with its exact schema, contract version, source lineage, physical
+schema, row count, and reconciliation measures. The final validated J03
+`pipeline_run_manifest` is the completion marker for the complete three-output bundle;
+consumers must reject a run when that marker or any referenced dataset manifest is absent.
+Manifest paths contain metadata. `published/current.json` is an approval pointer, not a data directory.
 
 ## Application Read Contract
 

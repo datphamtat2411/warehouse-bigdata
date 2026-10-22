@@ -26,7 +26,6 @@ from pyspark.sql.types import (  # noqa: E402
     StructType,
 )
 
-
 EVALUATION_DAYS = 1_941
 SALES_METADATA = ("id", "item_id", "dept_id", "cat_id", "store_id", "state_id")
 CONTRACT_COLUMNS = (

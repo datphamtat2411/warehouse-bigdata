@@ -506,6 +506,22 @@ HDFS_ARTIFACT_PATHS: Final = (
         "Validated enriched observed sales Parquet.",
     ),
     ArtifactPathContract(
+        "curated_store_daily_sales",
+        "/data/warehouse/curated/store_daily_sales/source_snapshot_id={source_snapshot_id}/",
+        ("source_snapshot_id",),
+        "data",
+        "J03",
+        "Validated store/day aggregate of observed sales Parquet.",
+    ),
+    ArtifactPathContract(
+        "curated_category_monthly_sales",
+        "/data/warehouse/curated/category_monthly_sales/source_snapshot_id={source_snapshot_id}/",
+        ("source_snapshot_id",),
+        "data",
+        "J03",
+        "Validated category/month aggregate of observed sales Parquet.",
+    ),
+    ArtifactPathContract(
         "forecast_features",
         "/data/warehouse/features/demand_forecasting/source_snapshot_id={source_snapshot_id}/feature_version={feature_version}/",
         ("source_snapshot_id", "feature_version"),

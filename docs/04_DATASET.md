@@ -508,6 +508,8 @@ The architecture expects these **illustrative** zones; `06_DATA_PIPELINE.md` own
   raw/m5/source_version=<source_version>/  # Immutable source CSVs and manifest
   curated/sales_daily/source_snapshot_id=<source_snapshot_id>/
   curated/sales_enriched/source_snapshot_id=<source_snapshot_id>/
+  curated/store_daily_sales/source_snapshot_id=<source_snapshot_id>/
+  curated/category_monthly_sales/source_snapshot_id=<source_snapshot_id>/
   features/demand_forecasting/             # source + feature_version dimensions
   outputs/forecasts/<forecast_run_id>/     # Versioned seven-day predictions
   outputs/evaluation/<evaluation_run_id>/  # Forecast/policy metrics

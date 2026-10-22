@@ -100,7 +100,8 @@ flowchart TD
     CHECKS --> SALES[("HDFS curated/sales_daily — Parquet")]
     SALES --> J03["J03: Price enrich + aggregate"]
     J03 --> ENRICHED[("HDFS curated/sales_enriched — Parquet")]
-    J03 --> AGG[("HDFS curated/analytics — Parquet")]
+    J03 --> STORE[("HDFS curated/store_daily_sales — Parquet")]
+    J03 --> CATEGORY[("HDFS curated/category_monthly_sales — Parquet")]
     ENRICHED --> J04["J04: Time-safe ML features"]
     J04 --> FEATURES[("HDFS features/demand_forecasting")]
     FEATURES --> J05["J05: Train + evaluate — MLlib"]
@@ -123,7 +124,7 @@ flowchart TD
 |---|---|---|---|---|
 | **J01** | Official source CSVs | Metadata, hash, schema, ingest to HDFS | Raw snapshot + source manifest | Provenance and required fields |
 | **J02** | Evaluation sales + calendar | Chunked unpivot, day/date join, column typing | `sales_daily` | Expected count, unique grain, valid units/days |
-| **J03** | `sales_daily` + prices | Left price join, flags, business aggregations | `sales_enriched`, `analytics` | Join cardinality, price-quality report |
+| **J03** | `sales_daily` + prices | Left price join, flags, business aggregations | `sales_enriched`, `store_daily_sales`, `category_monthly_sales` | Join cardinality, schema, lineage, aggregate reconciliation |
 | **J04** | Curated history | Time-safe lags, rolling statistics, input availability | Feature/label snapshots | Historical cutoff, leakage audit |
 | **J05** | Training/validation snapshots | Spark MLlib Random Forest + baseline evaluation | Model + metrics | Measured validation and persistable model |
 | **J06** | Model + eligible histories | Predict next seven dated values | `forecast_daily` | Horizon, model-run identity, nonnegative policy |
@@ -163,6 +164,13 @@ The following paths are **proposed canonical logical paths**, configurable throu
   curated/sales_enriched/source_snapshot_id=<source_snapshot_id>/
       sale_year=2011/...
       ...
+      _dataset_manifest.json
+  curated/store_daily_sales/source_snapshot_id=<source_snapshot_id>/
+      part-*.parquet
+      _dataset_manifest.json
+  curated/category_monthly_sales/source_snapshot_id=<source_snapshot_id>/
+      part-*.parquet
+      _dataset_manifest.json
   features/demand_forecasting/
     source_snapshot_id=<source_snapshot_id>/
       feature_version=<feature_version>/...
@@ -225,7 +233,7 @@ Define grain **per dataset** rather than blending different resolutions:
 |---|---|---|---|
 | `store_daily_sales` | `(source_snapshot_id, store_id, date)` | `sum(unit_sales)`; optional row count | Trends and store comparisons |
 | `item_store_weekly_sales` | `(item_id, store_id, wm_yr_wk)` | Units and observed-sales-day coverage | Demand patterns, diagnostics |
-| `category_monthly_sales` | `(cat_id, month_start)` | Sum of units | Category dashboard |
+| `category_monthly_sales` | `(source_snapshot_id, cat_id, month_start)` | Nonnegative Long sum of units | Category dashboard |
 | `data_quality_summary` | `(pipeline_run_id, dataset_name, check_name)` | Measured counts/rates/status | Reproducibility and defense |
 
 The number of aggregate rows is **different from** the 59.18-million detailed records. Never label a small dashboard aggregate as the full raw dataset.
@@ -506,6 +514,14 @@ Reconciliation rules:
 3. The record count after a left price join must equal the count before joining; otherwise inspect duplicate price keys or unexpected join behavior.
 4. Counts/sums for a selected `(item_id, store_id, date)` must match the original wide sales cell.
 
+The store and category aggregates are validated against the same `source_snapshot_id`
+before promotion. Their Parquet schemas must match their versioned contracts exactly,
+including Long `total_units`, nonnegative values, unique snapshot-scoped keys, and exact
+reconciliation to the source snapshot. They are first written under the run-owned staging
+directory, then promoted atomically to the curated paths. A retry may reuse only a
+validated existing output or finish missing promotions; the final validated J03 run
+manifest is the only completion marker for the full output set.
+
 ### 7.5. Derived revenue: optional, not a business fact
 
 If adding `estimated_sales_value = unit_sales × sell_price`, label it **derived from recorded units and posted weekly price**, **not** audited revenue, margin, cash flow, or profit. Exclude unknown-price rows from this amount and disclose coverage. The core demo does **not** require revenue analytics.
@@ -745,7 +761,8 @@ No dashboard action should trigger unbounded Spark transformations, random unres
 | `raw` | SHA-256, sizes, filenames, source version | `source_manifest.json` |
 | `sales_daily` | Expected count, day coverage, unique grain, unit sums | `normalize_quality.json` |
 | `sales_enriched` | Price-key uniqueness, join cardinality, missing-price rate | `enrich_quality.json` |
-| `analytics` | Aggregate sums and expected keys | `aggregate_quality.json` |
+| `store_daily_sales` | Exact schema, snapshot lineage, unique keys, and aggregate reconciliation | Per-output dataset manifest and J03 quality report |
+| `category_monthly_sales` | Exact schema, snapshot lineage, unique keys, nonnegative Long totals, and aggregate reconciliation | Per-output dataset manifest and J03 quality report |
 | `features` | Historical feature cutoff and split boundaries | `feature_quality.json` |
 | `forecasts` | Exactly seven dated predictions per eligible series where required | `forecast_quality.json` |
 | `decisions` | Stock and allocation constraints | `decision_quality.json` |

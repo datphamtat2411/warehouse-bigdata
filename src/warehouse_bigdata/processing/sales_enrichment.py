@@ -175,7 +175,14 @@ def validate_sales_enriched(
 ) -> SalesEnrichmentMetrics:
     """Run distributed Contract v1 checks over an enriched sales DataFrame."""
     from pyspark.sql import functions as F
-    from pyspark.sql.types import BooleanType, DateType, DoubleType, IntegerType, LongType, StringType
+    from pyspark.sql.types import (
+        BooleanType,
+        DateType,
+        DoubleType,
+        IntegerType,
+        LongType,
+        StringType,
+    )
 
     _validate_expected_metrics(expected_row_count, expected_unit_sales_total)
     expected_types = (
@@ -289,7 +296,14 @@ def validate_sales_enriched(
 def price_coverage(sales_enriched: DataFrame) -> DataFrame:
     """Return distributed price coverage grouped by category and retail week."""
     from pyspark.sql import functions as F
-    from pyspark.sql.types import BooleanType, DateType, DoubleType, IntegerType, LongType, StringType
+    from pyspark.sql.types import (
+        BooleanType,
+        DateType,
+        DoubleType,
+        IntegerType,
+        LongType,
+        StringType,
+    )
 
     expected_types = (
         StringType(),

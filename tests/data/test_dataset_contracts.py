@@ -25,6 +25,7 @@ def test_valid_synthetic_datasets_are_accepted_by_catalog_contracts() -> None:
         "sales_daily",
         "sales_enriched",
         "store_daily_sales",
+        "category_monthly_sales",
         "forecast_features",
         "forecast_daily",
         "forecast_metrics",
@@ -90,6 +91,36 @@ def test_store_aggregate_golden_values_are_independently_verified() -> None:
     actual = {f"{row['store_id']}|{row['date']}": row["total_units"] for row in records}
     assert len(records) == expected["row_count"]
     assert actual == expected["totals"]
+
+
+def test_category_monthly_contract_rejects_duplicate_negative_and_cross_snapshot_rows() -> None:
+    contract = DATASET_CONTRACTS_BY_NAME["category_monthly_sales"]
+    valid = {
+        "source_snapshot_id": "synthetic-snapshot-001",
+        "cat_id": "CAT_1",
+        "month_start": "2026-01-01",
+        "total_units": 5,
+    }
+    validate_dataset(contract, [valid], lineage_context={"source_snapshot_id": valid["source_snapshot_id"]})
+
+    for mutation in (
+        lambda row: {**row, "total_units": -1},
+        lambda row: {**row, "source_snapshot_id": "synthetic-snapshot-other"},
+    ):
+        with pytest.raises(ContractValidationError):
+            validate_dataset(
+                contract,
+                [mutation(valid)],
+                lineage_context={"source_snapshot_id": valid["source_snapshot_id"]},
+            )
+
+    with pytest.raises(ContractValidationError) as duplicate_error:
+        validate_dataset(
+            contract,
+            [valid, deepcopy(valid)],
+            lineage_context={"source_snapshot_id": valid["source_snapshot_id"]},
+        )
+    _assert_code(duplicate_error.value, "DUPLICATE_KEY")
 
 
 def test_nullable_feature_label_is_accepted() -> None:

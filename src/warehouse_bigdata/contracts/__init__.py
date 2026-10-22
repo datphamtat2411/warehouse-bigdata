@@ -2,6 +2,7 @@
 
 from .datasets import (
     ALLOCATION_RECOMMENDATIONS,
+    CATEGORY_MONTHLY_SALES,
     CENTRAL_SUPPLY_SCENARIO,
     DATASET_CONTRACTS,
     DATASET_CONTRACTS_BY_NAME,
@@ -50,6 +51,7 @@ __all__ = [
     "ApplicationReadContract",
     "ArtifactPathContract",
     "CENTRAL_SUPPLY_SCENARIO",
+    "CATEGORY_MONTHLY_SALES",
     "ContractValidationError",
     "CONTRACT_CATALOG_VERSION",
     "DatasetContract",

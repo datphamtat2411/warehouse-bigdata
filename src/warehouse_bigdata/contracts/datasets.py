@@ -215,6 +215,29 @@ STORE_DAILY_SALES = DatasetContract(
 )
 
 
+CATEGORY_MONTHLY_SALES = DatasetContract(
+    name="category_monthly_sales",
+    version="1.0",
+    producer="J03 aggregation",
+    consumer="J08 publication and category dashboard",
+    grain="One source snapshot-category-month aggregate.",
+    unique_key=("source_snapshot_id", "cat_id", "month_start"),
+    fields=(
+        _field("source_snapshot_id", STRING),
+        _field("cat_id", STRING),
+        _field("month_start", DATE),
+        _field("total_units", NON_NEGATIVE_INT),
+    ),
+    provenance="derived_from_observed_m5_unit_sales",
+    required_lineage=("source_snapshot_id",),
+    lineage_authority=(LineageAuthority("source_snapshot_id", "row"),),
+    invariants=(
+        "total_units equals the scoped sum of sales_daily.unit_sales.",
+        "total_units is a nonnegative Long aggregate, not a transaction or order count.",
+    ),
+)
+
+
 FORECAST_FEATURES = DatasetContract(
     name="forecast_features",
     version="1.0",
@@ -592,6 +615,7 @@ DATASET_CONTRACTS: Final = (
     SALES_DAILY,
     SALES_ENRICHED,
     STORE_DAILY_SALES,
+    CATEGORY_MONTHLY_SALES,
     FORECAST_FEATURES,
     FORECAST_DAILY,
     FORECAST_METRICS,

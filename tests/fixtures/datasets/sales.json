@@ -328,5 +328,19 @@
       "total_units": 3,
       "observed_series_count": 2
     }
+  ],
+  "category_monthly_sales": [
+    {
+      "source_snapshot_id": "synthetic-snapshot-001",
+      "cat_id": "CAT_1",
+      "month_start": "2026-01-01",
+      "total_units": 6
+    },
+    {
+      "source_snapshot_id": "synthetic-snapshot-001",
+      "cat_id": "CAT_2",
+      "month_start": "2026-01-01",
+      "total_units": 7
+    }
   ]
 }

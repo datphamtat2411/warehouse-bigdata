@@ -206,7 +206,9 @@ Illustrative logical paths (final exact paths are owned by `06_DATA_PIPELINE.md`
 /data/warehouse/
   raw/m5/                         # Immutable original CSVs, source manifest
   curated/sales_daily/            # Parquet: item, store, date, units, dimensions
-  curated/analytics/              # Filterable aggregations and reference data
+  curated/sales_enriched/         # Snapshot-scoped enriched observed sales
+  curated/store_daily_sales/      # Snapshot-scoped store/day aggregates
+  curated/category_monthly_sales/ # Snapshot-scoped category/month aggregates
   features/demand_forecasting/    # Leakage-controlled training/scoring features
   outputs/forecasts/              # Model predictions with run IDs and horizons
   outputs/evaluation/             # ML and business-policy metrics
@@ -216,7 +218,9 @@ Illustrative logical paths (final exact paths are owned by `06_DATA_PIPELINE.md`
 | Dataset | Grain / unique logical key | Owner | Consumer |
 |---|---|---|---|
 | `sales_daily` | `(source_snapshot_id, item_id, store_id, date)` | Spark ETL | Spark features, ClickHouse analytics |
+| `sales_enriched` | `(source_snapshot_id, item_id, store_id, date)` | Spark analytics | Spark features, ClickHouse analytics |
 | `store_daily_sales` | `(source_snapshot_id, store_id, date)` | Spark analytics | ClickHouse / dashboard |
+| `category_monthly_sales` | `(source_snapshot_id, cat_id, month_start)` | Spark analytics | ClickHouse / dashboard |
 | `forecast_daily` | `(forecast_run_id, item_id, store_id, forecast_date)` | Spark ML | Inventory rules / ClickHouse / dashboard |
 | `inventory_scenario` | `(scenario_id, issue_date, item_id, store_id)` | Simulation data generator | Inventory rules / dashboard |
 | `replenishment_recommendations` | `(decision_run_id, item_id, store_id)` | Decision module | ClickHouse / dashboard |

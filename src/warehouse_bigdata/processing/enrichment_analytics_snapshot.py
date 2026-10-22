@@ -15,9 +15,12 @@ from urllib.parse import urlsplit
 from warehouse_bigdata.common.config import HDFSConfig
 from warehouse_bigdata.common.hdfs_paths import (
     HdfsPathError,
+    render_curated_category_monthly_sales_path,
     render_curated_sales_daily_path,
     render_curated_sales_enriched_path,
+    render_curated_store_daily_sales_path,
     render_enrichment_candidate_path,
+    render_enrichment_dataset_manifest_path,
     render_enrichment_failure_path,
     render_enrichment_output_quality_path,
     render_enrichment_quality_path,
@@ -31,6 +34,7 @@ from warehouse_bigdata.common.hdfs_paths import (
 )
 from warehouse_bigdata.common.hdfs_runtime import create_hdfs_cli_client
 from warehouse_bigdata.contracts.datasets import (
+    CATEGORY_MONTHLY_SALES,
     SALES_DAILY,
     SALES_ENRICHED,
     STORE_DAILY_SALES,
@@ -71,7 +75,7 @@ _OUTPUT_NAMES = ("sales_enriched", "store_daily_sales", "category_monthly_sales"
 _CODE_REVISION = "warehouse-bigdata:enrichment-analytics-snapshot-v1"
 _QUALITY_SCHEMA_VERSION = "enrichment-analytics-quality-v1"
 _BINDING_SCHEMA_VERSION = "enrichment-analytics-input-binding-v1"
-_ENRICHED_SNAPSHOT_SCHEMA_VERSION = "sales-enriched-snapshot-v1"
+_DATASET_MANIFEST_SCHEMA_VERSION = "enrichment-dataset-manifest-v1"
 _SALES_SCHEMA_FINGERPRINT = "sha256:" + hashlib.sha256(
     json.dumps(SALES_DAILY.field_names, separators=(",", ":")).encode("utf-8")
 ).hexdigest()
@@ -131,6 +135,123 @@ def validate_enrichment_analytics_identifiers(
         raise EnrichmentAnalyticsSnapshotError(str(error)) from error
 
 
+def _validate_existing_completion_marker(
+    hdfs: Any,
+    hdfs_config: HDFSConfig,
+    path: str,
+    *,
+    source_version: str,
+    source_snapshot_id: str,
+    pipeline_run_id: str,
+    curated_output_paths: Mapping[str, str],
+    quality_path: str,
+) -> None:
+    """Reject a run marker unless it identifies the complete immutable output bundle."""
+    manifest = _read_json(hdfs, path, "J03 completion marker")
+    try:
+        validate_manifest(
+            PIPELINE_RUN_MANIFEST,
+            manifest,
+            lineage_context={
+                "required_status": VALIDATED,
+                "source_version": source_version,
+                "pipeline_run_id": pipeline_run_id,
+                "source_snapshot_id": source_snapshot_id,
+            },
+        )
+    except ContractValidationError as error:
+        raise EnrichmentAnalyticsSnapshotError(
+            f"existing J03 completion marker is not VALIDATED: {error}"
+        ) from error
+
+    expected_names = list(_OUTPUT_NAMES)
+    expected_uris = [
+        _hdfs_uri(hdfs_config.uri, curated_output_paths[name]) for name in _OUTPUT_NAMES
+    ]
+    if _json_string_list(manifest.get("output_dataset_names"), "completion output names") != expected_names:
+        raise EnrichmentAnalyticsSnapshotError(
+            "existing J03 completion marker does not cover every output"
+        )
+    if _json_string_list(manifest.get("output_dataset_uris"), "completion output URIs") != expected_uris:
+        raise EnrichmentAnalyticsSnapshotError(
+            "existing J03 completion marker contains non-curated or incomplete output paths"
+        )
+    try:
+        coverage = json.loads(str(manifest["coverage_and_exclusion_counts"]))
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise EnrichmentAnalyticsSnapshotError(
+            "existing J03 completion marker has malformed completion metadata"
+        ) from error
+    expected_manifests = {
+        name: _hdfs_uri(
+            hdfs_config.uri,
+            render_enrichment_dataset_manifest_path(curated_output_paths[name]),
+        )
+        for name in _OUTPUT_NAMES
+    }
+    if not isinstance(coverage, dict) or coverage.get("publication_complete") is not True:
+        raise EnrichmentAnalyticsSnapshotError(
+            "existing J03 completion marker is not a complete publication"
+        )
+    if coverage.get("output_dataset_manifests") != expected_manifests:
+        raise EnrichmentAnalyticsSnapshotError(
+            "existing J03 completion marker has incomplete dataset-manifest lineage"
+        )
+    for name, output_path in curated_output_paths.items():
+        if not _exists(hdfs, output_path) or not hdfs.is_directory(output_path):
+            raise EnrichmentAnalyticsSnapshotError(
+                f"existing J03 completion marker points to a missing output: {name}"
+            )
+        if not _exists(hdfs, render_enrichment_dataset_manifest_path(output_path)):
+            raise EnrichmentAnalyticsSnapshotError(
+                f"existing J03 completion marker points to an output without a dataset manifest: {name}"
+            )
+        _validate_dataset_manifest_identity(
+            hdfs,
+            output_path,
+            hdfs_config,
+            contract={
+                "sales_enriched": SALES_ENRICHED,
+                "store_daily_sales": STORE_DAILY_SALES,
+                "category_monthly_sales": CATEGORY_MONTHLY_SALES,
+            }[name],
+            source_version=source_version,
+            source_snapshot_id=source_snapshot_id,
+        )
+    if not _exists(hdfs, quality_path):
+        raise EnrichmentAnalyticsSnapshotError(
+            "existing J03 completion marker has no quality report"
+        )
+
+
+def validate_enrichment_analytics_completion_marker(
+    hdfs: Any,
+    hdfs_config: HDFSConfig,
+    *,
+    source_version: str,
+    source_snapshot_id: str,
+    pipeline_run_id: str,
+    curated_output_paths: Mapping[str, str],
+    quality_path: str,
+) -> None:
+    """Validate the final J03 marker before a consumer reads any output."""
+    path = render_run_manifest_path(hdfs_config.base_path, pipeline_run_id)
+    if not _exists(hdfs, path):
+        raise EnrichmentAnalyticsSnapshotError(
+            f"J03 completion marker is missing: {path}"
+        )
+    _validate_existing_completion_marker(
+        hdfs,
+        hdfs_config,
+        path,
+        source_version=source_version,
+        source_snapshot_id=source_snapshot_id,
+        pipeline_run_id=pipeline_run_id,
+        curated_output_paths=curated_output_paths,
+        quality_path=quality_path,
+    )
+
+
 def run_enrichment_analytics_snapshot(
     spark: SparkSession,
     *,
@@ -168,7 +289,18 @@ def run_enrichment_analytics_snapshot(
         hdfs_config.base_path,
         source_snapshot_id,
     )
-    output_paths = {
+    curated_output_paths = {
+        "sales_enriched": curated_path,
+        "store_daily_sales": render_curated_store_daily_sales_path(
+            hdfs_config.base_path,
+            source_snapshot_id,
+        ),
+        "category_monthly_sales": render_curated_category_monthly_sales_path(
+            hdfs_config.base_path,
+            source_snapshot_id,
+        ),
+    }
+    candidate_paths = {
         name: render_enrichment_candidate_path(staging_path, name) for name in _OUTPUT_NAMES
     }
     output_quality_paths = {
@@ -183,19 +315,23 @@ def run_enrichment_analytics_snapshot(
     hdfs = client
     raw_path: str | None = None
     result_status = "VALIDATED"
+    run_manifest_path = render_run_manifest_path(hdfs_config.base_path, pipeline_run_id)
 
     try:
         hdfs = create_hdfs_cli_client(hdfs_config) if hdfs is None else hdfs
         _ensure_staging_root(hdfs, staging_path)
-        result_status = (
-            "REUSED"
-            if _exists(hdfs, render_run_manifest_path(hdfs_config.base_path, pipeline_run_id))
-            else "VALIDATED"
-        )
-        if _exists(hdfs, failure_path):
-            raise EnrichmentAnalyticsSnapshotError(
-                "staging attempt already has FAILED evidence; use a new pipeline_run_id"
+        if _exists(hdfs, run_manifest_path):
+            _validate_existing_completion_marker(
+                hdfs,
+                hdfs_config,
+                run_manifest_path,
+                source_version=source_version,
+                source_snapshot_id=source_snapshot_id,
+                pipeline_run_id=pipeline_run_id,
+                curated_output_paths=curated_output_paths,
+                quality_path=quality_path,
             )
+            result_status = "REUSED"
         _write_or_validate_input_binding(
             hdfs,
             staging_path,
@@ -247,7 +383,7 @@ def run_enrichment_analytics_snapshot(
             hdfs,
             hdfs_config,
             enriched,
-            candidate_path=output_paths["sales_enriched"],
+            candidate_path=candidate_paths["sales_enriched"],
             curated_path=curated_path,
             source_version=source_version,
             source_snapshot_id=source_snapshot_id,
@@ -265,12 +401,18 @@ def run_enrichment_analytics_snapshot(
             hdfs,
             hdfs_config,
             aggregation.store_daily_sales,
-            output_paths["store_daily_sales"],
+            candidate_paths["store_daily_sales"],
+            curated_output_paths["store_daily_sales"],
             lambda persisted: validate_store_daily_sales(
                 persisted,
                 sales_daily,
                 source_snapshot_id=source_snapshot_id,
             ),
+            contract=STORE_DAILY_SALES,
+            source_version=source_version,
+            source_snapshot_id=source_snapshot_id,
+            pipeline_run_id=pipeline_run_id,
+            created_at=timestamp(),
         )
         timings["store_aggregation_seconds"] = time.perf_counter() - phase_started
 
@@ -280,14 +422,29 @@ def run_enrichment_analytics_snapshot(
             hdfs,
             hdfs_config,
             aggregation.category_monthly_sales,
-            output_paths["category_monthly_sales"],
+            candidate_paths["category_monthly_sales"],
+            curated_output_paths["category_monthly_sales"],
             lambda persisted: validate_category_monthly_sales(
                 persisted,
                 sales_daily,
                 source_snapshot_id=source_snapshot_id,
             ),
+            contract=CATEGORY_MONTHLY_SALES,
+            source_version=source_version,
+            source_snapshot_id=source_snapshot_id,
+            pipeline_run_id=pipeline_run_id,
+            created_at=timestamp(),
         )
         timings["category_aggregation_seconds"] = time.perf_counter() - phase_started
+
+        phase_started = time.perf_counter()
+        for name in _OUTPUT_NAMES:
+            _promote_validated_output(
+                hdfs,
+                candidate_paths[name],
+                curated_output_paths[name],
+            )
+        timings["promotion_seconds"] = time.perf_counter() - phase_started
 
         phase_started = time.perf_counter()
         enriched_metrics = _materialize_sales_enriched(
@@ -295,7 +452,7 @@ def run_enrichment_analytics_snapshot(
             hdfs,
             hdfs_config,
             enriched,
-            candidate_path=output_paths["sales_enriched"],
+            candidate_path=candidate_paths["sales_enriched"],
             curated_path=curated_path,
             source_version=source_version,
             source_snapshot_id=source_snapshot_id,
@@ -303,9 +460,45 @@ def run_enrichment_analytics_snapshot(
             expected_row_count=input_metrics.row_count,
             expected_unit_sales_total=input_metrics.unit_sales_total,
             created_at=timestamp(),
-            promote=True,
+            promote=False,
         )
-        timings["sales_enriched_promotion_seconds"] = time.perf_counter() - phase_started
+        store_daily = _materialize_aggregate_candidate(
+            spark,
+            hdfs,
+            hdfs_config,
+            aggregation.store_daily_sales,
+            candidate_paths["store_daily_sales"],
+            curated_output_paths["store_daily_sales"],
+            lambda persisted: validate_store_daily_sales(
+                persisted,
+                sales_daily,
+                source_snapshot_id=source_snapshot_id,
+            ),
+            contract=STORE_DAILY_SALES,
+            source_version=source_version,
+            source_snapshot_id=source_snapshot_id,
+            pipeline_run_id=pipeline_run_id,
+            created_at=timestamp(),
+        )
+        category_monthly = _materialize_aggregate_candidate(
+            spark,
+            hdfs,
+            hdfs_config,
+            aggregation.category_monthly_sales,
+            candidate_paths["category_monthly_sales"],
+            curated_output_paths["category_monthly_sales"],
+            lambda persisted: validate_category_monthly_sales(
+                persisted,
+                sales_daily,
+                source_snapshot_id=source_snapshot_id,
+            ),
+            contract=CATEGORY_MONTHLY_SALES,
+            source_version=source_version,
+            source_snapshot_id=source_snapshot_id,
+            pipeline_run_id=pipeline_run_id,
+            created_at=timestamp(),
+        )
+        timings["final_validation_seconds"] = time.perf_counter() - phase_started
 
         persisted_enriched = _read_parquet(
             spark,
@@ -333,18 +526,17 @@ def run_enrichment_analytics_snapshot(
             "store_daily_sales": _output_quality_document(
                 store_daily,
                 hdfs_config=hdfs_config,
-                artifact_path=output_paths["store_daily_sales"],
+                artifact_path=curated_output_paths["store_daily_sales"],
                 contract=STORE_DAILY_SALES,
-                candidate_only=True,
+                candidate_only=False,
                 quality_path=output_quality_paths["store_daily_sales"],
             ),
             "category_monthly_sales": _output_quality_document(
                 category_monthly,
                 hdfs_config=hdfs_config,
-                artifact_path=output_paths["category_monthly_sales"],
-                contract=None,
-                dataset_name="category_monthly_sales",
-                candidate_only=True,
+                artifact_path=curated_output_paths["category_monthly_sales"],
+                contract=CATEGORY_MONTHLY_SALES,
+                candidate_only=False,
                 quality_path=output_quality_paths["category_monthly_sales"],
             ),
         }
@@ -366,7 +558,8 @@ def run_enrichment_analytics_snapshot(
             raw_path=raw_path,
             sales_daily_path=sales_daily_path,
             curated_path=curated_path,
-            output_paths=output_paths,
+            output_paths=curated_output_paths,
+            candidate_paths=candidate_paths,
             output_quality_paths=output_quality_paths,
             input_manifest=input_manifest,
             input_metrics=input_metrics,
@@ -390,7 +583,7 @@ def run_enrichment_analytics_snapshot(
             source_snapshot_id=source_snapshot_id,
             pipeline_run_id=pipeline_run_id,
             curated_path=curated_path,
-            output_paths=output_paths,
+            output_paths=curated_output_paths,
             quality_path=quality_path,
             output_documents=output_documents,
             input_metrics=input_metrics,
@@ -416,7 +609,7 @@ def run_enrichment_analytics_snapshot(
             sales_daily_path=sales_daily_path,
             staging_path=staging_path,
             curated_path=curated_path,
-            output_paths={**output_paths, "sales_enriched": curated_path},
+            output_paths=curated_output_paths,
             quality_report_path=quality_path,
             output_quality_paths=output_quality_paths,
             failure_report_path=None,
@@ -443,7 +636,8 @@ def run_enrichment_analytics_snapshot(
                         sales_daily_path=sales_daily_path,
                         staging_path=staging_path,
                         curated_path=curated_path,
-                        output_paths=output_paths,
+                        output_paths=curated_output_paths,
+                        candidate_paths=candidate_paths,
                         failure_details=(detail,),
                     ),
                 )
@@ -461,7 +655,7 @@ def run_enrichment_analytics_snapshot(
             sales_daily_path=sales_daily_path,
             staging_path=staging_path,
             curated_path=curated_path,
-            output_paths=output_paths,
+            output_paths=curated_output_paths,
             quality_report_path=None,
             output_quality_paths={},
             failure_report_path=stored_failure_path,
@@ -671,20 +865,22 @@ def _materialize_sales_enriched(
     if _exists(hdfs, curated_path):
         if not hdfs.is_directory(curated_path):
             raise EnrichmentAnalyticsSnapshotError("existing SALES_ENRICHED path is not a directory")
-        metrics = _validate_persisted_enriched(
-            spark,
-            curated_uri,
+        persisted = _read_parquet(spark, curated_uri)
+        metrics = _validate_persisted_enriched_frame(
+            persisted,
             expected_row_count=expected_row_count,
             expected_unit_sales_total=expected_unit_sales_total,
         )
-        _validate_enriched_manifest(
+        _validate_dataset_manifest(
             hdfs,
             curated_path,
             hdfs_config,
+            contract=SALES_ENRICHED,
             source_version=source_version,
             source_snapshot_id=source_snapshot_id,
             expected_metrics=metrics,
             artifact_path=curated_path,
+            physical_schema=_physical_schema(persisted),
         )
         return metrics
 
@@ -695,70 +891,103 @@ def _materialize_sales_enriched(
     else:
         _write_parquet_once(spark, enriched, candidate_uri, partition_by=("year",))
 
-    metrics = _validate_persisted_enriched(
-        spark,
-        candidate_uri,
+    persisted = _read_parquet(spark, candidate_uri)
+    metrics = _validate_persisted_enriched_frame(
+        persisted,
         expected_row_count=expected_row_count,
         expected_unit_sales_total=expected_unit_sales_total,
     )
-    manifest_path = str(PurePosixPath(candidate_path) / "_snapshot_manifest.json")
+    manifest_path = render_enrichment_dataset_manifest_path(candidate_path)
     if _exists(hdfs, manifest_path):
-        _validate_enriched_manifest(
+        _validate_dataset_manifest(
             hdfs,
             candidate_path,
             hdfs_config,
+            contract=SALES_ENRICHED,
             source_version=source_version,
             source_snapshot_id=source_snapshot_id,
             expected_metrics=metrics,
             artifact_path=curated_path,
+            physical_schema=_physical_schema(persisted),
+            expected_pipeline_run_id=pipeline_run_id,
         )
     else:
         _write_json_once(
             hdfs,
             manifest_path,
-            _enriched_manifest(
+            _dataset_manifest(
                 hdfs_config,
+                contract=SALES_ENRICHED,
                 source_version=source_version,
                 source_snapshot_id=source_snapshot_id,
                 pipeline_run_id=pipeline_run_id,
                 artifact_path=curated_path,
                 metrics=metrics,
+                physical_schema=_physical_schema(persisted),
                 created_at=created_at,
             ),
         )
 
     if not promote:
         return metrics
-
-    hdfs.mkdir_parents(str(PurePosixPath(curated_path).parent))
-    try:
-        hdfs.rename(candidate_path, curated_path)
-    except Exception as error:
-        if not _exists(hdfs, curated_path):
-            raise EnrichmentAnalyticsSnapshotError(
-                f"SALES_ENRICHED promotion failed: {error}"
-            ) from error
-        if not hdfs.is_directory(curated_path):
-            raise EnrichmentAnalyticsSnapshotError(
-                "SALES_ENRICHED destination appeared as a non-directory"
-            ) from error
-
-    promoted_metrics = _validate_persisted_enriched(
+    _promote_validated_output(hdfs, candidate_path, curated_path)
+    return _materialize_sales_enriched(
         spark,
-        curated_uri,
-        expected_row_count=expected_row_count,
-        expected_unit_sales_total=expected_unit_sales_total,
-    )
-    _validate_enriched_manifest(
         hdfs,
-        curated_path,
         hdfs_config,
+        enriched,
+        candidate_path=candidate_path,
+        curated_path=curated_path,
         source_version=source_version,
         source_snapshot_id=source_snapshot_id,
-        expected_metrics=promoted_metrics,
-        artifact_path=curated_path,
+        pipeline_run_id=pipeline_run_id,
+        expected_row_count=expected_row_count,
+        expected_unit_sales_total=expected_unit_sales_total,
+        created_at=created_at,
+        promote=False,
     )
-    return promoted_metrics
+
+
+def _validate_dataset_manifest_identity(
+    hdfs: Any,
+    dataset_path: str,
+    hdfs_config: HDFSConfig,
+    *,
+    contract,
+    source_version: str,
+    source_snapshot_id: str,
+) -> None:
+    manifest = _read_json(
+        hdfs,
+        render_enrichment_dataset_manifest_path(dataset_path),
+        f"{contract.name} dataset manifest",
+    )
+    if (
+        manifest.get("schema_version") != _DATASET_MANIFEST_SCHEMA_VERSION
+        or manifest.get("status") != VALIDATED
+        or manifest.get("dataset_name") != contract.name
+        or manifest.get("dataset_version") != contract.version
+        or manifest.get("provenance") != contract.provenance
+        or manifest.get("source_version") != source_version
+        or manifest.get("source_snapshot_id") != source_snapshot_id
+        or manifest.get("artifact_uri") != _hdfs_uri(hdfs_config.uri, dataset_path)
+        or manifest.get("schema") != list(contract.field_names)
+        or manifest.get("schema_fingerprint") != _schema_fingerprint(contract.field_names)
+        or manifest.get("logical_unique_key") != list(contract.unique_key)
+        or manifest.get("persisted_parquet_validated") is not True
+    ):
+        raise EnrichmentAnalyticsSnapshotError(
+            f"{contract.name} dataset manifest identity is invalid"
+        )
+    physical_schema = manifest.get("physical_schema")
+    if (
+        not isinstance(physical_schema, dict)
+        or set(physical_schema) != set(contract.field_names)
+        or not all(isinstance(value, str) and value for value in physical_schema.values())
+    ):
+        raise EnrichmentAnalyticsSnapshotError(
+            f"{contract.name} dataset manifest physical schema is invalid"
+        )
 
 
 def _materialize_aggregate_candidate(
@@ -767,33 +996,75 @@ def _materialize_aggregate_candidate(
     hdfs_config: HDFSConfig,
     dataframe: DataFrame,
     candidate_path: str,
+    curated_path: str,
     validator: Callable[[DataFrame], None],
+    *,
+    contract,
+    source_version: str,
+    source_snapshot_id: str,
+    pipeline_run_id: str,
+    created_at: str,
 ) -> dict[str, object]:
-    candidate_uri = _hdfs_uri(hdfs_config.uri, candidate_path)
-    if _exists(hdfs, candidate_path) and not hdfs.is_directory(candidate_path):
+    target_path = curated_path if _exists(hdfs, curated_path) else candidate_path
+    target_uri = _hdfs_uri(hdfs_config.uri, target_path)
+    if _exists(hdfs, target_path) and not hdfs.is_directory(target_path):
         raise EnrichmentAnalyticsSnapshotError(
-            f"existing aggregate candidate is not a directory: {candidate_path}"
+            f"existing aggregate dataset is not a directory: {target_path}"
         )
-    if not _exists(hdfs, candidate_path):
-        _write_parquet_once(spark, dataframe, candidate_uri)
-    persisted = _read_parquet(spark, candidate_uri)
+    if not _exists(hdfs, target_path):
+        _write_parquet_once(spark, dataframe, target_uri)
+    persisted = _read_parquet(spark, target_uri)
     try:
         validator(persisted)
     except (SalesAggregationError, ValueError, TypeError) as error:
         raise EnrichmentAnalyticsSnapshotError(
-            f"persisted aggregate candidate failed validation: {error}"
+            f"persisted {contract.name} failed validation: {error}"
         ) from error
-    return _basic_quality_values(persisted, total_field="total_units")
+    values = _basic_quality_values(persisted, total_field="total_units")
+    manifest_path = render_enrichment_dataset_manifest_path(target_path)
+    expected_pipeline_run_id = pipeline_run_id if target_path == candidate_path else None
+    if _exists(hdfs, manifest_path):
+        _validate_dataset_manifest(
+            hdfs,
+            target_path,
+            hdfs_config,
+            contract=contract,
+            source_version=source_version,
+            source_snapshot_id=source_snapshot_id,
+            expected_metrics=values,
+            artifact_path=curated_path,
+            physical_schema=_physical_schema(persisted),
+            expected_pipeline_run_id=expected_pipeline_run_id,
+        )
+    else:
+        if target_path == curated_path:
+            raise EnrichmentAnalyticsSnapshotError(
+                f"curated {contract.name} is missing its immutable dataset manifest"
+            )
+        _write_json_once(
+            hdfs,
+            manifest_path,
+            _dataset_manifest(
+                hdfs_config,
+                contract=contract,
+                source_version=source_version,
+                source_snapshot_id=source_snapshot_id,
+                pipeline_run_id=pipeline_run_id,
+                artifact_path=curated_path,
+                metrics=values,
+                physical_schema=_physical_schema(persisted),
+                created_at=created_at,
+            ),
+        )
+    return values
 
 
-def _validate_persisted_enriched(
-    spark: SparkSession,
-    uri: str,
+def _validate_persisted_enriched_frame(
+    persisted: DataFrame,
     *,
     expected_row_count: int,
     expected_unit_sales_total: int,
 ) -> SalesEnrichmentMetrics:
-    persisted = _read_parquet(spark, uri)
     if set(persisted.columns) != set(SALES_ENRICHED.field_names):
         raise EnrichmentAnalyticsSnapshotError("persisted SALES_ENRICHED schema fields differ")
     persisted = persisted.select(*SALES_ENRICHED.field_names)
@@ -809,75 +1080,112 @@ def _validate_persisted_enriched(
         ) from error
 
 
-def _validate_enriched_manifest(
+def _promote_validated_output(hdfs: Any, candidate_path: str, curated_path: str) -> None:
+    """Atomically promote one validated candidate without overwriting its snapshot path."""
+    if _exists(hdfs, curated_path):
+        if not hdfs.is_directory(curated_path):
+            raise EnrichmentAnalyticsSnapshotError(
+                f"curated output path is not a directory: {curated_path}"
+            )
+        if _exists(hdfs, candidate_path):
+            raise EnrichmentAnalyticsSnapshotError(
+                f"candidate and curated output both exist: {candidate_path}"
+            )
+        return
+    if not _exists(hdfs, candidate_path) or not hdfs.is_directory(candidate_path):
+        raise EnrichmentAnalyticsSnapshotError(
+            f"validated candidate is missing before promotion: {candidate_path}"
+        )
+    hdfs.mkdir_parents(str(PurePosixPath(curated_path).parent))
+    try:
+        hdfs.rename(candidate_path, curated_path)
+    except Exception as error:
+        if not _exists(hdfs, curated_path):
+            raise EnrichmentAnalyticsSnapshotError(
+                f"output promotion failed: {candidate_path} -> {curated_path}"
+            ) from error
+    if _exists(hdfs, candidate_path):
+        raise EnrichmentAnalyticsSnapshotError(
+            f"candidate remained after output promotion: {candidate_path}"
+        )
+    if not _exists(hdfs, curated_path) or not hdfs.is_directory(curated_path):
+        raise EnrichmentAnalyticsSnapshotError(
+            f"curated output was not finalized: {curated_path}"
+        )
+
+
+def _validate_dataset_manifest(
     hdfs: Any,
     dataset_path: str,
     hdfs_config: HDFSConfig,
     *,
+    contract,
     source_version: str,
     source_snapshot_id: str,
-    expected_metrics: SalesEnrichmentMetrics,
+    expected_metrics: Mapping[str, object] | SalesEnrichmentMetrics,
     artifact_path: str,
+    physical_schema: Mapping[str, str],
+    expected_pipeline_run_id: str | None = None,
 ) -> None:
-    path = str(PurePosixPath(dataset_path) / "_snapshot_manifest.json")
-    manifest = _read_json(hdfs, path, "SALES_ENRICHED snapshot manifest")
+    path = render_enrichment_dataset_manifest_path(dataset_path)
+    manifest = _read_json(hdfs, path, f"{contract.name} dataset manifest")
+    expected_values = _metric_values(expected_metrics)
     if (
-        manifest.get("schema_version") != _ENRICHED_SNAPSHOT_SCHEMA_VERSION
+        manifest.get("schema_version") != _DATASET_MANIFEST_SCHEMA_VERSION
         or manifest.get("status") != VALIDATED
-        or manifest.get("dataset_name") != SALES_ENRICHED.name
-        or manifest.get("dataset_version") != SALES_ENRICHED.version
-        or manifest.get("provenance") != SALES_ENRICHED.provenance
+        or manifest.get("dataset_name") != contract.name
+        or manifest.get("dataset_version") != contract.version
+        or manifest.get("provenance") != contract.provenance
         or manifest.get("source_version") != source_version
         or manifest.get("source_snapshot_id") != source_snapshot_id
         or manifest.get("artifact_uri") != _hdfs_uri(hdfs_config.uri, artifact_path)
-        or manifest.get("schema") != list(SALES_ENRICHED.field_names)
-        or manifest.get("logical_unique_key") != list(SALES_ENRICHED.unique_key)
-        or manifest.get("row_count") != expected_metrics.row_count
-        or manifest.get("unit_sales_total") != expected_metrics.unit_sales_total
-        or manifest.get("zero_sales_count") != expected_metrics.zero_sales_count
-        or manifest.get("matched_price_count") != expected_metrics.matched_price_count
-        or manifest.get("missing_price_count") != expected_metrics.missing_price_count
+        or manifest.get("schema") != list(contract.field_names)
+        or manifest.get("schema_fingerprint") != _schema_fingerprint(contract.field_names)
+        or manifest.get("physical_schema") != dict(physical_schema)
+        or manifest.get("logical_unique_key") != list(contract.unique_key)
+        or any(manifest.get(field) != value for field, value in expected_values.items())
         or manifest.get("persisted_parquet_validated") is not True
     ):
         raise EnrichmentAnalyticsSnapshotError(
-            "SALES_ENRICHED snapshot manifest does not match persisted validation"
+            f"{contract.name} dataset manifest does not match persisted validation"
         )
-    if manifest.get("schema_fingerprint") != _schema_fingerprint(SALES_ENRICHED.field_names):
-        raise EnrichmentAnalyticsSnapshotError("SALES_ENRICHED schema fingerprint mismatch")
+    if expected_pipeline_run_id is not None and manifest.get("pipeline_run_id") != expected_pipeline_run_id:
+        raise EnrichmentAnalyticsSnapshotError(
+            f"{contract.name} dataset manifest pipeline lineage conflicts with retry"
+        )
 
 
-def _enriched_manifest(
+def _dataset_manifest(
     hdfs_config: HDFSConfig,
     *,
+    contract,
     source_version: str,
     source_snapshot_id: str,
     pipeline_run_id: str,
     artifact_path: str,
-    metrics: SalesEnrichmentMetrics,
+    metrics: Mapping[str, object] | SalesEnrichmentMetrics,
+    physical_schema: Mapping[str, str],
     created_at: str,
 ) -> dict[str, object]:
-    return {
-        "schema_version": _ENRICHED_SNAPSHOT_SCHEMA_VERSION,
+    document = {
+        "schema_version": _DATASET_MANIFEST_SCHEMA_VERSION,
         "status": VALIDATED,
-        "dataset_name": SALES_ENRICHED.name,
-        "dataset_version": SALES_ENRICHED.version,
-        "provenance": SALES_ENRICHED.provenance,
+        "dataset_name": contract.name,
+        "dataset_version": contract.version,
+        "provenance": contract.provenance,
         "source_version": source_version,
         "source_snapshot_id": source_snapshot_id,
         "pipeline_run_id": pipeline_run_id,
         "artifact_uri": _hdfs_uri(hdfs_config.uri, artifact_path),
-        "schema": list(SALES_ENRICHED.field_names),
-        "schema_fingerprint": _schema_fingerprint(SALES_ENRICHED.field_names),
-        "logical_unique_key": list(SALES_ENRICHED.unique_key),
-        "row_count": metrics.row_count,
-        "unit_sales_total": metrics.unit_sales_total,
-        "zero_sales_count": metrics.zero_sales_count,
-        "matched_price_count": metrics.matched_price_count,
-        "missing_price_count": metrics.missing_price_count,
-        "price_match_rate": metrics.price_match_rate,
+        "schema": list(contract.field_names),
+        "schema_fingerprint": _schema_fingerprint(contract.field_names),
+        "physical_schema": dict(physical_schema),
+        "logical_unique_key": list(contract.unique_key),
         "persisted_parquet_validated": True,
         "created_at": created_at,
     }
+    document.update(_metric_values(metrics))
+    return document
 
 
 def _output_quality_document(
@@ -997,6 +1305,7 @@ def _quality_summary(
     sales_daily_path: str,
     curated_path: str,
     output_paths: Mapping[str, str],
+    candidate_paths: Mapping[str, str],
     output_quality_paths: Mapping[str, str],
     input_manifest: Mapping[str, object],
     input_metrics: NormalizationMetrics,
@@ -1021,14 +1330,14 @@ def _quality_summary(
             "manifest_pipeline_run_id": input_manifest.get("pipeline_run_id"),
         },
         "outputs": {name: dict(document) for name, document in output_documents.items()},
-        "output_candidate_paths": dict(output_paths),
+        "output_paths": dict(output_paths),
+        "output_candidate_paths": dict(candidate_paths),
         "output_quality_report_paths": dict(output_quality_paths),
-        "candidate_only_outputs": ["store_daily_sales", "category_monthly_sales"],
         "category_monthly_contract": {
-            "status": "PENDING_HUMAN_APPROVAL",
-            "contract_name": None,
-            "contract_version": None,
-            "physical_path": None,
+            "status": "APPROVED",
+            "contract_name": CATEGORY_MONTHLY_SALES.name,
+            "contract_version": CATEGORY_MONTHLY_SALES.version,
+            "physical_path": output_paths["category_monthly_sales"],
         },
         "failure_details": [],
     }
@@ -1062,6 +1371,13 @@ def _build_pipeline_manifest(
             for name, document in output_documents.items()
         }
     )
+    output_manifest_uris = {
+        name: _hdfs_uri(
+            hdfs_config.uri,
+            render_enrichment_dataset_manifest_path(output_paths[name]),
+        )
+        for name in _OUTPUT_NAMES
+    }
     manifest = {
         "manifest_schema_version": PIPELINE_RUN_MANIFEST.version,
         "contract_name": PIPELINE_RUN_MANIFEST.name,
@@ -1105,7 +1421,9 @@ def _build_pipeline_manifest(
                 "category_monthly_row_count": metrics.category_monthly_row_count,
                 "schema_fingerprint": schema_fingerprint,
                 "persisted_parquet_validated": True,
-                "candidate_only_outputs": ["store_daily_sales", "category_monthly_sales"],
+                "publication_complete": True,
+                "output_dataset_manifests": output_manifest_uris,
+                "output_paths_are_curated": True,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -1227,6 +1545,7 @@ def _failure_document(
     staging_path: str,
     curated_path: str,
     output_paths: Mapping[str, str],
+    candidate_paths: Mapping[str, str],
     failure_details: Sequence[str],
 ) -> dict[str, object]:
     return {
@@ -1239,7 +1558,8 @@ def _failure_document(
         "sales_daily_path": sales_daily_path,
         "staging_path": staging_path,
         "curated_sales_enriched_path": curated_path,
-        "output_candidate_paths": dict(output_paths),
+        "output_paths": dict(output_paths),
+        "output_candidate_paths": dict(candidate_paths),
         "failure_details": list(failure_details[:8]),
     }
 
@@ -1325,6 +1645,29 @@ def _schema_fingerprint(fields: Sequence[str]) -> str:
     ).hexdigest()
 
 
+def _physical_schema(dataframe: DataFrame) -> dict[str, str]:
+    return {field.name: field.dataType.simpleString() for field in dataframe.schema.fields}
+
+
+def _metric_values(
+    metrics: Mapping[str, object] | SalesEnrichmentMetrics,
+) -> dict[str, object]:
+    if isinstance(metrics, SalesEnrichmentMetrics):
+        return {
+            "row_count": metrics.row_count,
+            "unit_sales_total": metrics.unit_sales_total,
+            "zero_sales_count": metrics.zero_sales_count,
+            "matched_price_count": metrics.matched_price_count,
+            "missing_price_count": metrics.missing_price_count,
+            "price_match_rate": metrics.price_match_rate,
+        }
+    return {
+        field: metrics[field]
+        for field in ("row_count", "unit_sales_total", "zero_sales_count")
+        if field in metrics
+    }
+
+
 def _schema_fingerprint_map(fields: Mapping[str, Sequence[str]]) -> str:
     payload = json.dumps(
         {name: list(value) for name, value in fields.items()},
@@ -1342,7 +1685,9 @@ def _configuration_digest(hdfs_config: HDFSConfig, *, spark_master: str) -> str:
             "spark_master": spark_master,
             "compression": "snappy",
             "sales_enriched_partitioning": ["year"],
-            "category_monthly_contract": "PENDING_HUMAN_APPROVAL",
+            "curated_outputs": list(_OUTPUT_NAMES),
+            "category_monthly_contract": f"{CATEGORY_MONTHLY_SALES.name}:{CATEGORY_MONTHLY_SALES.version}",
+            "completion_marker": "validated_pipeline_run_manifest",
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -1401,5 +1746,6 @@ __all__ = [
     "EnrichmentAnalyticsSnapshotError",
     "EnrichmentAnalyticsSnapshotResult",
     "run_enrichment_analytics_snapshot",
+    "validate_enrichment_analytics_completion_marker",
     "validate_enrichment_analytics_identifiers",
 ]

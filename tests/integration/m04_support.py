@@ -16,9 +16,10 @@ from tests.integration.spark_support import MAX_EVENT_BYTES, summarize_m04_event
 from warehouse_bigdata.common.config import load_hdfs_config, load_spark_config
 from warehouse_bigdata.common.hdfs_client import HdfsCliClient
 from warehouse_bigdata.common.hdfs_paths import (
+    render_curated_category_monthly_sales_path,
     render_curated_sales_daily_path,
     render_curated_sales_enriched_path,
-    render_enrichment_candidate_path,
+    render_curated_store_daily_sales_path,
     render_staging_path,
 )
 from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, VALIDATED
@@ -218,15 +219,16 @@ def _validate_run_manifest(
 
 
 def _lineage_paths(hdfs_config, source_snapshot_id: str, enrichment_run_id: str) -> dict[str, str]:
-    staging = render_staging_path(hdfs_config.base_path, enrichment_run_id)
     return {
         "sales_daily": render_curated_sales_daily_path(hdfs_config.base_path, source_snapshot_id),
         "sales_enriched": render_curated_sales_enriched_path(
             hdfs_config.base_path, source_snapshot_id
         ),
-        "store_daily_sales": render_enrichment_candidate_path(staging, "store_daily_sales"),
-        "category_monthly_sales": render_enrichment_candidate_path(
-            staging, "category_monthly_sales"
+        "store_daily_sales": render_curated_store_daily_sales_path(
+            hdfs_config.base_path, source_snapshot_id
+        ),
+        "category_monthly_sales": render_curated_category_monthly_sales_path(
+            hdfs_config.base_path, source_snapshot_id
         ),
     }
 

@@ -8,6 +8,7 @@ import pytest
 from warehouse_bigdata import contracts as root_contracts
 from warehouse_bigdata.contracts import (
     APPLICATION_READ_CONTRACTS,
+    CATEGORY_MONTHLY_SALES,
     DATASET_CONTRACTS,
     DATASET_CONTRACTS_BY_NAME,
     FIELD_MAPPINGS,
@@ -44,6 +45,29 @@ def test_dataset_names_versions_and_fields_are_unique() -> None:
         assert len(field_names) == len(set(field_names))
         assert all(field.logical_type in LOGICAL_TYPES for field in contract.fields)
         assert set(contract.unique_key).issubset(field_names)
+
+
+def test_category_monthly_sales_v1_is_an_explicit_snapshot_contract() -> None:
+    assert CATEGORY_MONTHLY_SALES.name == "category_monthly_sales"
+    assert CATEGORY_MONTHLY_SALES.version == "1.0"
+    assert CATEGORY_MONTHLY_SALES.field_names == (
+        "source_snapshot_id",
+        "cat_id",
+        "month_start",
+        "total_units",
+    )
+    assert CATEGORY_MONTHLY_SALES.unique_key == (
+        "source_snapshot_id",
+        "cat_id",
+        "month_start",
+    )
+    assert tuple(field.logical_type for field in CATEGORY_MONTHLY_SALES.fields) == (
+        "String",
+        "String",
+        "Date",
+        "NonNegativeInt",
+    )
+    assert CATEGORY_MONTHLY_SALES is DATASET_CONTRACTS_BY_NAME[CATEGORY_MONTHLY_SALES.name]
 
 
 def test_validation_public_api_is_reexported_without_aliases() -> None:

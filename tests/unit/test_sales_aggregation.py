@@ -30,7 +30,6 @@ from pyspark.sql.types import (  # noqa: E402
     StructType,
 )
 
-
 SALES_FIELDS = (
     "item_id",
     "dept_id",

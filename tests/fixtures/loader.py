@@ -6,7 +6,7 @@ from typing import Any
 
 _FIXTURE_DIR = Path(__file__).parent
 
-_SALES_DATASETS = {"sales_daily", "sales_enriched", "store_daily_sales"}
+_SALES_DATASETS = {"sales_daily", "sales_enriched", "store_daily_sales", "category_monthly_sales"}
 _FORECASTING_DATASETS = {"forecast_features", "forecast_daily", "forecast_metrics"}
 _INVENTORY_DATASETS = {
     "inventory_scenario",

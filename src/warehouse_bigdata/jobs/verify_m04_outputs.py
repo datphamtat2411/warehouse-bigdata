@@ -8,11 +8,16 @@ import json
 from warehouse_bigdata.common.config import load_hdfs_config, load_spark_config
 from warehouse_bigdata.common.hdfs_client import HdfsCliClient
 from warehouse_bigdata.common.hdfs_paths import (
+    render_curated_category_monthly_sales_path,
     render_curated_sales_daily_path,
     render_curated_sales_enriched_path,
-    render_enrichment_candidate_path,
+    render_curated_store_daily_sales_path,
+    render_enrichment_quality_path,
     render_raw_m5_path,
     render_staging_path,
+)
+from warehouse_bigdata.processing.enrichment_analytics_snapshot import (
+    validate_enrichment_analytics_completion_marker,
 )
 from warehouse_bigdata.processing.m04_verification import run_m04_verification
 
@@ -59,7 +64,6 @@ def run_verify_m04_outputs(
         spark.sparkContext.setJobGroup(
             f"{pipeline_run_id}:verification", "M04 independent Parquet reconciliation", True
         )
-        staging_path = render_staging_path(hdfs_config.base_path, enrichment_run_id)
         output_paths = {
             "sales_daily": render_curated_sales_daily_path(
                 hdfs_config.base_path, source_snapshot_id
@@ -67,13 +71,26 @@ def run_verify_m04_outputs(
             "sales_enriched": render_curated_sales_enriched_path(
                 hdfs_config.base_path, source_snapshot_id
             ),
-            "store_daily_sales": render_enrichment_candidate_path(
-                staging_path, "store_daily_sales"
+            "store_daily_sales": render_curated_store_daily_sales_path(
+                hdfs_config.base_path, source_snapshot_id
             ),
-            "category_monthly_sales": render_enrichment_candidate_path(
-                staging_path, "category_monthly_sales"
+            "category_monthly_sales": render_curated_category_monthly_sales_path(
+                hdfs_config.base_path, source_snapshot_id
             ),
         }
+        validate_enrichment_analytics_completion_marker(
+            HdfsCliClient(),
+            hdfs_config,
+            source_version=source_version,
+            source_snapshot_id=source_snapshot_id,
+            pipeline_run_id=enrichment_run_id,
+            curated_output_paths={
+                name: path for name, path in output_paths.items() if name != "sales_daily"
+            },
+            quality_path=render_enrichment_quality_path(
+                render_staging_path(hdfs_config.base_path, enrichment_run_id)
+            ),
+        )
         result = run_m04_verification(
             spark,
             source_version=source_version,

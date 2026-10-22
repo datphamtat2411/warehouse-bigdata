@@ -97,6 +97,26 @@ def render_curated_sales_enriched_path(base_path: str, source_snapshot_id: str) 
     )
 
 
+def render_curated_store_daily_sales_path(base_path: str, source_snapshot_id: str) -> str:
+    """Render the immutable curated STORE_DAILY_SALES directory."""
+    validate_source_snapshot_id(source_snapshot_id)
+    return render_hdfs_artifact_path(
+        base_path,
+        "curated_store_daily_sales",
+        source_snapshot_id=source_snapshot_id,
+    )
+
+
+def render_curated_category_monthly_sales_path(base_path: str, source_snapshot_id: str) -> str:
+    """Render the immutable curated CATEGORY_MONTHLY_SALES directory."""
+    validate_source_snapshot_id(source_snapshot_id)
+    return render_hdfs_artifact_path(
+        base_path,
+        "curated_category_monthly_sales",
+        source_snapshot_id=source_snapshot_id,
+    )
+
+
 def render_run_manifest_path(base_path: str, pipeline_run_id: str) -> str:
     """Render one immutable Contract v1 run-manifest path."""
     validate_pipeline_run_id(pipeline_run_id)
@@ -176,6 +196,14 @@ def render_enrichment_failure_path(staging_path: str) -> str:
 def render_enrichment_staging_binding_path(staging_path: str) -> str:
     """Render the immutable input binding for one enrichment attempt."""
     return _join_staging(staging_path, "input_binding.json")
+
+
+def render_enrichment_dataset_manifest_path(dataset_path: str) -> str:
+    """Render the immutable manifest stored beside one J03 dataset."""
+    path = PurePosixPath(dataset_path)
+    if not path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts[1:]):
+        raise HdfsPathError("dataset path must be an absolute safe HDFS path")
+    return str(path / "_dataset_manifest.json")
 
 
 def _join_staging(staging_path: str, *parts: str) -> str:

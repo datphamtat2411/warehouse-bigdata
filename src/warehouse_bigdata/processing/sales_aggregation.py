@@ -8,7 +8,11 @@ from functools import reduce
 from operator import or_
 from typing import TYPE_CHECKING, Final, NamedTuple
 
-from warehouse_bigdata.contracts.datasets import SALES_DAILY, STORE_DAILY_SALES
+from warehouse_bigdata.contracts.datasets import (
+    CATEGORY_MONTHLY_SALES,
+    SALES_DAILY,
+    STORE_DAILY_SALES,
+)
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame
@@ -18,12 +22,7 @@ _MAX_DIAGNOSTIC_SAMPLES: Final = 8
 _LONG_MAX: Final = 9_223_372_036_854_775_807
 _SALES_FIELDS: Final = SALES_DAILY.field_names
 _STORE_FIELDS: Final = STORE_DAILY_SALES.field_names
-_CATEGORY_FIELDS: Final = (
-    "source_snapshot_id",
-    "cat_id",
-    "month_start",
-    "total_units",
-)
+_CATEGORY_FIELDS: Final = CATEGORY_MONTHLY_SALES.field_names
 _SALES_IDENTIFIER_FIELDS: Final = (
     "item_id",
     "dept_id",
@@ -98,7 +97,7 @@ def validate_category_monthly_sales(
     *,
     source_snapshot_id: str,
 ) -> None:
-    """Validate the provisional category/month aggregate against scoped source facts."""
+    """Validate the category/month Contract v1 aggregate against scoped source facts."""
 
     _validate_snapshot_id(source_snapshot_id)
     _validate_sales_daily(sales_daily)
@@ -162,8 +161,7 @@ def _validate_store_daily_sales(
     source_snapshot_id: str,
     source_total: Decimal,
 ) -> None:
-    from pyspark.sql import functions as F
-    from pyspark.sql.types import DecimalType, DateType, LongType, StringType
+    from pyspark.sql.types import DateType, LongType, StringType
 
     _validate_output_schema(
         store_daily_sales,

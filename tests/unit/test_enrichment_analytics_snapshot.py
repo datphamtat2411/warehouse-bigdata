@@ -11,9 +11,12 @@ import pytest
 
 from warehouse_bigdata.common.config import HDFSConfig
 from warehouse_bigdata.common.hdfs_paths import (
+    render_curated_category_monthly_sales_path,
     render_curated_sales_daily_path,
     render_curated_sales_enriched_path,
+    render_curated_store_daily_sales_path,
     render_enrichment_candidate_path,
+    render_enrichment_dataset_manifest_path,
     render_enrichment_failure_path,
     render_enrichment_quality_path,
     render_enrichment_staging_binding_path,
@@ -93,6 +96,19 @@ class _LocalHdfs:
             raise FileExistsError(destination)
         destination_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(source_path, destination_path)
+
+
+class _FailOnceOnDestination(_LocalHdfs):
+    def __init__(self, root: Path, destination_fragment: str) -> None:
+        super().__init__(root)
+        self.destination_fragment = destination_fragment
+        self.failed = False
+
+    def rename(self, source: str, destination: str) -> None:
+        if self.destination_fragment in destination and not self.failed:
+            self.failed = True
+            raise OSError(f"simulated interruption before finalizing {destination}")
+        super().rename(source, destination)
 
 
 def _sales_schema() -> StructType:
@@ -380,11 +396,17 @@ def _run(
     )
 
 
-def test_candidate_paths_are_run_scoped_and_category_has_no_curated_path() -> None:
+def test_output_paths_are_snapshot_scoped_and_candidates_remain_run_scoped() -> None:
     staging = render_staging_path(BASE_PATH, PIPELINE_RUN_ID)
 
     assert render_curated_sales_enriched_path(BASE_PATH, SOURCE_SNAPSHOT_ID) == (
         "/data/warehouse/curated/sales_enriched/source_snapshot_id=snapshot-20261022"
+    )
+    assert render_curated_store_daily_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID).endswith(
+        "/curated/store_daily_sales/source_snapshot_id=snapshot-20261022"
+    )
+    assert render_curated_category_monthly_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID).endswith(
+        "/curated/category_monthly_sales/source_snapshot_id=snapshot-20261022"
     )
     assert render_enrichment_candidate_path(staging, "sales_enriched").endswith(
         "/candidates/sales_enriched"
@@ -398,9 +420,12 @@ def test_candidate_paths_are_run_scoped_and_category_has_no_curated_path() -> No
     assert render_enrichment_quality_path(staging).endswith("/quality_report.json")
     assert render_enrichment_failure_path(staging).endswith("/failure_report.json")
     assert render_enrichment_staging_binding_path(staging).endswith("/input_binding.json")
+    assert render_enrichment_dataset_manifest_path(
+        render_curated_category_monthly_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID)
+    ).endswith("/_dataset_manifest.json")
 
 
-def test_snapshot_persists_revalidates_promotes_and_keeps_category_candidate_only(
+def test_snapshot_persists_revalidates_and_promotes_all_curated_outputs(
     spark: SparkSession,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -413,7 +438,7 @@ def test_snapshot_persists_revalidates_promotes_and_keeps_category_candidate_onl
 
     result = _run(spark, hdfs, hdfs_config)
 
-    assert result.status == "VALIDATED"
+    assert result.status == "VALIDATED", result.failure_details
     assert result.metrics is not None
     assert result.metrics.row_count == 4
     assert result.metrics.unit_sales_total == 6
@@ -426,8 +451,14 @@ def test_snapshot_persists_revalidates_promotes_and_keeps_category_candidate_onl
     assert hdfs.exists(result.curated_path)
     assert hdfs.exists(result.output_paths["store_daily_sales"])
     assert hdfs.exists(result.output_paths["category_monthly_sales"])
-    assert not hdfs.exists(BASE_PATH + "/curated/store_daily_sales")
-    assert not hdfs.exists(BASE_PATH + "/curated/category_monthly_sales")
+    assert result.output_paths["store_daily_sales"] == render_curated_store_daily_sales_path(
+        BASE_PATH, SOURCE_SNAPSHOT_ID
+    )
+    assert result.output_paths["category_monthly_sales"] == (
+        render_curated_category_monthly_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID)
+    )
+    for name, path in result.output_paths.items():
+        assert hdfs.exists(render_enrichment_dataset_manifest_path(path)), name
 
     enriched = spark.read.option("pathGlobFilter", "*.parquet").parquet(
         str(hdfs._local(result.curated_path))
@@ -439,8 +470,10 @@ def test_snapshot_persists_revalidates_promotes_and_keeps_category_candidate_onl
 
     quality = json.loads(hdfs.read_remote(result.quality_report_path).decode("utf-8"))
     assert quality["status"] == "VALIDATED"
-    assert quality["outputs"]["category_monthly_sales"]["candidate_only"] is True
-    assert quality["outputs"]["category_monthly_sales"]["contract_name"] is None
+    assert quality["outputs"]["category_monthly_sales"]["candidate_only"] is False
+    assert quality["outputs"]["category_monthly_sales"]["contract_name"] == (
+        "category_monthly_sales"
+    )
 
 
 def test_retry_reuses_immutable_outputs_without_appending_rows(
@@ -462,6 +495,84 @@ def test_retry_reuses_immutable_outputs_without_appending_rows(
     assert second.status == "REUSED"
     assert spark.read.option("pathGlobFilter", "*.parquet").parquet(str(curated_local)).count() == 4
     assert before == sorted(path.relative_to(curated_local).as_posix() for path in curated_local.rglob("*"))
+
+
+def test_retry_recovers_when_one_output_was_finalized_before_interruption(
+    spark: SparkSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hdfs_root = tmp_path / "hdfs"
+    hdfs_root.mkdir()
+    hdfs = _FailOnceOnDestination(hdfs_root, "/curated/category_monthly_sales/")
+    hdfs_config = HDFSConfig("hdfs://test-namenode:8020", BASE_PATH)
+    _prepare_inputs(spark, hdfs, hdfs_config, monkeypatch)
+
+    interrupted = _run(spark, hdfs, hdfs_config)
+
+    assert interrupted.status == "FAILED"
+    assert interrupted.run_manifest_path is None
+    assert hdfs.exists(render_curated_sales_enriched_path(BASE_PATH, SOURCE_SNAPSHOT_ID))
+    assert hdfs.exists(render_curated_store_daily_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID))
+    assert not hdfs.exists(render_curated_category_monthly_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID))
+
+    recovered = _run(spark, hdfs, hdfs_config)
+
+    assert recovered.status == "VALIDATED"
+    assert recovered.run_manifest_path is not None
+    assert hdfs.exists(render_curated_category_monthly_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID))
+    manifest = json.loads(hdfs.read_remote(recovered.run_manifest_path).decode("utf-8"))
+    assert json.loads(manifest["output_dataset_uris"]) == [
+        str(hdfs._local(render_curated_sales_enriched_path(BASE_PATH, SOURCE_SNAPSHOT_ID))),
+        str(hdfs._local(render_curated_store_daily_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID))),
+        str(hdfs._local(render_curated_category_monthly_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID))),
+    ]
+
+
+def test_retry_rejects_a_curated_dataset_manifest_schema_conflict(
+    spark: SparkSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hdfs_root = tmp_path / "hdfs"
+    hdfs_root.mkdir()
+    hdfs = _LocalHdfs(hdfs_root)
+    hdfs_config = HDFSConfig("hdfs://test-namenode:8020", BASE_PATH)
+    _prepare_inputs(spark, hdfs, hdfs_config, monkeypatch)
+    first = _run(spark, hdfs, hdfs_config)
+
+    manifest_path = render_enrichment_dataset_manifest_path(
+        first.output_paths["category_monthly_sales"]
+    )
+    manifest = json.loads(hdfs.read_remote(manifest_path).decode("utf-8"))
+    manifest["schema"][-1] = "wrong_total_units"
+    hdfs._local(manifest_path).write_text(json.dumps(manifest), encoding="utf-8")
+
+    retry = _run(spark, hdfs, hdfs_config)
+
+    assert retry.status == "FAILED"
+    assert retry.run_manifest_path is None
+    assert "dataset manifest" in " ".join(retry.failure_details)
+
+
+def test_existing_run_manifest_cannot_certify_a_partial_output_set(
+    spark: SparkSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hdfs_root = tmp_path / "hdfs"
+    hdfs_root.mkdir()
+    hdfs = _LocalHdfs(hdfs_root)
+    hdfs_config = HDFSConfig("hdfs://test-namenode:8020", BASE_PATH)
+    _prepare_inputs(spark, hdfs, hdfs_config, monkeypatch)
+    first = _run(spark, hdfs, hdfs_config)
+
+    shutil.rmtree(hdfs._local(first.output_paths["category_monthly_sales"]))
+    retry = _run(spark, hdfs, hdfs_config)
+
+    assert retry.status == "FAILED"
+    assert retry.run_manifest_path is None
+    assert "missing output" in " ".join(retry.failure_details)
 
 
 def test_mismatched_sales_manifest_and_snapshot_inputs_fail_without_validated_manifest(
