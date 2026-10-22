@@ -341,6 +341,7 @@ def run_m04_verification(
             StringType(),
         ),
         "persisted SALES_ENRICHED",
+        partition_fields=("year",),
     )
     price_field = sales_enriched.schema["sell_price"]
     if not price_field.nullable:
@@ -420,26 +421,16 @@ def run_m04_verification(
         or _duplicate_count(sales_enriched, SALES_ENRICHED.unique_key)
     ):
         raise M04VerificationError("SALES_ENRICHED cardinality, nullability, key, or total reconciliation failed")
-    _validate_dataset_manifest(
+    _validate_enriched_manifest(
         client,
         hdfs_config,
         output_paths["sales_enriched"],
-        contract=SALES_ENRICHED,
         source_version=source_version,
         source_snapshot_id=source_snapshot_id,
         pipeline_run_id=enrichment_run_id,
         physical_schema=_physical_schema(sales_enriched),
-        metrics={
-            "row_count": enriched_metrics["row_count"],
-            "unit_sales_total": enriched_metrics["unit_sales_total"],
-            "zero_sales_count": enriched_metrics["zero_sales_count"],
-            "matched_price_count": enriched_metrics["matched_price_count"],
-            "missing_price_count": nullable_prices,
-            "price_match_rate": (
-                enriched_metrics["row_count"] - nullable_prices
-            )
-            / enriched_metrics["row_count"],
-        },
+        metrics=enriched_metrics,
+        nullable_prices=nullable_prices,
     )
     timings["sales_enriched_reread_seconds"] = time.perf_counter() - phase_started
 
@@ -819,6 +810,39 @@ def _validate_sales_daily_manifest(
         raise M04VerificationError("SALES_DAILY snapshot manifest does not match persisted evidence")
 
 
+def _validate_enriched_manifest(
+    client: HdfsCliClient,
+    hdfs_config: HDFSConfig,
+    dataset_path: str,
+    *,
+    source_version: str,
+    source_snapshot_id: str,
+    pipeline_run_id: str | None,
+    physical_schema: Mapping[str, str],
+    metrics: Mapping[str, object],
+    nullable_prices: int,
+) -> None:
+    matched_prices = metrics["row_count"] - nullable_prices
+    _validate_dataset_manifest(
+        client,
+        hdfs_config,
+        dataset_path,
+        contract=SALES_ENRICHED,
+        source_version=source_version,
+        source_snapshot_id=source_snapshot_id,
+        pipeline_run_id=pipeline_run_id,
+        physical_schema=physical_schema,
+        metrics={
+            "row_count": metrics["row_count"],
+            "unit_sales_total": metrics["unit_sales_total"],
+            "zero_sales_count": metrics["zero_sales_count"],
+            "matched_price_count": matched_prices,
+            "missing_price_count": nullable_prices,
+            "price_match_rate": matched_prices / metrics["row_count"],
+        },
+    )
+
+
 def _validate_dataset_manifest(
     client: HdfsCliClient,
     hdfs_config: HDFSConfig,
@@ -886,12 +910,24 @@ def _physical_schema(dataframe: DataFrame) -> dict[str, str]:
     return {field.name: field.dataType.simpleString() for field in dataframe.schema.fields}
 
 
-def _check_schema(dataframe: DataFrame, fields: Sequence[str], types: Sequence[object], label: str) -> None:
-    if tuple(dataframe.columns) != tuple(fields):
+def _check_schema(
+    dataframe: DataFrame,
+    fields: Sequence[str],
+    types: Sequence[object],
+    label: str,
+    *,
+    partition_fields: Sequence[str] = (),
+) -> None:
+    # Spark appends discovered partition fields after the file's physical fields.
+    partitioned_fields = tuple(field for field in fields if field not in partition_fields) + tuple(
+        partition_fields
+    )
+    if tuple(dataframe.columns) not in (tuple(fields), partitioned_fields):
         raise M04VerificationError(
             f"{label} fields differ: expected {tuple(fields)}, received {tuple(dataframe.columns)}"
         )
-    for field, expected in zip(dataframe.schema.fields, types, strict=True):
+    for name, expected in zip(fields, types, strict=True):
+        field = dataframe.schema[name]
         if field.dataType != expected:
             raise M04VerificationError(
                 f"{label} field {field.name} type differs: expected {expected}, received {field.dataType}"

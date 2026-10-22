@@ -9,10 +9,19 @@ import platform
 import re
 import time
 import uuid
+from dataclasses import asdict
 from pathlib import Path, PurePosixPath
+from textwrap import dedent
 
 from tests.integration.hdfs_support import HDFSVerification, VerificationError, require
-from tests.integration.spark_support import MAX_EVENT_BYTES, summarize_m04_event_log
+from tests.integration.spark_support import (
+    MAX_EVENT_BYTES,
+    assert_sources,
+    summarize_m04_event_log,
+)
+from tests.integration.spark_support import (
+    prerequisites as spark_prerequisites,
+)
 from warehouse_bigdata.common.config import load_hdfs_config, load_spark_config
 from warehouse_bigdata.common.hdfs_client import HdfsCliClient
 from warehouse_bigdata.common.hdfs_paths import (
@@ -24,12 +33,16 @@ from warehouse_bigdata.common.hdfs_paths import (
     render_enrichment_dataset_manifest_path,
     render_enrichment_quality_path,
     render_normalization_quality_path,
+    render_raw_m5_path,
     render_run_manifest_path,
     render_staging_path,
 )
 from warehouse_bigdata.common.hdfs_permissions import prepare_spark_run_permissions
+from warehouse_bigdata.common.spark_verification import HDFS_URI, MASTER
 from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import validate_manifest
+from warehouse_bigdata.ingestion.hdfs_raw import validate_hdfs_raw_snapshot
+from warehouse_bigdata.ingestion.m5_source import SourceProvenance, compute_source_version
 from warehouse_bigdata.ingestion.orchestration import run_m5_ingestion
 from warehouse_bigdata.processing.m04_verification import audit_hdfs_outputs
 
@@ -40,6 +53,9 @@ FULL_DAY_COUNT = 1_941
 CALIBRATION_DAY_COUNT = 128
 SERIES_COUNT = 30_490
 FULL_ROW_COUNT = 59_181_090
+SMOKE_DAY_COUNT = 30
+SMOKE_ROW_COUNT = 914_700
+SMOKE_SOURCE_VERSION_ENV = "WAREHOUSE_M04_SOURCE_VERSION"
 J03_OUTPUT_NAMES = ("sales_enriched", "store_daily_sales", "category_monthly_sales")
 _EVENT_DIRECTORY_NAMES = frozenset({"events", "events-retry-j02", "events-retry-j03"})
 
@@ -95,6 +111,62 @@ def prepare_source(tmp_path: Path, hdfs: HDFSVerification) -> dict[str, object]:
         "source_version": result.source_version,
         "raw_path": result.raw_path,
         "raw_manifests": manifests,
+    }
+
+
+def _prepare_smoke_source(
+    tmp_path: Path,
+    hdfs: HDFSVerification,
+    hdfs_config,
+    client: HdfsCliClient,
+) -> dict[str, object]:
+    source_version = os.environ.get(SMOKE_SOURCE_VERSION_ENV)
+    if not source_version:
+        source = prepare_source(tmp_path, hdfs)
+        source["preparation"] = {"mode": "profile-and-ingest"}
+        return source
+
+    # This production gate rereads every raw byte and verifies manifests, sidecars,
+    # checksums, replication, and current block placement; status alone is insufficient.
+    snapshot = validate_hdfs_raw_snapshot(source_version, client=client, config=hdfs_config)
+    require(
+        snapshot.status == VALIDATED
+        and snapshot.source_version == source_version
+        and snapshot.raw_path == render_raw_m5_path(hdfs_config.base_path, source_version)
+        and compute_source_version({
+            manifest["source_file"]: manifest["artifact_checksum"]
+            for manifest in snapshot.manifests
+        }) == source_version,
+        "Reused raw snapshot content identity does not match the requested source_version.",
+    )
+    for manifest in snapshot.manifests:
+        SourceProvenance(
+            source_name=manifest["source_name"],
+            source_url=manifest["source_url"],
+            source_schema_version=manifest["source_schema_version"],
+            downloaded_at_utc=manifest["downloaded_at_utc"],
+        )
+        for variable, field in (
+            ("WAREHOUSE_M5_SOURCE_URL", "source_url"),
+            ("WAREHOUSE_M5_DOWNLOADED_AT_UTC", "downloaded_at_utc"),
+        ):
+            supplied = os.environ.get(variable)
+            require(
+                not supplied or supplied == manifest[field],
+                f"Reused raw snapshot provenance conflicts with {variable}.",
+            )
+    return {
+        "hdfs_config": hdfs_config,
+        "client": client,
+        "ingestion_run_id": snapshot.integrity.pipeline_run_id,
+        "source_version": source_version,
+        "raw_path": snapshot.raw_path,
+        "raw_manifests": snapshot.manifests,
+        "preparation": {
+            "mode": "validated-raw-reuse",
+            "integrity": asdict(snapshot.integrity),
+            "raw_manifests": [dict(manifest) for manifest in snapshot.manifests],
+        },
     }
 
 
@@ -190,28 +262,157 @@ def _case_event_directories(
     *,
     label: str,
     token: str,
+    include_retries: bool = True,
 ) -> tuple[tuple[str, str], ...]:
     normalization_run_id, enrichment_run_id, verification_run_id = _case_run_ids(label, token)
-    return (
+    initial = (
         (_event_directory(hdfs_config, normalization_run_id), normalization_run_id),
         (_event_directory(hdfs_config, enrichment_run_id), enrichment_run_id),
         (_event_directory(hdfs_config, verification_run_id), verification_run_id),
+    )
+    if not include_retries:
+        return initial
+    return (*initial,
         (_retry_event_directory(hdfs_config, normalization_run_id, "j02"), normalization_run_id),
         (_retry_event_directory(hdfs_config, enrichment_run_id, "j03"), enrichment_run_id),
     )
 
 
-def _validate_case_event_directories(hdfs_config, *, label: str, token: str) -> None:
+def _validate_case_event_directories(
+    hdfs_config, *, label: str, token: str, include_retries: bool = True
+) -> None:
     for path, pipeline_run_id in _case_event_directories(
         hdfs_config,
         label=label,
         token=token,
+        include_retries=include_retries,
     ):
         _validate_event_directory_path(
             hdfs_config,
             path,
             expected_pipeline_run_id=pipeline_run_id,
         )
+
+
+_SMOKE_ACCESS_CODE = dedent("""\
+    import json
+    import subprocess
+    import sys
+    from pathlib import PurePosixPath
+
+    from warehouse_bigdata.common.config import load_hdfs_config
+    from warehouse_bigdata.common.hdfs_permissions import prepare_spark_run_permissions
+    from warehouse_bigdata.common.spark_hdfs_client import SparkHdfsCliClient
+    from warehouse_bigdata.common.spark_verification import source_fingerprint
+
+    uri, base, encoded_events, encoded_outputs = sys.argv[1:]
+    config = load_hdfs_config()
+    if (config.uri, config.base_path) != (uri, base):
+        raise RuntimeError("Driver HDFS configuration differs from the smoke coordinator")
+    client = SparkHdfsCliClient()
+    for key, expected in {
+        "fs.defaultFS": uri,
+        "dfs.replication": "2",
+        "dfs.namenode.acls.enabled": "true",
+        "dfs.client.use.datanode.hostname": "true",
+        "dfs.datanode.use.datanode.hostname": "true",
+    }.items():
+        if client.getconf(key) != expected:
+            raise RuntimeError("Driver HDFS configuration mismatch: " + key)
+    if client.safe_mode() != "Safe mode is OFF":
+        raise RuntimeError("NameNode is not write-ready")
+    nodes = client.report()
+    for path, run_id in json.loads(encoded_events):
+        prepare_spark_run_permissions(
+            client, config, pipeline_run_id=run_id, event_log_dir=uri + path
+        )
+        if client.list_children(path):
+            raise RuntimeError("Smoke event directory is not empty: " + path)
+    parents = set()
+    for output in json.loads(encoded_outputs):
+        parent = PurePosixPath(output).parent
+        while not client.exists(str(parent)):
+            parent = parent.parent
+        if not client.is_directory(str(parent)):
+            raise RuntimeError("Output ancestor is not a directory: " + str(parent))
+        parents.add(str(parent))
+    for parent in sorted(parents):
+        result = subprocess.run(
+            ["hdfs", "dfs", "-test", "-w", parent], capture_output=True, timeout=20
+        )
+        if result.returncode != 0:
+            raise RuntimeError("Spark cannot create output paths below " + parent)
+    print(json.dumps({
+        "status": "READY", "hdfs_user": client.whoami(),
+        "datanodes": sorted(nodes), "writable_output_ancestors": sorted(parents),
+        "fingerprint": source_fingerprint(),
+    }))
+    """)
+
+
+def _probe_smoke_access(hdfs, hdfs_config, event_directories, output_paths, prerequisites):
+    """Use the prepared driver for tiny CLI/ACL probes, without a SparkContext."""
+    token = uuid.uuid4().hex
+    name = f"warehouse-m04-preflight-{token}"
+    label = "io.warehouse-bigdata.m04-preflight.owner"
+    try:
+        result = hdfs.compose(
+            "--profile", "spark-submit", "run", "--rm", "--no-deps", "-T", "--pull", "never",
+            "--name", name, "--label", f"{label}={token}",
+            "--entrypoint", "/opt/warehouse-app/.venv/bin/python", "spark-submit",
+            "-c", _SMOKE_ACCESS_CODE, hdfs_config.uri, hdfs_config.base_path,
+            json.dumps(event_directories), json.dumps(output_paths), timeout=240,
+        )
+    finally:
+        inspected = hdfs.runner.run(
+            ["docker", "inspect", "--type", "container", name], timeout=15, check=False
+        )
+        if inspected.returncode == 0:
+            containers = json.loads(inspected.stdout)
+            require(
+                len(containers) == 1
+                and containers[0].get("Name") == f"/{name}"
+                and containers[0].get("Config", {}).get("Labels", {}).get(label) == token,
+                "Cannot establish ownership of the smoke preflight container.",
+            )
+            hdfs.runner.run(["docker", "rm", "--force", name], timeout=20)
+        else:
+            require(
+                b"No such object" in inspected.stderr or b"No such container" in inspected.stderr,
+                "Cannot establish smoke preflight container removal.",
+            )
+    probe = json.loads(result.stdout)
+    require(probe.get("status") == "READY", "Smoke driver access probe did not pass.")
+    assert_sources(probe["fingerprint"], prerequisites["expected_sources"], prerequisites["xml_sha256"])
+    return probe
+
+
+def _smoke_preflight(hdfs, hdfs_config, client, *, token: str) -> dict[str, object]:
+    """Fail on cheap readiness/path/permission checks before any M5 profiling or hashing."""
+    require(hdfs_config.uri == HDFS_URI, "M04 smoke requires the real project HDFS endpoint.")
+    require(load_spark_config().master_url == MASTER, "M04 smoke requires the real Spark Master.")
+    _validate_case_event_directories(
+        hdfs_config, label="smoke", token=token, include_retries=False
+    )
+    run_ids = _case_run_ids("smoke", token)
+    output_paths = list(_lineage_paths(
+        hdfs_config, f"m04-smoke-snapshot-{token}", run_ids[1]
+    ).values())
+    manifest_paths = [render_run_manifest_path(hdfs_config.base_path, run_id) for run_id in run_ids]
+    for path in (
+        *output_paths, *manifest_paths,
+        *(render_staging_path(hdfs_config.base_path, run_id) for run_id in run_ids),
+    ):
+        require(not client.exists(path), f"Smoke run path already exists; refusing reuse: {path}")
+    prerequisites = spark_prerequisites(hdfs)
+    events = _case_event_directories(hdfs_config, label="smoke", token=token, include_retries=False)
+    for path, run_id in events:
+        _create_event_directory(client, hdfs_config, path, expected_pipeline_run_id=run_id)
+        require(not client.list_children(path), f"Smoke event log directory is not empty: {path}")
+    probe = _probe_smoke_access(hdfs, hdfs_config, events, output_paths + manifest_paths, prerequisites)
+    evidence = {"status": "READY", "event_directories": events, "driver": probe}
+    hdfs.evidence.write("m04-smoke-preflight", evidence)
+    return evidence
 
 
 def _submit(
@@ -399,6 +600,7 @@ def run_case(
     adaptive: bool,
     cores_max: int,
     token: str | None = None,
+    verify_recovery: bool = True,
 ) -> dict[str, object]:
     hdfs_config = source["hdfs_config"]
     client = source["client"]
@@ -406,7 +608,9 @@ def run_case(
     token = uuid.uuid4().hex if token is None else token
     source_snapshot_id = f"m04-{label}-snapshot-{token}"
     normalization_run_id, enrichment_run_id, verification_run_id = _case_run_ids(label, token)
-    _validate_case_event_directories(hdfs_config, label=label, token=token)
+    _validate_case_event_directories(
+        hdfs_config, label=label, token=token, include_retries=verify_recovery
+    )
     case_dir = REPORT_ROOT / label / token
     case_dir.mkdir(parents=True, exist_ok=False)
     conf = {
@@ -424,6 +628,7 @@ def run_case(
         hdfs_config,
         label=label,
         token=token,
+        include_retries=verify_recovery,
     ):
         _create_event_directory(
             client,
@@ -527,82 +732,83 @@ def run_case(
         snapshot_manifest.get("row_count") == SERIES_COUNT * expected_day_count,
         "J02 snapshot row count differs from the selected scope.",
     )
-    j02_snapshot = _immutable_snapshot(
-        client,
-        {"sales_daily": paths["sales_daily"]},
-        (normalization_manifest_path, normalization_quality_path, paths["sales_daily"] + "/_snapshot_manifest.json"),
-    )
-    j03_snapshot = _immutable_snapshot(
-        client,
-        {name: paths[name] for name in J03_OUTPUT_NAMES},
-        (
-            enrichment_manifest_path,
-            enrichment_quality_path,
-            *tuple(render_enrichment_dataset_manifest_path(paths[name]) for name in J03_OUTPUT_NAMES),
-        ),
-    )
+    if verify_recovery:
+        j02_snapshot = _immutable_snapshot(
+            client,
+            {"sales_daily": paths["sales_daily"]},
+            (normalization_manifest_path, normalization_quality_path, paths["sales_daily"] + "/_snapshot_manifest.json"),
+        )
+        j03_snapshot = _immutable_snapshot(
+            client,
+            {name: paths[name] for name in J03_OUTPUT_NAMES},
+            (
+                enrichment_manifest_path,
+                enrichment_quality_path,
+                *tuple(render_enrichment_dataset_manifest_path(paths[name]) for name in J03_OUTPUT_NAMES),
+            ),
+        )
 
-    normalization_retry_stdout = _submit(
-        hdfs,
-        "warehouse_bigdata/jobs/normalize_sales_daily.py",
-        [
-            *normalization_arguments,
-            "--event-log-dir",
-            hdfs_config.uri.rstrip("/") + normalization_retry_events,
-        ],
-        conf,
-        case_dir / "j02-retry",
-    )
-    normalization_retry_status = _job_status(normalization_retry_stdout)
-    normalization_retry_execution = _collect_event_summary(
-        hdfs_client(hdfs),
-        normalization_retry_events,
-        run_id=normalization_run_id,
-        application_name=f"warehouse-sales-daily-{normalization_run_id}",
-        output_dir=case_dir / "j02-retry",
-    )
-    normalization_after_retry = _immutable_snapshot(
-        client,
-        {"sales_daily": paths["sales_daily"]},
-        (normalization_manifest_path, normalization_quality_path, paths["sales_daily"] + "/_snapshot_manifest.json"),
-    )
+        normalization_retry_stdout = _submit(
+            hdfs,
+            "warehouse_bigdata/jobs/normalize_sales_daily.py",
+            [
+                *normalization_arguments,
+                "--event-log-dir",
+                hdfs_config.uri.rstrip("/") + normalization_retry_events,
+            ],
+            conf,
+            case_dir / "j02-retry",
+        )
+        normalization_retry_status = _job_status(normalization_retry_stdout)
+        normalization_retry_execution = _collect_event_summary(
+            hdfs_client(hdfs),
+            normalization_retry_events,
+            run_id=normalization_run_id,
+            application_name=f"warehouse-sales-daily-{normalization_run_id}",
+            output_dir=case_dir / "j02-retry",
+        )
+        normalization_after_retry = _immutable_snapshot(
+            client,
+            {"sales_daily": paths["sales_daily"]},
+            (normalization_manifest_path, normalization_quality_path, paths["sales_daily"] + "/_snapshot_manifest.json"),
+        )
 
-    enrichment_retry_stdout = _submit(
-        hdfs,
-        "warehouse_bigdata/jobs/enrich_analytics.py",
-        [
-            *enrichment_arguments,
-            "--event-log-dir",
-            hdfs_config.uri.rstrip("/") + enrichment_retry_events,
-        ],
-        conf,
-        case_dir / "j03-retry",
-    )
-    enrichment_retry_status = _job_status(enrichment_retry_stdout)
-    enrichment_retry_execution = _collect_event_summary(
-        hdfs_client(hdfs),
-        enrichment_retry_events,
-        run_id=enrichment_run_id,
-        application_name=f"warehouse-enrich-analytics-{enrichment_run_id}",
-        output_dir=case_dir / "j03-retry",
-    )
-    enrichment_after_retry = _immutable_snapshot(
-        client,
-        {name: paths[name] for name in J03_OUTPUT_NAMES},
-        (
-            enrichment_manifest_path,
-            enrichment_quality_path,
-            *tuple(render_enrichment_dataset_manifest_path(paths[name]) for name in J03_OUTPUT_NAMES),
-        ),
-    )
-    require(normalization_retry_status == "REUSED", "J02 retry did not reuse the immutable snapshot.")
-    require(enrichment_retry_status == "REUSED", "J03 retry did not reuse the immutable outputs.")
-    require(j02_snapshot == normalization_after_retry, "J02 retry changed immutable evidence.")
-    require(j03_snapshot == enrichment_after_retry, "J03 retry changed immutable evidence.")
-    _write_json_artifact(case_dir / "j02" / "immutable-before.json", j02_snapshot)
-    _write_json_artifact(case_dir / "j02-retry" / "immutable-after.json", normalization_after_retry)
-    _write_json_artifact(case_dir / "j03" / "immutable-before.json", j03_snapshot)
-    _write_json_artifact(case_dir / "j03-retry" / "immutable-after.json", enrichment_after_retry)
+        enrichment_retry_stdout = _submit(
+            hdfs,
+            "warehouse_bigdata/jobs/enrich_analytics.py",
+            [
+                *enrichment_arguments,
+                "--event-log-dir",
+                hdfs_config.uri.rstrip("/") + enrichment_retry_events,
+            ],
+            conf,
+            case_dir / "j03-retry",
+        )
+        enrichment_retry_status = _job_status(enrichment_retry_stdout)
+        enrichment_retry_execution = _collect_event_summary(
+            hdfs_client(hdfs),
+            enrichment_retry_events,
+            run_id=enrichment_run_id,
+            application_name=f"warehouse-enrich-analytics-{enrichment_run_id}",
+            output_dir=case_dir / "j03-retry",
+        )
+        enrichment_after_retry = _immutable_snapshot(
+            client,
+            {name: paths[name] for name in J03_OUTPUT_NAMES},
+            (
+                enrichment_manifest_path,
+                enrichment_quality_path,
+                *tuple(render_enrichment_dataset_manifest_path(paths[name]) for name in J03_OUTPUT_NAMES),
+            ),
+        )
+        require(normalization_retry_status == "REUSED", "J02 retry did not reuse the immutable snapshot.")
+        require(enrichment_retry_status == "REUSED", "J03 retry did not reuse the immutable outputs.")
+        require(j02_snapshot == normalization_after_retry, "J02 retry changed immutable evidence.")
+        require(j03_snapshot == enrichment_after_retry, "J03 retry changed immutable evidence.")
+        _write_json_artifact(case_dir / "j02" / "immutable-before.json", j02_snapshot)
+        _write_json_artifact(case_dir / "j02-retry" / "immutable-after.json", normalization_after_retry)
+        _write_json_artifact(case_dir / "j03" / "immutable-before.json", j03_snapshot)
+        _write_json_artifact(case_dir / "j03-retry" / "immutable-after.json", enrichment_after_retry)
 
     verification_stdout = _submit(
         hdfs,
@@ -647,6 +853,10 @@ def run_case(
         "schema_version": "m04-task-06-report-v1",
         "status": VALIDATED,
         "case": label,
+        "acceptance_scope": "full-history" if expected_day_count == FULL_DAY_COUNT else "reduced-history",
+        "full_history_accepted": expected_day_count == FULL_DAY_COUNT,
+        "source_preparation": source.get("preparation", {"mode": "profile-and-ingest"}),
+        "preflight": source.get("preflight"),
         "runtime": {
             "python": platform.python_version(),
             "spark_master": load_spark_config().master_url,
@@ -721,9 +931,14 @@ def run_case(
                 "snapshot_before": "j03/immutable-before.json",
                 "snapshot_after": "j03-retry/immutable-after.json",
             },
+        } if verify_recovery else {
+            "enabled": False,
+            "reason": "Smoke omits retry acceptance; the full correctness test retains it.",
         },
         "storage": verification.get("storage", {}),
         "limitations": [
+            *(["Reduced-history acceptance is not full-history acceptance."]
+              if expected_day_count != FULL_DAY_COUNT else []),
             "Worker and executor evidence describes this local two-worker simulation only.",
             "Observed unit sales are not verified inventory or customer orders.",
             "Timings include cluster scheduling and HDFS state and are not a claimed speedup.",
@@ -732,6 +947,28 @@ def run_case(
     }
     _write_report(case_dir, report)
     return report
+
+
+def run_smoke(hdfs: HDFSVerification, tmp_path: Path) -> dict[str, object]:
+    """Run first-30-day acceptance through production J02/J03 and the independent verifier."""
+    hdfs_config = load_hdfs_config()
+    client = hdfs_client(hdfs)
+    token = uuid.uuid4().hex
+    preflight = _smoke_preflight(hdfs, hdfs_config, client, token=token)
+    source = _prepare_smoke_source(tmp_path, hdfs, hdfs_config, client)
+    source["preflight"] = preflight
+    return run_case(
+        hdfs,
+        source,
+        label="smoke",
+        expected_day_count=SMOKE_DAY_COUNT,
+        days_per_chunk=SMOKE_DAY_COUNT,
+        shuffle_partitions=8,
+        adaptive=True,
+        cores_max=2,
+        token=token,
+        verify_recovery=False,
+    )
 
 
 def run_correctness(hdfs: HDFSVerification, tmp_path: Path) -> dict[str, object]:
@@ -873,6 +1110,9 @@ def _write_report(directory: Path, report: dict[str, object]) -> None:
         "# M04 Task 06 Evidence",
         "",
         f"- Status: `{report.get('status')}`",
+        f"- Case: `{report.get('case', 'benchmark')}`",
+        f"- Acceptance scope: `{report.get('acceptance_scope', 'calibration')}`",
+        f"- Full-history accepted: `{report.get('full_history_accepted', False)}`",
         f"- Evidence directory: `{directory}`",
         "",
         "## Correctness",
@@ -906,8 +1146,11 @@ __all__ = [
     "FULL_ROW_COUNT",
     "PERFORMANCE_ENV",
     "SERIES_COUNT",
+    "SMOKE_DAY_COUNT",
+    "SMOKE_ROW_COUNT",
     "prepare_source",
     "run_benchmark_matrix",
     "run_correctness",
+    "run_smoke",
     "source_environment",
 ]

@@ -336,6 +336,84 @@ executed [M02 T03 acceptance](infrastructure/spark/README.md#historical-phase-2-
 passed for its bounded synthetic distributed read/write workload. Future live runs
 require their own explicit approval and current prerequisite checks.
 
+### Opt-in live M04 smoke acceptance
+
+The separate M04 smoke test uses real M5 CSV data in real HDFS and the existing
+`spark-worker-1` and `spark-worker-2`. It selects **`d_1` through `d_30` for all
+30,490 evaluation series**, expecting exactly **914,700 rows** in each of
+`sales_daily` and `sales_enriched`. These are derived observed-sales records.
+
+Run serially from the repository root against already-ready HDFS and Spark services.
+Prepare/rebuild the driver image after source changes using the explicit build command
+in the submission section above. Set `WAREHOUSE_HDFS_URI` and
+`WAREHOUSE_SPARK_MASTER_URL` to the canonical cluster endpoints in `.env`.
+
+For repeat smoke runs, set `WAREHOUSE_M04_SOURCE_VERSION=sha256:<64 lowercase hex>`
+in `.env` to the exact source version printed by a successful M5 raw ingestion.
+This reuses that immutable raw snapshot through the **production HDFS validator**:
+all raw bytes are hashed again; source manifests, provenance, integrity sidecars,
+checksums, replication, and current two-DataNode block placement are checked. The
+content-derived source version is reconciled with the manifest file hashes. Local
+CSVs and full local CSV profiling are unnecessary in this mode. Any supplied
+`WAREHOUSE_M5_SOURCE_URL` or `WAREHOUSE_M5_DOWNLOADED_AT_UTC` must match stored
+provenance; an invalid or missing selected snapshot fails without fallback.
+
+If `WAREHOUSE_M04_SOURCE_VERSION` is blank, provide `WAREHOUSE_M5_SOURCE_DIR` and
+the official `WAREHOUSE_M5_SOURCE_URL`; the existing production ingestion flow
+profiles and validates the complete original package before the reduced ETL run.
+That initial profiling remains expensive. Keep the acquisition timestamp blank
+when unknown.
+
+Explicit smoke command:
+
+```bash
+bash scripts/load-env.sh uv run --locked pytest -q -m integration --run-m04-smoke tests/integration/test_m04_smoke.py
+```
+
+Default pytest runs exclude integration tests. Even `-m integration` skips this
+smoke test unless `--run-m04-smoke` is present, before its HDFS fixture is set up.
+
+Before expensive source preparation, the harness checks run-path collisions,
+the two Workers' current readiness, the prepared image, and empty run-owned event
+directories. A small non-Spark driver probe verifies the HDFS CLI, effective Spark
+staging/event-log ACL access, writable output ancestors, and driver/archive/XML
+fingerprints against the checkout. It does not build or start cluster services.
+
+The test then calls the existing production **J02**, **J03**, and **independent M04
+verifier**. It retains physical-schema and nullability checks, complete selected-day
+and series coverage, unique keys, zero-sales preservation, calendar/price and aggregate
+reconciliation, manifest lineage, persisted Parquet rereads and SHA-256 audits, and
+successful-task evidence from **both** Workers for each of the three applications.
+Raw validation still reads the full source files; the 30-day limit bounds expanded
+sales processing, not raw-source integrity work.
+
+Every invocation uses a new `m04-smoke-snapshot-<uuid>` and distinct J02/J03/verifier
+run IDs, staging/event paths, and `artifacts/m04/smoke/<uuid>/` evidence. Reports,
+commands, full job logs, event logs, reconciliation, and hashes are retained there;
+preflight diagnostics are also recorded in the unique `artifacts/test-runs/` run.
+Existing raw snapshots and curated data are never overwritten. Smoke reports state
+`acceptance_scope=reduced-history` and `full_history_accepted=false`.
+
+**Smoke acceptance does not establish full-history correctness or retry/recovery
+acceptance.** The existing full test still processes **1,941 days / 59,181,090 rows**,
+including immutable J02/J03 retry checks, with its original command:
+
+```bash
+bash scripts/load-env.sh uv run --locked pytest -q -m integration tests/integration/test_m04_processing.py
+```
+
+The smoke test omits those two retry submissions to keep the live check smaller.
+It is a single-host, two-Worker simulation, not a benchmark, speedup claim, or
+physical multi-host fault-tolerance certification. No live M04 result is implied
+by adding this test.
+
+Focused offline regression checks (no live workloads):
+
+```bash
+uv run --locked ruff check .
+uv run --locked pytest -q tests/unit/test_m04_support.py tests/unit/test_m04_smoke.py tests/unit/test_m04_verification.py tests/unit/test_spark_job_permissions.py tests/unit/test_spark_verification.py tests/unit/test_hdfs_raw_ingestion.py
+```
+
 ### Opt-in HDFS integration verification
 
 Against an already initialized, running T01 cluster, run the non-disruptive

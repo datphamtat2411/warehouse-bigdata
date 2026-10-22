@@ -13,6 +13,12 @@ from tests.integration.hdfs_support import (
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
+        "--run-m04-smoke",
+        action="store_true",
+        default=False,
+        help="Run the real-M5 30-day M04 smoke test against existing HDFS and both Spark Workers.",
+    )
+    parser.addoption(
         "--run-hdfs-disruptions",
         action="store_true",
         default=False,
@@ -30,6 +36,10 @@ def parallel_execution(config: pytest.Config) -> bool:
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     enabled = config.getoption("--run-hdfs-disruptions")
     for item in items:
+        if item.get_closest_marker("m04_smoke") is not None and not config.getoption(
+            "--run-m04-smoke"
+        ):
+            item.add_marker(pytest.mark.skip(reason="Live M04 smoke requires --run-m04-smoke."))
         if item.get_closest_marker("hdfs_disruptive") is None:
             continue
         blocker = disruption_blocker(enabled, parallel_execution(config))

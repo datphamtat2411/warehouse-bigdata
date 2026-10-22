@@ -428,6 +428,26 @@ def test_event_log_correlates_successful_tasks_workers_groups_and_metrics() -> N
     assert summary["execution_metrics"]["successful_task_hosts"] == list(HOSTS)
 
 
+@pytest.mark.parametrize("idle_second_worker", [False, True])
+def test_m04_smoke_requires_successful_work_on_both_workers(idle_second_worker) -> None:
+    log = events()
+    if idle_second_worker:
+        log = [
+            event for event in log
+            if event["Event"] != "SparkListenerTaskEnd"
+            or event["Task Info"]["Host"] != HOSTS[1]
+        ]
+    payload = b"\n".join(json.dumps(event).encode() for event in log) + b"\n"
+    arguments = {"run_id": RUN, "application_name": f"warehouse-spark-hdfs-{RUN}"}
+
+    if idle_second_worker:
+        with pytest.raises(VerificationError, match="both Workers"):
+            support.summarize_m04_event_log(payload, **arguments)
+    else:
+        summary = support.summarize_m04_event_log(payload, **arguments)
+        assert all(summary["workers"][host]["successful_tasks"] > 0 for host in HOSTS)
+
+
 @pytest.mark.parametrize(
     "missing",
     [
