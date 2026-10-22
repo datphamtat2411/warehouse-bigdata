@@ -29,6 +29,7 @@ from warehouse_bigdata.common.hdfs_paths import (
     validate_source_snapshot_id,
     validate_source_version,
 )
+from warehouse_bigdata.common.hdfs_publication import stage_publication
 from warehouse_bigdata.common.hdfs_runtime import create_hdfs_cli_client
 from warehouse_bigdata.common.revision import get_code_revision
 from warehouse_bigdata.contracts.datasets import SALES_DAILY
@@ -227,6 +228,7 @@ def run_normalization_snapshot(
     client: Any | None = None,
     config: NormalizationSnapshotConfig | None = None,
     now: Callable[[], str] | None = None,
+    defer_publication: bool = False,
 ) -> NormalizationSnapshotResult:
     """Normalize validated HDFS M5 sources into one immutable curated snapshot."""
     validate_normalization_identifiers(source_version, source_snapshot_id, pipeline_run_id)
@@ -397,48 +399,40 @@ def run_normalization_snapshot(
                     created_at=timestamp(),
                 )
 
-            hdfs.mkdir_parents(str(PurePosixPath(curated_path).parent))
-            try:
-                _promote_immutable_candidate(
-                    hdfs,
-                    render_normalization_candidate_path(staging_path),
-                    curated_path,
-                )
-                status = "VALIDATED"
-            except Exception as error:
-                if not _exists(hdfs, curated_path):
-                    raise NormalizationSnapshotError(
-                        f"curated snapshot promotion failed: {error}"
-                    ) from error
-                if not hdfs.is_directory(curated_path):
-                    raise NormalizationSnapshotError(
-                        "curated path appeared during promotion but is not a directory"
-                    ) from error
-                persisted = _read_parquet(spark, curated_uri)
-                metrics = _validate_persisted_output(
-                    persisted,
-                    expected_metrics=expected_metrics,
-                    selected_day_keys=_day_keys(selected_config.expected_day_count),
-                )
-                _validate_dataset_manifest(
-                    hdfs,
-                    curated_path,
-                    hdfs_config,
-                    source_version=source_version,
-                    source_snapshot_id=source_snapshot_id,
-                    pipeline_run_id=pipeline_run_id,
-                    expected_metrics=metrics,
-                    expected_row_count=selected_config.row_count,
-                    code_revision=code_revision,
-                )
-                _recover_unpromoted_candidate(
-                    hdfs,
-                    staging_path,
-                    source_version=source_version,
-                    source_snapshot_id=source_snapshot_id,
-                    pipeline_run_id=pipeline_run_id,
-                )
-                status = "REUSED"
+            if defer_publication:
+                status = "STAGED"
+            else:
+                hdfs.mkdir_parents(str(PurePosixPath(curated_path).parent))
+                try:
+                    _promote_immutable_candidate(
+                        hdfs, render_normalization_candidate_path(staging_path), curated_path,
+                    )
+                    status = "VALIDATED"
+                except Exception as error:
+                    if not _exists(hdfs, curated_path):
+                        raise NormalizationSnapshotError(
+                            f"curated snapshot promotion failed: {error}"
+                        ) from error
+                    if not hdfs.is_directory(curated_path):
+                        raise NormalizationSnapshotError(
+                            "curated path appeared during promotion but is not a directory"
+                        ) from error
+                    persisted = _read_parquet(spark, curated_uri)
+                    metrics = _validate_persisted_output(
+                        persisted, expected_metrics=expected_metrics,
+                        selected_day_keys=_day_keys(selected_config.expected_day_count),
+                    )
+                    _validate_dataset_manifest(
+                        hdfs, curated_path, hdfs_config,
+                        source_version=source_version, source_snapshot_id=source_snapshot_id,
+                        pipeline_run_id=pipeline_run_id, expected_metrics=metrics,
+                        expected_row_count=selected_config.row_count, code_revision=code_revision,
+                    )
+                    _recover_unpromoted_candidate(
+                        hdfs, staging_path, source_version=source_version,
+                        source_snapshot_id=source_snapshot_id, pipeline_run_id=pipeline_run_id,
+                    )
+                    status = "REUSED"
 
         timings["compaction_seconds"] = time.perf_counter() - compaction_started
         _write_quality_report(
@@ -473,12 +467,13 @@ def run_normalization_snapshot(
             status=VALIDATED,
             code_revision=code_revision,
         )
-        manifest_path = _publish_or_reuse_run_manifest(
-            hdfs,
-            hdfs_config,
-            manifest,
-            integrity=raw_snapshot.integrity,
-        )
+        if defer_publication:
+            stage_publication(hdfs, hdfs_config, manifest, result_status="VALIDATED")
+            manifest_path = None
+        else:
+            manifest_path = _publish_or_reuse_run_manifest(
+                hdfs, hdfs_config, manifest, integrity=raw_snapshot.integrity,
+            )
         timings["total_seconds"] = time.perf_counter() - started_at
         return NormalizationSnapshotResult(
             status=status,

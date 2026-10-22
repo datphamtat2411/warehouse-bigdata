@@ -425,6 +425,27 @@ def test_output_paths_are_snapshot_scoped_and_candidates_remain_run_scoped() -> 
     ).endswith("/_dataset_manifest.json")
 
 
+def test_deferred_publication_keeps_all_three_outputs_in_run_staging(spark, tmp_path, monkeypatch):
+    from warehouse_bigdata.processing import enrichment_analytics_snapshot as module
+
+    hdfs = _LocalHdfs(tmp_path)
+    settings = HDFSConfig("hdfs://test-namenode:8020", BASE_PATH)
+    _prepare_inputs(spark, hdfs, settings, monkeypatch)
+    requests = []
+    monkeypatch.setattr(module, "stage_publication", lambda *args, **kw: requests.append(args[2]))
+    result = run_enrichment_analytics_snapshot(
+        spark, source_version=SOURCE_VERSION, source_snapshot_id=SOURCE_SNAPSHOT_ID,
+        pipeline_run_id=PIPELINE_RUN_ID, hdfs_config=settings, client=hdfs,
+        defer_publication=True,
+    )
+    assert result.status == "STAGED", result.failure_details
+    assert result.run_manifest_path is None
+    for name, path in result.output_paths.items():
+        assert not hdfs.exists(path)
+        assert hdfs.exists(render_enrichment_candidate_path(result.staging_path, name))
+    assert len(requests) == 1 and requests[0]["status"] == "VALIDATED"
+
+
 def test_snapshot_persists_revalidates_and_promotes_all_curated_outputs(
     spark: SparkSession,
     tmp_path: Path,

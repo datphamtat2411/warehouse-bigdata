@@ -101,6 +101,93 @@ as part of the acceptance. A live run remains blocked until real M5 CSVs, health
 Spark services, the prepared Spark submission image, and explicit approval for the live
 acceptance are available.
 
+## M04 publication namespace and permissions
+
+The shared publication namespace is provisioned explicitly by the NameNode owner
+`hadoop` (UID/GID `1000:100`). Spark drivers/executors remain `spark` (`185:185`).
+The base `/data/warehouse` must already exist as a Hadoop-owned directory (the raw
+ingestion workflow creates it). Setup never changes it or existing raw/snapshot data.
+
+| Directory | Owner / mode | Spark access |
+|---|---|---|
+| `/data/warehouse` and existing ancestors | Existing Hadoop ownership; no shared write ACL | Traverse/read; no write |
+| `curated`, `manifests`, `staging` below the base | `hadoop`, `755`, no extended/default ACL | Read/traverse; no write |
+| `curated/{sales_daily,sales_enriched,store_daily_sales,category_monthly_sales}` | `hadoop`, `755`, no extended/default ACL | Read/traverse; no write |
+| `manifests/runs` | `hadoop`, `755`, no extended/default ACL | Read/traverse; no write |
+| `staging/pipeline_run_id=<id>` and event directories | Run owner; explicit access/default `spark:rwx` ACL | Stage candidates, write logs and publication requests, clean run-owned probes |
+| Temporary `.pending-publication-<digest>` under an exact publication parent | `hadoop`, `700` | None |
+| New published snapshot directories / files / run manifests | `hadoop`, `555` / `444` / `444`, no extended/default ACL | Read only |
+
+**Why parent permissions matter:** HDFS rename/delete requires write and execute on
+the source/destination parents, even when the child has no write bits. Giving Spark
+`rwx` on dataset parents would let it remove/rename earlier snapshots. A sticky bit
+alone also fails for snapshots owned by the same Spark identity. Therefore Spark gets
+no shared-parent write permission. Existence checks are validation, not isolation.
+
+J02/J03 drivers validate and reread their run-scoped candidates, then write a bounded
+`publication/request.json` under their staging directory. `scripts/spark-submit.sh`
+invokes the owner publisher only for these two jobs, after successful driver exit.
+The owner derives all source/destination paths from the run/snapshot identities and
+Contract v1 output allowlist. It first claims each candidate into an owner-private
+envelope, removes inherited ACLs, transfers ownership, and seals permissions there.
+This prevents Spark from mutating a candidate during sealing. Final promotion uses
+WebHDFS `RENAME` with `renameoptions=NONE` (HDFS rename2): an existing destination
+causes failure, never overwrite or `mv`-style nesting. The validated run manifest is
+atomically published **last**, after all outputs. Contract v1 final paths are unchanged.
+
+An interrupted publication retains its private candidate for an owner retry. Repeating
+the same host submission first recovers its pending publication, then runs the driver's
+normal validation/reuse checks. A completed matching publication returns `REUSED`
+without changing published files. Conflicting candidates/snapshots fail closed. Do not
+run concurrent submissions with the same `pipeline_run_id`; new attempts use unique
+run IDs and snapshot IDs. The publisher is a short-lived batch command, not a service.
+
+One-time setup after updating the driver application image:
+
+```bash
+docker compose -f infrastructure/compose.yaml --profile spark-submit build spark-submit
+bash scripts/provision-hdfs-namespace.sh setup
+bash scripts/provision-hdfs-namespace.sh check
+```
+
+Both commands use the prepared driver image's Hadoop CLI as the actual Hadoop owner,
+without impersonating it in a Spark process. They require an already-running,
+write-ready NameNode and both DataNodes, enabled HDFS permissions/ACLs and WebHDFS,
+the existing project network and read-only XML mounts. They do not start services.
+Setup only creates/normalizes the listed shared parents, non-recursively. Repeating
+setup preserves existing snapshots, source files and run manifests. `check` performs
+tiny unique create/atomic-rename/delete probes in the five publication parents.
+
+The narrowly scoped live regression additionally proves Spark's staging write/rename/
+delete access and rejects 20 mutations of owner-owned immutable fixtures (four per
+publication parent). It checks fixture bytes and removes only its UUID-scoped fixtures:
+
+```bash
+bash scripts/load-env.sh uv run --locked pytest -q -m integration \
+  tests/integration/test_m04_namespace.py -s
+```
+
+It requires HDFS and the current prepared driver image; Spark daemons and M5 CSVs are
+not used. No source profiling, hashing of M5, SparkContext, or ETL is launched. The M04
+smoke preflight also checks owner publication readiness and Spark's exact parent access
+before source work; errors identify `directory=... identity=... requires ...` rather
+than walking upward to `/data/warehouse` and requesting excessive access.
+
+For an explicit publication-only retry after a successful staged driver run:
+
+```bash
+docker compose -f infrastructure/compose.yaml --profile spark-submit run \
+  --rm --no-deps -T --pull never --user 1000:100 \
+  --entrypoint /opt/warehouse-app/.venv/bin/python spark-submit \
+  -m warehouse_bigdata.common.hdfs_publication --pipeline-run-id <existing-run-id>
+```
+
+Direct `docker compose run spark-submit` calls for J02/J03 only stage outputs;
+`candidate_status=STAGED` is not final acceptance. Use `scripts/spark-submit.sh` for
+the owner publication step and the single final `status=VALIDATED|REUSED` result.
+HDFS simple authentication remains the documented trusted local-development model;
+these permissions isolate the Spark identity, not hostile clients that spoof users.
+
 ## Runtime and interfaces
 
 All four Compose services, including the opt-in initialization helper, use the

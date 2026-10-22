@@ -14,6 +14,8 @@ fixture does not establish full-project NFR-02 or M5 processing acceptance.
 ## Prerequisites and lifecycle
 
 - Docker Compose v2 with CPU/memory enforcement and Linux tmpfs support.
+- Linux Docker-host root access for one-time fixed-size ext4 scratch provisioning
+  (`fallocate`, `mkfs.ext4`, loop mounts). Workers themselves remain UID/GID 185:185.
 - The approved startup budget is **10 GiB Docker-visible memory**: HDFS and Spark
   container limits total 7 GiB, with approximately 1.5 GiB reserved for one submission
   driver and 1.5 GiB for system overhead. This is a conservative planning budget,
@@ -29,6 +31,7 @@ Run from any working directory by addressing the wrapper through its repository
 path. The following examples start from the repository root:
 
 ```bash
+sudo bash scripts/provision-spark-scratch.sh
 bash scripts/spark-cluster.sh up
 bash scripts/spark-cluster.sh status
 bash scripts/spark-cluster.sh check
@@ -128,18 +131,135 @@ integration chain in §12.2 extends beyond this infrastructure task.
 | Docker daemon logs | `json-file`, 10 MiB × 3 files | Same |
 
 Container roots are read-only. Worker work files and application logs use
-`/tmp/warehouse-spark/work`; local spill uses `/tmp/warehouse-spark/local`.
+`/var/lib/warehouse-spark/work`; local spill uses `/var/lib/warehouse-spark/local`.
 Other daemon logs/PIDs remain under `/tmp/warehouse-spark`. The Master uses `/tmp`
 for JVM temporary files; Workers and the ephemeral driver use the private
 `/opt/warehouse-spark/native` mount described below. Docker captures foreground
 daemon console output.
 
-Tmpfs consumption is charged against the container RAM limit. Each Worker has
-512 MiB beyond advertised application memory, maximum daemon heap, and maximum
-scratch for Python/native/process overhead. Stopped-application cleanup runs
-every **300 seconds**, retaining files for **3,600 seconds**; it supplements the
-hard scratch ceiling. This is a small-workload infrastructure baseline. Workload
-overhead and full-dataset spill capacity still require later measurement.
+Tmpfs consumption is charged against the container RAM limit. The unchanged
+224 MiB Worker `/tmp` is now incidental/Python temporary storage, **not shuffle
+storage**. Each Worker also has its own **8 GiB preallocated ext4 disk image**;
+filesystem metadata reduces usable capacity. Disk-backed pages can still contribute
+reclaimable file-cache pressure to the unchanged 2 GiB Worker cgroup.
+
+### M04 shuffle-spill correction and migration
+
+The 2026-10-22 live 30-day smoke processed 914,700 observed-sales records. J02
+completed and was independently reconciled. J03 failed after four attempts in stage
+196 with `UnsafeExternalSorter` spill `No space left on device` (reported through
+`SparkOutOfMemoryError`). Primary evidence is
+`artifacts/test-runs/t03-20261022T125558-test_m04_smoke_reconciles_first_30_days-1ccc2a08bc0d4af4807f841faf03d01d/0036.stderr`.
+Earlier stage 193 also reported disk exhaustion. Both work and local directories
+previously occupied **one shared 234,881,024-byte tmpfs per Worker**. Logs, retained
+shuffle outputs, and concurrent spill/merge files competed for that single cap;
+the separate native 32 MiB mount could not extend it. Executor heap was not the
+cause of this particular capacity failure.
+
+Each Worker bind-mounts only its own
+`artifacts/spark-scratch/worker-{1,2}/mount` at `/var/lib/warehouse-spark`.
+`scratch.ext4` beside each mountpoint is **fully allocated, fixed at 8 GiB**, mounted
+`rw,nosuid,nodev,noexec`; this is a filesystem-enforced ceiling, not an unbounded
+Docker volume with a nominal budget. Provisioning reserves at least **4 GiB host
+free space after each allocation** (16 GiB allocated in total), validates existing
+image type/label/size, and never reformats an existing image. It must run on the
+Linux Docker host, in its mount namespace. It has no HDFS volume targets.
+
+The startup wrapper and each host submission run an effective create/write/fsync/
+read/unlink probe **as 185:185** in both `local` and `work` (private mode `0700`).
+They require a distinct ext4 mount, 7–8 GiB usable filesystem capacity, at least
+**4 GiB available per Worker**, and 10,000 available inodes before Spark work.
+Missing mounts, ordinary-directory fallback, tmpfs, wrong ownership, read-only
+storage, and write errors fail closed. Docker Worker health repeats effective writes
+and requires a **512 MiB reserve**; submission uses the stricter 4 GiB admission floor.
+These floors are conservative initial operating policy, not a full-history M5
+capacity guarantee or a reservation against concurrent submissions.
+
+Cleanup is application-aware: Spark's own application-finished handling deletes
+only registered local directories after the application's last executor exits.
+The age-only built-in work-directory sweeper is replaced by a health-probe cleanup
+that requires a terminal Master `completedapps` record, a matching local finished
+executor, and absence from both active sets. After 3,600 seconds it unlinks only
+that application's numeric-executor `stdout`/`stderr`, at most four files per probe.
+It skips symlinks and retains unrelated names, unknown/restart-orphan local data,
+and packaged dependencies. Unproven orphans require operator investigation; low
+capacity blocks submission rather than triggering an unsafe global purge.
+
+Migration on an idle cluster:
+
+```bash
+# Capture existing HDFS container IDs/mounts and retain incident evidence first.
+sudo bash scripts/provision-spark-scratch.sh
+bash scripts/spark-cluster.sh up  # builds/recreates only the three Spark services
+docker compose -f infrastructure/compose.yaml --profile spark-submit build spark-submit
+bash scripts/smoke-spark.sh
+timeout --foreground --kill-after=15s 300s bash scripts/spark-submit.sh -- \
+  warehouse_bigdata/jobs/verify_spark_scratch.py
+```
+
+The synthetic probe writes/reads/removes **256 MiB concurrently on each Worker**,
+then shuffles/sorts **400,000 generated rows**, requiring positive measured disk
+spill and shuffle bytes on both Workers. Forced spill/compression settings belong
+only to this diagnostic; production heaps/configuration are unchanged. It uses no
+HDFS datasets. Run the explicitly authorized 30-day M04 smoke separately; this is
+not permission for full-history processing.
+
+Rerun the idempotent provisioning command **after host reboot**, before starting
+Spark; loop mounts are intentionally not system-wide fstab changes. Stop Spark
+before any manual unmount; never delete images to repair a low-space condition.
+Do not run `compose down -v`, recreate HDFS services, or remove immutable snapshots.
+The two images share the physical host disk/I/O, but neither Worker can consume
+the other's bounded filesystem. Full-history peak spill, skew, inode usage,
+concurrent-driver pressure, native-temp capacity and driver `/tmp` remain workload
+resource risks requiring measurement.
+
+### Live verification record — 2026-10-22
+
+- Focused offline scratch/health/lifecycle/submission tests: **126 passed**.
+  The follow-up M04 evidence/verification/smoke regressions: **160 passed**.
+  Focused Ruff lint/format, Bash syntax, and default/init/spark/spark-submit/combined
+  Compose validation passed.
+- Spark-only rollout and driver rebuild completed. Infrastructure smoke passed,
+  including both Workers' native-codec probes, read-only roots and unchanged cgroups.
+  With passwordless host sudo unavailable, one short-lived privileged container
+  entered the Linux host mount namespace to run the same provisioning script;
+  no Spark daemon/application ran as root.
+- Synthetic application **`app-20261022132952-0000`** passed in **62.16s**:
+  each Worker wrote/read/removed 268,435,456 bytes; 400,000 rows reconciled;
+  Worker 1/2 measured **55,480,076 / 58,400,080 disk-spill bytes** and
+  **56,800,000 shuffle-write bytes each**. Forced-spill settings were diagnostic-only.
+- Exact authorized command:
+
+  ```bash
+  bash scripts/load-env.sh uv run --group spark-test pytest -m integration \
+    --run-m04-smoke tests/integration/test_m04_smoke.py -v -s --tb=short
+  ```
+
+  Attempt 1 completed/published J02 and J03, but the harness rejected J03's
+  **26,143,896-byte** completed event log against T03's 16 MiB fixture bound.
+  One corrective pass introduced a separate **64 MiB M04 evidence limit**, retaining
+  pre-read bounds, byte-count/hash checks, complete application termination,
+  task/stage/job correlation, malformed/truncation rejection, and the original
+  16 MiB synthetic limit. Attempt 2: **1 passed in 1742.38s (29:02)**.
+  No second corrective pass or full-history workload was needed.
+- Independent 30-day reconciliation: **914,700 rows** in each fact output,
+  **793,298 observed units**, zero duplicate keys, and successful work on both Workers
+  in normalization, enrichment and verification. J03 completed **833 successful tasks**
+  with **499,777,655 cumulative disk-spill bytes** (not a peak-space measurement).
+- Postflight: both Workers idle/registered with the original advertised resources;
+  **8,350,298,112 usable filesystem bytes** and over **8.33 billion available bytes**
+  per Worker. Cgroup peak counters were **2,067,255,296 / 1,854,005,248 bytes**
+  against each 2 GiB limit, with zero `max`, OOM or OOM-kill events. Worker 1's peak
+  was approximately **96%** of its limit, so memory headroom remains material.
+- All three HDFS container IDs, creation/start times, images, restart counts and
+  mount attachments matched the pre-rollout baseline (mount-array order normalized).
+  HDFS service definitions, named volumes and bridge configuration also matched.
+
+Runtime evidence: `artifacts/test-runs/spark-scratch-20261022/`.
+Successful M04 report:
+`artifacts/m04/smoke/d5daed30a17e4839ae0f6ec38386dd46/report.json`.
+These results accept the **30-day reduced-history scope**, not full-history M5
+capacity, measured speedup, physical-host fault tolerance, or operational savings.
 
 The smoke check inspects actual Docker limits, cgroup limits, JVM flags, mounted
 scratch capacity/usage, log rotation, image consistency, loopback binding, and
@@ -196,7 +316,8 @@ and accepts only 1–600. The wrapper adds an outer timeout.
 
 - `master`: RPC listener, canonical Master URL, and `ALIVE` status only.
 - `worker`: its current local UI ID must match one fresh `ALIVE` registration at
-  the Master with the configured host, RPC/UI address, cores, and memory.
+  the Master with the configured host, RPC/UI address, cores, and memory; also
+  validates its local disk/write reserve and performs terminal-log cleanup.
 - `ready`: exactly the two expected live Workers, distinct current IDs, matching
   Master totals, and independently reachable Worker UIs/RPC listeners.
 - Heartbeats may be at most 30 seconds old (five seconds of future-clock tolerance).
@@ -361,7 +482,7 @@ is disabled. These addresses require bridge DNS and are not host-side endpoints.
 | Container CPU/RAM | 1 CPU / 1.5 GiB | Existing T01 Worker limits |
 | JVM heap | 512 MiB | 512 MiB each |
 | Application core cap | Docker CPU limit | 1 core each, 2 total |
-| Bulk scratch (`noexec`) | `/tmp` tmpfs, 96 MiB | `/tmp` tmpfs, 224 MiB per Worker |
+| Bulk scratch (`noexec`) | `/tmp` tmpfs, 96 MiB | Dedicated 8 GiB ext4 image per Worker |
 | Executable JVM temp | Private 32 MiB tmpfs | Private 32 MiB tmpfs per Worker |
 | Aggregate tmpfs ceiling | 128 MiB | 256 MiB per Worker |
 | Dynamic allocation | Disabled | Disabled |
@@ -381,8 +502,9 @@ and `spark.sql.hive.*`. No public resource environment-variable inventory is add
 
 ### Lifecycle, failures, and cancellation
 
-The launcher first checks for the prepared driver image, then reuses T01's
-read-only `spark-cluster.sh check`. It runs attached with
+The launcher first checks for the prepared driver image, reuses T01's
+`spark-cluster.sh check`, then requires independent disk/write admission preflights
+on both Workers before creating any driver/publication container. It runs attached with
 `docker compose run --rm --no-deps -T --pull never`; it does not prepare images or
 start services implicitly. Output is inherited. The installed CLI replaces itself
 with `/opt/spark/bin/spark-submit` via `os.execvpe`, preserving submission/application
@@ -586,7 +708,7 @@ was accepted as **`PHASE_1_VERIFIED`**. One separately authorized live T03 execu
 passed on **2026-10-21**. The dated records below establish the completed M02 scope;
 the following verification and maintenance procedures are for future approved runs.
 
-### Evidence and selected runtime policy
+### Historical evidence and selected runtime policy (before M04 disk scratch)
 
 T03 application `app-20261020140926-0001` completed shuffle-map tasks on both
 Workers, then failed in driver map-output serialization with

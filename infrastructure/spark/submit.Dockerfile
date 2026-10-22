@@ -3,6 +3,8 @@ FROM apache/hadoop:3.4.3@sha256:127774dadab40ce84df7ac668a7a8c99945688b3fe336f13
 FROM warehouse-bigdata-spark:3.5.7-python3.11.17
 
 USER root
+# The host-invoked batch publisher runs as the NameNode owner. Spark keeps UID 185.
+RUN useradd --uid 1000 --gid 100 --no-create-home --shell /usr/sbin/nologin hadoop
 # The official HDFS CLI has its own libraries; Spark keeps its bundled client JARs.
 COPY --from=hadoop-client /opt/hadoop/bin/hdfs /opt/hadoop/bin/hdfs
 COPY --from=hadoop-client /opt/hadoop/libexec/ /opt/hadoop/libexec/

@@ -15,7 +15,7 @@ from textwrap import dedent
 
 from tests.integration.hdfs_support import HDFSVerification, VerificationError, require
 from tests.integration.spark_support import (
-    MAX_EVENT_BYTES,
+    MAX_M04_EVENT_BYTES,
     assert_sources,
     summarize_m04_event_log,
 )
@@ -70,7 +70,7 @@ def source_environment() -> tuple[Path, str, str | None]:
     return source, source_url, downloaded_at
 
 
-def hdfs_client(hdfs: HDFSVerification, *, metadata_limit: int = MAX_EVENT_BYTES) -> HdfsCliClient:
+def hdfs_client(hdfs: HDFSVerification, *, metadata_limit: int = MAX_M04_EVENT_BYTES) -> HdfsCliClient:
     return HdfsCliClient(
         command_prefix=(
             "docker",
@@ -296,12 +296,11 @@ def _validate_case_event_directories(
 
 _SMOKE_ACCESS_CODE = dedent("""\
     import json
-    import subprocess
     import sys
-    from pathlib import PurePosixPath
 
     from warehouse_bigdata.common.config import load_hdfs_config
     from warehouse_bigdata.common.hdfs_permissions import prepare_spark_run_permissions
+    from warehouse_bigdata.common.hdfs_namespace import validate_publication_namespace
     from warehouse_bigdata.common.spark_hdfs_client import SparkHdfsCliClient
     from warehouse_bigdata.common.spark_verification import source_fingerprint
 
@@ -328,23 +327,10 @@ _SMOKE_ACCESS_CODE = dedent("""\
         )
         if client.list_children(path):
             raise RuntimeError("Smoke event directory is not empty: " + path)
-    parents = set()
-    for output in json.loads(encoded_outputs):
-        parent = PurePosixPath(output).parent
-        while not client.exists(str(parent)):
-            parent = parent.parent
-        if not client.is_directory(str(parent)):
-            raise RuntimeError("Output ancestor is not a directory: " + str(parent))
-        parents.add(str(parent))
-    for parent in sorted(parents):
-        result = subprocess.run(
-            ["hdfs", "dfs", "-test", "-w", parent], capture_output=True, timeout=20
-        )
-        if result.returncode != 0:
-            raise RuntimeError("Spark cannot create output paths below " + parent)
+    namespace = validate_publication_namespace(client, config)
     print(json.dumps({
         "status": "READY", "hdfs_user": client.whoami(),
-        "datanodes": sorted(nodes), "writable_output_ancestors": sorted(parents),
+        "datanodes": sorted(nodes), "publication_namespace": namespace,
         "fingerprint": source_fingerprint(),
     }))
     """)
@@ -387,6 +373,16 @@ def _probe_smoke_access(hdfs, hdfs_config, event_directories, output_paths, prer
     return probe
 
 
+def _probe_publication_owner(hdfs):
+    """Prove the trusted publisher's exact-parent create/rename/delete prerequisites."""
+    result = hdfs.compose(
+        "--profile", "spark-submit", "run", "--rm", "--no-deps", "-T", "--pull", "never",
+        "--user", "1000:100", "--entrypoint", "/opt/warehouse-app/.venv/bin/python",
+        "spark-submit", "-m", "warehouse_bigdata.common.hdfs_namespace", "check", timeout=240,
+    )
+    return json.loads(result.stdout)
+
+
 def _smoke_preflight(hdfs, hdfs_config, client, *, token: str) -> dict[str, object]:
     """Fail on cheap readiness/path/permission checks before any M5 profiling or hashing."""
     require(hdfs_config.uri == HDFS_URI, "M04 smoke requires the real project HDFS endpoint.")
@@ -405,12 +401,13 @@ def _smoke_preflight(hdfs, hdfs_config, client, *, token: str) -> dict[str, obje
     ):
         require(not client.exists(path), f"Smoke run path already exists; refusing reuse: {path}")
     prerequisites = spark_prerequisites(hdfs)
+    publisher = _probe_publication_owner(hdfs)
     events = _case_event_directories(hdfs_config, label="smoke", token=token, include_retries=False)
     for path, run_id in events:
         _create_event_directory(client, hdfs_config, path, expected_pipeline_run_id=run_id)
         require(not client.list_children(path), f"Smoke event log directory is not empty: {path}")
     probe = _probe_smoke_access(hdfs, hdfs_config, events, output_paths + manifest_paths, prerequisites)
-    evidence = {"status": "READY", "event_directories": events, "driver": probe}
+    evidence = {"status": "READY", "event_directories": events, "driver": probe, "publisher": publisher}
     hdfs.evidence.write("m04-smoke-preflight", evidence)
     return evidence
 
@@ -489,7 +486,7 @@ def _collect_event_summary(
     name = event_path.rsplit("/", 1)[-1]
     require(re.fullmatch(r"app-\d{14}-\d+(?:\.inprogress)?", name), "Unexpected event log name.")
     stat = client.stat(event_path)
-    require(0 < stat.size_bytes <= MAX_EVENT_BYTES, "Event log is empty or exceeds the evidence bound.")
+    require(0 < stat.size_bytes <= MAX_M04_EVENT_BYTES, "Event log is empty or exceeds the evidence bound.")
     payload = client.read_remote(event_path)
     require(len(payload) == stat.size_bytes, "Event log changed during independent retrieval.")
     (output_dir / "event-log.jsonl").write_bytes(payload)

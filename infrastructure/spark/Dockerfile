@@ -35,6 +35,7 @@ ENV PATH="/opt/python/bin:${PATH}" \
     SPARK_PRINT_LAUNCH_COMMAND=1
 
 COPY --chown=185:185 healthcheck.py /opt/warehouse-spark/healthcheck.py
+COPY --chown=185:185 scratch.py /opt/warehouse-spark/scratch.py
 USER 185:185
 WORKDIR /tmp
-ENTRYPOINT ["/usr/bin/tini", "--", "/opt/spark/bin/spark-class"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/python/bin/python3.11", "/opt/warehouse-spark/scratch.py"]

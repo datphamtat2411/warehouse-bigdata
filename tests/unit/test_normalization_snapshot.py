@@ -386,6 +386,31 @@ def test_snapshot_persists_revalidates_promotes_and_reuses_without_duplicate_dat
     )
 
 
+def test_deferred_publication_keeps_validated_snapshot_in_run_staging(
+    spark, tmp_path, monkeypatch
+):
+    from warehouse_bigdata.processing import normalization_snapshot as module
+
+    hdfs = _LocalHdfs(tmp_path)
+    settings = HDFSConfig("hdfs://test-namenode:8020", BASE_PATH)
+    _configure_snapshot_inputs(
+        monkeypatch, hdfs, settings, _small_sales_frame(spark), _small_calendar_frame(spark)
+    )
+    requests = []
+    monkeypatch.setattr(module, "stage_publication", lambda *args, **kw: requests.append(args[2]))
+    result = run_normalization_snapshot(
+        spark, source_version=SOURCE_VERSION, source_snapshot_id="deferred-001",
+        pipeline_run_id="deferred-001", hdfs_config=settings, client=hdfs,
+        config=NormalizationSnapshotConfig(days_per_chunk=2, expected_series_count=2, expected_day_count=2),
+        defer_publication=True,
+    )
+    assert result.status == "STAGED", result.failure_details
+    assert hdfs.exists(render_normalization_candidate_path(result.staging_path))
+    assert not hdfs.exists(result.curated_path)
+    assert result.run_manifest_path is None
+    assert len(requests) == 1 and requests[0]["status"] == "VALIDATED"
+
+
 def test_retry_quarantines_interrupted_and_orphaned_staging_artifacts(
     spark: SparkSession,
     tmp_path: Path,

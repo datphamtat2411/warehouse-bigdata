@@ -27,6 +27,9 @@ from warehouse_bigdata.common.spark_verification import (
 )
 
 MAX_EVENT_BYTES = 16 * 1024 * 1024
+# M04 J03's completed 30-day log measured 26,143,896 bytes (2026-10-22).
+# Keep larger multi-query M04 evidence bounded independently of the T03 fixture.
+MAX_M04_EVENT_BYTES = 64 * 1024 * 1024
 MAX_DATA_BYTES = 1024 * 1024
 DRIVER_LABEL = "io.warehouse-bigdata.spark-submit.owner"
 SPARK_SERVICES = ("spark-master", *WORKERS)
@@ -272,8 +275,8 @@ def validate_active_cluster(snapshot: dict, application_id: str, app_name: str) 
     return placements
 
 
-def parse_events(payload: bytes) -> list[dict]:
-    require(0 < len(payload) <= MAX_EVENT_BYTES, "Empty or oversized Spark event-log evidence.")
+def parse_events(payload: bytes, *, max_bytes: int = MAX_EVENT_BYTES) -> list[dict]:
+    require(0 < len(payload) <= max_bytes, "Empty or oversized Spark event-log evidence.")
     require(payload.endswith(b"\n"), "Truncated Spark event-log evidence.")
     try:
         events = [json.loads(line) for line in payload.splitlines()]
@@ -584,6 +587,81 @@ def summarize_event_log(
     }
 
 
+def _m04_stage_info(info: object) -> dict:
+    require(isinstance(info, dict), "Malformed M04 stage info.")
+    require(
+        all(
+            type(info.get(field)) is int and info[field] >= 0
+            for field in ("Stage ID", "Stage Attempt ID", "Number of Tasks")
+        ),
+        "Invalid M04 stage identity or task count.",
+    )
+    parents = info.get("Parent IDs", [])
+    require(
+        isinstance(parents, list)
+        and all(type(parent) is int and parent >= 0 for parent in parents)
+        and len(parents) == len(set(parents))
+        and info["Stage ID"] not in parents,
+        "Invalid M04 stage parents.",
+    )
+    return info
+
+
+def _require_m04_job_stages(infos: dict[int, dict], submitted: dict, completed: dict) -> None:
+    """Check the DAG against listener evidence available when this job succeeds."""
+    for info in infos.values():
+        require(set(info.get("Parent IDs", [])) <= infos.keys(), "Incomplete M04 job stage DAG.")
+    remaining = set(infos)
+    while remaining:
+        ready = {
+            stage for stage in remaining
+            if not (set(infos[stage].get("Parent IDs", [])) & remaining)
+        }
+        require(ready, "Cyclic M04 job stage DAG.")
+        remaining -= ready
+
+    executed = set()
+    for stage, info in infos.items():
+        attempts = [key for key in submitted if key[0] == stage]
+        if attempts:
+            require(
+                all(key in completed for key in attempts),
+                "M04 submitted stage attempt is missing completion evidence.",
+            )
+            require(
+                not completed[max(attempts)]["Stage Info"].get("Failure Reason"),
+                "M04 submitted stage has no successful final completed attempt.",
+            )
+            require(
+                info.get("Parent IDs", [])
+                == submitted[max(attempts)]["Stage Info"].get("Parent IDs", []),
+                "M04 job snapshot and submitted stage parents disagree.",
+            )
+            executed.add(stage)
+        else:
+            # JobStart snapshots include unexecuted ancestors when Spark reuses
+            # shuffle/cache output. They must not claim an attempt actually ran.
+            require(
+                info["Stage Attempt ID"] == 0
+                and info.get("Submission Time") is None
+                and info.get("Completion Time") is None
+                and not info.get("Failure Reason"),
+                "M04 skipped stage snapshot contradicts listener execution history.",
+            )
+    require(executed, "M04 job does not have successful completed stages.")
+    ancestors = set(executed)
+    pending = list(executed)
+    while pending:
+        for parent in infos[pending.pop()].get("Parent IDs", []):
+            if parent not in ancestors:
+                ancestors.add(parent)
+                pending.append(parent)
+    require(
+        ancestors == infos.keys(),
+        "M04 skipped stages are not ancestors of successful executed stages.",
+    )
+
+
 def summarize_m04_event_log(
     payload: bytes,
     *,
@@ -592,7 +670,7 @@ def summarize_m04_event_log(
     require_both_workers: bool = True,
 ) -> dict:
     """Summarize real M04 task placement and resource metrics independently."""
-    events = parse_events(payload)
+    events = parse_events(payload, max_bytes=MAX_M04_EVENT_BYTES)
     application = next(
         event for event in events if event["Event"] == "SparkListenerApplicationStart"
     )
@@ -603,13 +681,15 @@ def summarize_m04_event_log(
     require(len(environments) == 1, "M04 event log lacks one effective environment record.")
     properties = environments[0].get("Spark Properties", {})
     require(
-        properties.get("spark.master", "").startswith("spark://")
+        isinstance(properties, dict)
+        and isinstance(properties.get("spark.master"), str)
+        and properties["spark.master"].startswith("spark://")
         and properties.get("spark.ui.enabled") == "false",
         "M04 event log did not prove Standalone/no-UI execution.",
     )
 
     executors = {}
-    jobs, job_ends = {}, {}
+    jobs, job_ends, job_stages = {}, {}, {}
     submitted, completed, tasks = {}, {}, {}
     for event in events:
         kind = event["Event"]
@@ -619,43 +699,129 @@ def summarize_m04_event_log(
             require(
                 isinstance(identifier, str)
                 and identifier not in executors
+                and isinstance(info, dict)
                 and info.get("Host") in WORKERS,
                 "Invalid or duplicate M04 executor placement.",
             )
             executors[identifier] = info
         elif kind == "SparkListenerJobStart":
             identifier = event.get("Job ID")
-            require(identifier not in jobs, "Duplicate M04 job start.")
+            require(
+                type(identifier) is int and identifier >= 0 and identifier not in jobs,
+                "Invalid or duplicate M04 job start.",
+            )
+            stage_ids, infos = event.get("Stage IDs"), event.get("Stage Infos")
+            require(
+                isinstance(stage_ids, list) and stage_ids
+                and all(type(stage) is int and stage >= 0 for stage in stage_ids)
+                and len(stage_ids) == len(set(stage_ids))
+                and isinstance(infos, list) and len(infos) == len(stage_ids),
+                "Malformed M04 job stage evidence.",
+            )
+            infos = [_m04_stage_info(info) for info in infos]
+            require(
+                {info["Stage ID"] for info in infos} == set(stage_ids),
+                "M04 job stage IDs and infos disagree.",
+            )
+            require(isinstance(event.get("Properties"), dict), "Malformed M04 job properties.")
+            group = event["Properties"].get("spark.jobGroup.id")
+            require(
+                isinstance(group, str) and group.startswith(f"{run_id}:"),
+                "M04 jobs are not attributable to the run-scoped job group.",
+            )
+            job_stages[identifier] = {info["Stage ID"]: info for info in infos}
             jobs[identifier] = event
         elif kind == "SparkListenerJobEnd":
             identifier = event.get("Job ID")
-            require(identifier not in job_ends, "Duplicate M04 job end.")
+            require(
+                type(identifier) is int and identifier in jobs and identifier not in job_ends,
+                "Invalid, orphaned or duplicate M04 job end.",
+            )
+            result = event.get("Job Result")
+            require(
+                isinstance(result, dict) and result.get("Result") == "JobSucceeded",
+                f"M04 Spark job did not succeed: {identifier}",
+            )
+            _require_m04_job_stages(job_stages[identifier], submitted, completed)
             job_ends[identifier] = event
         elif kind == "SparkListenerStageSubmitted":
-            info = event.get("Stage Info", {})
-            key = info.get("Stage ID"), info.get("Stage Attempt ID")
+            info = _m04_stage_info(event.get("Stage Info"))
+            key = info["Stage ID"], info["Stage Attempt ID"]
             require(key not in submitted, "Duplicate M04 stage submission.")
+            previous = [attempt for attempt in submitted if attempt[0] == key[0]]
+            require(
+                all(attempt in completed and attempt[1] < key[1] for attempt in previous),
+                "M04 stage retry precedes prior attempt completion or has invalid attempt order.",
+            )
+            require(
+                type(info.get("Submission Time")) is int and info["Submission Time"] >= 0
+                and isinstance(event.get("Properties"), dict),
+                "Invalid M04 stage submission evidence.",
+            )
+            group = event["Properties"].get("spark.jobGroup.id")
+            require(
+                isinstance(group, str)
+                and any(
+                    identifier not in job_ends and key[0] in job_stages[identifier]
+                    and job["Properties"]["spark.jobGroup.id"] == group
+                    for identifier, job in jobs.items()
+                ),
+                "M04 submitted stage has no active run-scoped job attribution.",
+            )
             submitted[key] = event
         elif kind == "SparkListenerStageCompleted":
-            info = event.get("Stage Info", {})
-            key = info.get("Stage ID"), info.get("Stage Attempt ID")
+            info = _m04_stage_info(event.get("Stage Info"))
+            key = info["Stage ID"], info["Stage Attempt ID"]
             require(key not in completed, "Duplicate M04 stage completion.")
+            require(key in submitted, "M04 stage completion has no submitted stage attempt.")
+            start = submitted[key]["Stage Info"]
+            require(
+                info.get("Submission Time") == start["Submission Time"]
+                and type(info.get("Completion Time")) is int
+                and info["Completion Time"] >= start["Submission Time"]
+                and info["Number of Tasks"] == start["Number of Tasks"]
+                and info.get("Parent IDs", []) == start.get("Parent IDs", [])
+                and (info.get("Failure Reason") is None
+                     or isinstance(info["Failure Reason"], str)),
+                "Inconsistent M04 stage completion history.",
+            )
             completed[key] = event
-        elif kind == "SparkListenerTaskEnd":
-            info = event.get("Task Info", {})
+        elif kind in ("SparkListenerTaskStart", "SparkListenerTaskEnd"):
+            key = event.get("Stage ID"), event.get("Stage Attempt ID")
+            require(
+                all(type(value) is int and value >= 0 for value in key) and key in submitted,
+                "M04 task has no submitted stage attempt.",
+            )
+            info = event.get("Task Info")
+            require(isinstance(info, dict), "Malformed M04 task info.")
             identifier = info.get("Task ID")
+            require(type(identifier) is int and identifier >= 0, "Invalid M04 task identity.")
+            if kind != "SparkListenerTaskEnd":
+                continue
             require(identifier not in tasks, "Duplicate M04 task completion.")
+            require(
+                all(
+                    type(info.get(field)) is int and info[field] >= 0
+                    for field in ("Partition ID", "Attempt", "Launch Time", "Finish Time")
+                )
+                and info["Finish Time"] >= info["Launch Time"]
+                and type(info.get("Failed")) is bool and type(info.get("Killed")) is bool
+                and isinstance(info.get("Executor ID"), str)
+                and isinstance(info.get("Host"), str)
+                and isinstance(event.get("Task End Reason"), dict)
+                and isinstance(event["Task End Reason"].get("Reason"), str),
+                "Invalid M04 task completion evidence.",
+            )
             tasks[identifier] = event
 
     require(jobs and jobs.keys() == job_ends.keys(), "M04 jobs are not all completed.")
-    job_groups = {
-        job.get("Properties", {}).get("spark.jobGroup.id") for job in jobs.values()
-    }
     require(
-        job_groups and all(
-            isinstance(group, str) and group.startswith(f"{run_id}:") for group in job_groups
-        ),
-        "M04 jobs are not attributable to the run-scoped job group.",
+        submitted and submitted.keys() == completed.keys(),
+        "M04 submitted stage attempts are missing completion evidence.",
+    )
+    require(
+        {key[0] for key in submitted} <= set().union(*(set(infos) for infos in job_stages.values())),
+        "M04 submitted stages have no job attribution.",
     )
     successful_stages = {
         key
@@ -663,16 +829,12 @@ def summarize_m04_event_log(
         if not event.get("Stage Info", {}).get("Failure Reason")
         and type(event.get("Stage Info", {}).get("Completion Time")) is int
     }
-    for identifier, job in jobs.items():
+    for stage in {key[0] for key in submitted}:
+        # A later failed attempt must not be hidden by an earlier success.
+        final = max(key for key in submitted if key[0] == stage)
         require(
-            job_ends[identifier].get("Job Result", {}).get("Result") == "JobSucceeded",
-            f"M04 Spark job did not succeed: {identifier}",
-        )
-        stage_ids = job.get("Stage IDs", [])
-        require(
-            stage_ids
-            and all(any(stage_key[0] == stage_id for stage_key in successful_stages) for stage_id in stage_ids),
-            "M04 job does not have successful completed stages.",
+            final in successful_stages,
+            "M04 submitted stage has no successful final completed attempt.",
         )
 
     successes = []
@@ -704,6 +866,13 @@ def summarize_m04_event_log(
             "M04 task has no matching executor placement.",
         )
         metrics = record["metrics"]
+        require(
+            isinstance(metrics, dict)
+            and all(isinstance(metrics.get(section), dict) for section in (
+                "Input Metrics", "Shuffle Read Metrics", "Shuffle Write Metrics",
+            )),
+            "M04 successful task metrics are incomplete or invalid.",
+        )
         required_metrics = [
             metrics.get(key)
             for key in (
@@ -731,6 +900,15 @@ def summarize_m04_event_log(
     if require_both_workers:
         require(hosts == set(WORKERS), "M04 successful tasks did not execute on both Workers.")
     require(successes, "M04 event log has no successful task evidence.")
+    for key in successful_stages:
+        partitions = {
+            task["partition_id"] for task in successes
+            if (task["stage_id"], task["stage_attempt"]) == key
+        }
+        require(
+            len(partitions) == completed[key]["Stage Info"]["Number of Tasks"],
+            "M04 completed stage is missing successful task evidence.",
+        )
 
     executor_metrics = {}
     for identifier, executor in executors.items():

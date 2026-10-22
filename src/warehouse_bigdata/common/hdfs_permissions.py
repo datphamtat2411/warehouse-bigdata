@@ -108,7 +108,7 @@ def _require_run_owned_path(path: str, staging_path: str) -> None:
 
 def _require_spark_identity(client: Any) -> None:
     try:
-        identity = client.whoami().strip()
+        identity = client.effective_user().strip()
     except Exception as error:
         raise HdfsPermissionError(f"cannot establish HDFS Spark identity: {error}") from error
     if identity != SPARK_HDFS_USER:
@@ -169,7 +169,8 @@ def _verify_effective_write_access(client: Any, path: str) -> None:
         client.upload_bytes(b"", probe)
     except Exception as error:
         raise HdfsPermissionError(
-            f"effective Spark write access is unavailable for {path}: {error}"
+            f"effective Spark write access is unavailable for {path}; "
+            f"identity={SPARK_HDFS_USER} requires rwx: {error}"
         ) from error
     try:
         client.remove(probe)

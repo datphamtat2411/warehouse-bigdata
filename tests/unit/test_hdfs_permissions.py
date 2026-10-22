@@ -64,6 +64,8 @@ class FakeAclHdfs:
         self.calls.append(("whoami",))
         return self.identity
 
+    effective_user = whoami
+
     def upload_bytes(self, payload: bytes, path: str) -> None:
         self.calls.append(("upload_bytes", path, payload))
         if self.deny_probe or self.identity != "spark":

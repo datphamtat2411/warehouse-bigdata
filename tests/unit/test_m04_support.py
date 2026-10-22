@@ -21,6 +21,30 @@ from warehouse_bigdata.common.spark_hdfs_client import SparkHdfsCliClient
 HDFS_CONFIG = HDFSConfig("hdfs://hdfs-namenode:8020", "/data/warehouse")
 
 
+def test_m04_event_collection_accepts_measured_scale_with_its_own_finite_bound(tmp_path, monkeypatch):
+    from tests.integration import spark_support
+
+    payload = b" " * (spark_support.MAX_EVENT_BYTES + 1) + b'{"Event":"fixture"}\n'
+    path = "/events/app-20261022134732-0002"
+    client = SimpleNamespace(
+        list_children=lambda directory: (path,),
+        stat=lambda remote: SimpleNamespace(size_bytes=len(payload)),
+        read_remote=lambda remote: payload,
+    )
+    monkeypatch.setattr(m04_support, "summarize_m04_event_log", lambda data, **kwargs: {})
+    result = m04_support._collect_event_summary(
+        client, "/events", run_id="run", application_name="job", output_dir=tmp_path
+    )
+    assert result["event_log"]["bytes"] == len(payload)
+    assert (tmp_path / "event-log.jsonl").read_bytes() == payload
+    client.stat = lambda remote: SimpleNamespace(size_bytes=spark_support.MAX_M04_EVENT_BYTES + 1)
+    client.read_remote = lambda remote: pytest.fail("oversized evidence must fail before retrieval")
+    with pytest.raises(VerificationError, match="evidence bound"):
+        m04_support._collect_event_summary(
+            client, "/events", run_id="run", application_name="job", output_dir=tmp_path
+        )
+
+
 class _DirectoryClient:
     def __init__(self) -> None:
         self.directories = {"/data/warehouse", "/data/warehouse/staging"}

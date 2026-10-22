@@ -531,6 +531,14 @@ def test_compose_keeps_private_exec_within_existing_tmpfs_budgets() -> None:
         assert "SPARK_WORKER_HOST:" in worker and "SPARK_WORKER_OPTS:" in worker
     assert f"JAVA_TOOL_OPTIONS: -Djava.io.tmpdir={native}" in driver
     assert "WAREHOUSE_HDFS_BASE_PATH: /data/warehouse" in driver
+    for index, worker in enumerate((worker1, worker2), 1):
+        assert f"source: ../artifacts/spark-scratch/worker-{index}/mount" in worker
+        assert "target: /var/lib/warehouse-spark" in worker
+        assert "create_host_path: false" in worker
+        assert "SPARK_LOCAL_DIRS: /var/lib/warehouse-spark/local" in worker
+        assert "SPARK_WORKER_DIR: /var/lib/warehouse-spark/work" in worker
+        assert "- /var/lib/warehouse-spark/work" in worker
+    assert "-Dspark.worker.cleanup.enabled=false" in worker1
 
 
 @pytest.mark.parametrize("failed_worker", ["", "spark-worker-1", "spark-worker-2"])

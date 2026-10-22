@@ -61,6 +61,7 @@ def test_run_jobs_prepare_acl_before_spark_context(
     )
     monkeypatch.setitem(sys.modules, "pyspark", ModuleType("pyspark"))
     monkeypatch.setattr(module, "SparkHdfsCliClient", lambda: object())
+    monkeypatch.setattr(module, "validate_publication_namespace", lambda *args: None)
     monkeypatch.setattr(
         module,
         "prepare_spark_run_permissions",

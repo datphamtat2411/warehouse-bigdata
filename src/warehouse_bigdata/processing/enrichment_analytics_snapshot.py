@@ -32,6 +32,7 @@ from warehouse_bigdata.common.hdfs_paths import (
     validate_source_snapshot_id,
     validate_source_version,
 )
+from warehouse_bigdata.common.hdfs_publication import stage_publication
 from warehouse_bigdata.common.hdfs_runtime import create_hdfs_cli_client
 from warehouse_bigdata.contracts.datasets import (
     CATEGORY_MONTHLY_SALES,
@@ -262,6 +263,7 @@ def run_enrichment_analytics_snapshot(
     spark_master: str | None = None,
     client: Any | None = None,
     now: Callable[[], str] | None = None,
+    defer_publication: bool = False,
 ) -> EnrichmentAnalyticsSnapshotResult:
     """Enrich one validated SALES_DAILY snapshot and stage immutable analytics candidates."""
     validate_enrichment_analytics_identifiers(
@@ -438,12 +440,11 @@ def run_enrichment_analytics_snapshot(
         timings["category_aggregation_seconds"] = time.perf_counter() - phase_started
 
         phase_started = time.perf_counter()
-        for name in _OUTPUT_NAMES:
-            _promote_validated_output(
-                hdfs,
-                candidate_paths[name],
-                curated_output_paths[name],
-            )
+        if not defer_publication:
+            for name in _OUTPUT_NAMES:
+                _promote_validated_output(
+                    hdfs, candidate_paths[name], curated_output_paths[name],
+                )
         timings["promotion_seconds"] = time.perf_counter() - phase_started
 
         phase_started = time.perf_counter()
@@ -502,7 +503,9 @@ def run_enrichment_analytics_snapshot(
 
         persisted_enriched = _read_parquet(
             spark,
-            _hdfs_uri(hdfs_config.uri, curated_path),
+            _hdfs_uri(hdfs_config.uri, (
+                curated_path if _exists(hdfs, curated_path) else candidate_paths["sales_enriched"]
+            )),
         ).select(*SALES_ENRICHED.field_names)
         enriched_quality = _basic_quality_values(
             persisted_enriched,
@@ -593,12 +596,14 @@ def run_enrichment_analytics_snapshot(
             completed_at=timestamp(),
             spark_master=spark_master or spark.sparkContext.master,
         )
-        manifest_path = _publish_or_reuse_run_manifest(
-            hdfs,
-            hdfs_config,
-            manifest,
-            integrity=raw_snapshot.integrity,
-        )
+        if defer_publication:
+            stage_publication(hdfs, hdfs_config, manifest, result_status=result_status)
+            manifest_path = None
+            result_status = "STAGED"
+        else:
+            manifest_path = _publish_or_reuse_run_manifest(
+                hdfs, hdfs_config, manifest, integrity=raw_snapshot.integrity,
+            )
         timings["total_seconds"] = time.perf_counter() - started_at
         return EnrichmentAnalyticsSnapshotResult(
             status=result_status,

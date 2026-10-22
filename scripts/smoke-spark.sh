@@ -53,7 +53,8 @@ for container in containers:
     assert config["Labels"]["com.docker.compose.project"] == "warehouse-bigdata"
     assert config["Image"] == "warehouse-bigdata-spark:3.5.7-python3.11.17"
     assert config["Hostname"] == service and config["User"] == "185:185"
-    assert config["Entrypoint"] == ["/usr/bin/tini", "--", "/opt/spark/bin/spark-class"]
+    assert config["Entrypoint"] == ["/usr/bin/tini", "--", "/opt/python/bin/python3.11",
+                                    "/opt/warehouse-spark/scratch.py"]
     assert container["State"]["Running"] and not container["State"]["OOMKilled"]
     assert host["ReadonlyRootfs"] and host["Memory"] == (512 if master else 2048) * 1024**2
     assert host["NanoCpus"] == (500_000_000 if master else 1_000_000_000)
@@ -77,9 +78,14 @@ for container in containers:
         assert env["JAVA_TOOL_OPTIONS"] == f"-Djava.io.tmpdir={native}"
         assert env["SPARK_DAEMON_JAVA_OPTS"] == f"-Xms128m -Djava.io.tmpdir={native}"
     mounts = container["Mounts"]
-    assert len(mounts) == 2 and all(m["Type"] == "bind" and not m["RW"] for m in mounts)
+    assert len(mounts) == (2 if master else 3)
+    if not master:
+        disk = next(m for m in mounts if m["Destination"] == "/var/lib/warehouse-spark")
+        assert disk["Type"] == "bind" and disk["RW"]
+        assert disk["Source"].endswith(f"/artifacts/spark-scratch/worker-{service[-1]}/mount")
     for name in ("core-site.xml", "hdfs-site.xml"):
         mount = next(m for m in mounts if m["Destination"] == f"/opt/hadoop/etc/hadoop/{name}")
+        assert mount["Type"] == "bind" and not mount["RW"]
         assert mount["Source"].endswith(f"/infrastructure/hadoop/{name}")
     assert set(container["NetworkSettings"]["Networks"]) == {"warehouse-bigdata"}
     bindings = {p: value for p, value in container["NetworkSettings"]["Ports"].items() if value}
@@ -108,8 +114,8 @@ assert os.environ["PYSPARK_PYTHON"] == "/opt/python/bin/python3.11"
 assert os.environ["HADOOP_CONF_DIR"] == "/opt/hadoop/etc/hadoop"
 assert os.environ["SPARK_DAEMON_MEMORY"] == "256m"
 for name, value in {
-    "SPARK_WORKER_DIR": "/tmp/warehouse-spark/work",
-    "SPARK_LOCAL_DIRS": "/tmp/warehouse-spark/local",
+    "SPARK_WORKER_DIR": ("/tmp/warehouse-spark" if master else "/var/lib/warehouse-spark") + "/work",
+    "SPARK_LOCAL_DIRS": ("/tmp/warehouse-spark" if master else "/var/lib/warehouse-spark") + "/local",
     "SPARK_LOG_DIR": "/tmp/warehouse-spark/logs",
     "SPARK_PID_DIR": "/tmp/warehouse-spark",
 }.items():
@@ -151,12 +157,12 @@ if master:
 else:
     assert os.environ["JAVA_TOOL_OPTIONS"] == f"-Djava.io.tmpdir={native}"
     assert os.environ["SPARK_DAEMON_JAVA_OPTS"] == f"-Xms128m -Djava.io.tmpdir={native}"
-    for option in (
-        "-Dspark.worker.cleanup.enabled=true", "-Dspark.worker.cleanup.interval=300",
-        "-Dspark.worker.cleanup.appDataTtl=3600",
-    ):
+    for option in ("-Dspark.worker.cleanup.enabled=false",):
         assert option in command, option
-    assert Path("/tmp/warehouse-spark/work").is_dir()
+    assert Path("/var/lib/warehouse-spark/work").is_dir()
+    import runpy
+    disk = runpy.run_path("/opt/warehouse-spark/scratch.py")["check_scratch"]()
+    print(f"{service}: disk scratch effective write/read/remove passed: {disk}")
 print(f"{service}: JVM flags: {command}")
 
 expected_memory = (512 if master else 2048) * 1024**2

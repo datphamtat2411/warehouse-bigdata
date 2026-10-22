@@ -27,6 +27,28 @@ if [[ $# -lt 2 || $1 != -- || -z $2 ]]; then
     usage >&2
     exit 2
 fi
+publication_run_id=
+case $2 in
+    warehouse_bigdata/jobs/normalize_sales_daily.py|warehouse_bigdata/jobs/enrich_analytics.py)
+        shift 2
+        while [[ $# -gt 0 ]]; do
+            case $1 in
+                --pipeline-run-id)
+                    [[ $# -ge 2 && -z $publication_run_id ]] || { usage >&2; exit 2; }
+                    publication_run_id=$2
+                    shift 2 ;;
+                --pipeline-run-id=*)
+                    [[ -z $publication_run_id ]] || { usage >&2; exit 2; }
+                    publication_run_id=${1#*=}
+                    shift ;;
+                *) shift ;;
+            esac
+        done
+        [[ $publication_run_id =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || {
+            printf 'M04 publication requires one safe --pipeline-run-id.\n' >&2; exit 2;
+        }
+        ;;
+esac
 
 image=warehouse-bigdata-spark-submit:3.5.7-python3.11.17
 compose=(docker compose -f "$repository/infrastructure/compose.yaml" --profile spark-submit)
@@ -50,6 +72,10 @@ else
     exit "$result"
 fi
 bash "$repository/scripts/spark-cluster.sh" check
+for worker in spark-worker-1 spark-worker-2; do
+    timeout --kill-after=2s 15 "${compose[@]}" exec -T --interactive=false "$worker" \
+        /opt/python/bin/python3.11 /opt/warehouse-spark/scratch.py preflight </dev/null
+done
 
 token=$("$od_executable" -An -N16 -tx1 /dev/urandom)
 token=${token//[[:space:]]/}
@@ -58,18 +84,20 @@ owner_label=io.warehouse-bigdata.spark-submit.owner
 run_pid=
 cancelled=0
 
+# shellcheck disable=SC2329 # Called by finish through the EXIT trap.
 cleanup_driver() {
-    local owner
+    local owner name=${1:-$driver}
     owner=$(timeout 5 docker inspect --type container --format \
-        '{{ index .Config.Labels "io.warehouse-bigdata.spark-submit.owner" }}' "$driver" 2>/dev/null) || return 1
+        '{{ index .Config.Labels "io.warehouse-bigdata.spark-submit.owner" }}' "$name" 2>/dev/null) || return 1
     [[ $owner == "$token" ]] || return 0
     if (( result != 0 )); then
-        timeout 5 docker logs --tail 100 --timestamps -- "$driver" >&2 || true
+        timeout 5 docker logs --tail 100 --timestamps -- "$name" >&2 || true
     fi
-    timeout 15 docker stop --timeout 10 "$driver" >/dev/null 2>&1 || true
-    timeout 5 docker rm --force "$driver" >/dev/null 2>&1 || true
+    timeout 15 docker stop --timeout 10 "$name" >/dev/null 2>&1 || true
+    timeout 5 docker rm --force "$name" >/dev/null 2>&1 || true
 }
 
+# shellcheck disable=SC2329 # Registered as the EXIT trap below.
 finish() {
     result=$?
     trap - EXIT
@@ -93,11 +121,27 @@ finish() {
         (( cancelled )) || break
         sleep 0.2
     done
+    if [[ -n $publication_run_id ]]; then
+        cleanup_driver "$driver-publish" || true
+    fi
     exit "$result"
 }
 trap finish EXIT
 trap 'cancelled=1; exit 130' INT
 trap 'cancelled=1; exit 143' TERM
+
+publish_m04() {
+    timeout --foreground --kill-after=15s 240s "${compose[@]}" run --rm --no-deps -T --pull never \
+        --name "$driver-publish" --label "$owner_label=$token" --user 1000:100 \
+        --entrypoint /opt/warehouse-app/.venv/bin/python spark-submit \
+        -m warehouse_bigdata.common.hdfs_publication "$@" --pipeline-run-id "$publication_run_id" &
+    run_pid=$!
+    wait "$run_pid"
+}
+# Recover a previously claimed candidate before Spark attempts to reconstruct staging.
+if [[ -n $publication_run_id ]]; then
+    publish_m04 --recover
+fi
 
 "${compose[@]}" run --rm --no-deps -T --pull never \
     --name "$driver" --label "$owner_label=$token" \
@@ -105,6 +149,9 @@ trap 'cancelled=1; exit 143' TERM
     spark-submit "${arguments[@]}" &
 run_pid=$!
 if wait "$run_pid"; then
+    if [[ -n $publication_run_id ]]; then
+        publish_m04
+    fi
     exit 0
 else
     exit "$?"

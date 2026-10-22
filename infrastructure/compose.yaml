@@ -191,18 +191,26 @@ services:
       - --memory
       - 1024m
       - --work-dir
-      - /tmp/warehouse-spark/work
+      - /var/lib/warehouse-spark/work
       - spark://spark-master:7077
     environment:
       SPARK_WORKER_HOST: spark-worker-1
+      SPARK_LOCAL_DIRS: /var/lib/warehouse-spark/local
+      SPARK_WORKER_DIR: /var/lib/warehouse-spark/work
       JAVA_TOOL_OPTIONS: -Djava.io.tmpdir=/opt/warehouse-spark/native
       SPARK_DAEMON_JAVA_OPTS: -Xms128m -Djava.io.tmpdir=/opt/warehouse-spark/native
       SPARK_WORKER_OPTS: &spark-worker-options >-
-        -Dspark.worker.cleanup.enabled=true
-        -Dspark.worker.cleanup.interval=300
-        -Dspark.worker.cleanup.appDataTtl=3600
+        -Dspark.worker.cleanup.enabled=false
     cpus: 1.0
     mem_limit: 2g
+    volumes:
+      - *core-config
+      - *hdfs-config
+      - type: bind
+        source: ../artifacts/spark-scratch/worker-1/mount
+        target: /var/lib/warehouse-spark
+        bind:
+          create_host_path: false
     tmpfs: &spark-worker-scratch
       - /tmp:rw,nosuid,nodev,noexec,size=234881024,mode=1777
       - /opt/warehouse-spark/native:rw,exec,nosuid,nodev,size=33554432,uid=185,gid=185,mode=0700
@@ -233,15 +241,25 @@ services:
       - --memory
       - 1024m
       - --work-dir
-      - /tmp/warehouse-spark/work
+      - /var/lib/warehouse-spark/work
       - spark://spark-master:7077
     environment:
       SPARK_WORKER_HOST: spark-worker-2
+      SPARK_LOCAL_DIRS: /var/lib/warehouse-spark/local
+      SPARK_WORKER_DIR: /var/lib/warehouse-spark/work
       JAVA_TOOL_OPTIONS: -Djava.io.tmpdir=/opt/warehouse-spark/native
       SPARK_DAEMON_JAVA_OPTS: -Xms128m -Djava.io.tmpdir=/opt/warehouse-spark/native
       SPARK_WORKER_OPTS: *spark-worker-options
     cpus: 1.0
     mem_limit: 2g
+    volumes:
+      - *core-config
+      - *hdfs-config
+      - type: bind
+        source: ../artifacts/spark-scratch/worker-2/mount
+        target: /var/lib/warehouse-spark
+        bind:
+          create_host_path: false
     tmpfs: *spark-worker-scratch
     expose: ["7078", "8081"]
     depends_on: *spark-worker-dependencies

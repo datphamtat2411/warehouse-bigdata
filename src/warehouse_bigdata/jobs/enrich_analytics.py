@@ -6,6 +6,7 @@ import argparse
 import json
 
 from warehouse_bigdata.common.config import load_hdfs_config, load_spark_config
+from warehouse_bigdata.common.hdfs_namespace import validate_publication_namespace
 from warehouse_bigdata.common.hdfs_permissions import prepare_spark_run_permissions
 from warehouse_bigdata.common.spark_hdfs_client import SparkHdfsCliClient
 from warehouse_bigdata.processing.enrichment_analytics_snapshot import (
@@ -27,6 +28,7 @@ def run_enrich_analytics(
     hdfs_config = load_hdfs_config({"WAREHOUSE_HDFS_URI": hdfs_uri})
     spark_config = load_spark_config({"WAREHOUSE_SPARK_MASTER_URL": spark_master})
     hdfs = SparkHdfsCliClient()
+    validate_publication_namespace(hdfs, hdfs_config)
     prepare_spark_run_permissions(
         hdfs,
         hdfs_config,
@@ -61,6 +63,7 @@ def run_enrich_analytics(
             hdfs_config=hdfs_config,
             spark_master=spark_config.master_url,
             client=hdfs,
+            defer_publication=True,
         )
     finally:
         spark.stop()
@@ -83,7 +86,7 @@ def main() -> None:
         spark_master=args.spark_master,
         event_log_dir=args.event_log_dir,
     )
-    print(f"status={result.status}")
+    print(f"candidate_status={result.status}")
     print(f"source_version={result.source_version}")
     print(f"source_snapshot_id={result.source_snapshot_id}")
     print(f"pipeline_run_id={result.pipeline_run_id}")
@@ -100,7 +103,7 @@ def main() -> None:
     print(f"timings={json.dumps(dict(result.timings), sort_keys=True, separators=(',', ':'))}")
     for detail in result.failure_details:
         print(f"failure={detail}")
-    raise SystemExit(0 if result.status in {"VALIDATED", "REUSED"} else 1)
+    raise SystemExit(0 if result.status in {"STAGED", "REUSED"} else 1)
 
 
 if __name__ == "__main__":

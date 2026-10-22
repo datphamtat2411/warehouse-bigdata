@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -245,6 +244,7 @@ def test_preflight_checks_paths_readiness_acl_and_empty_events_before_source(
         lambda: SimpleNamespace(master_url="spark://spark-master:7077"),
     )
     monkeypatch.setattr(support, "spark_prerequisites", lambda h: calls.append("readiness"))
+    monkeypatch.setattr(support, "_probe_publication_owner", lambda h: calls.append("publisher"))
     monkeypatch.setattr(
         support, "_create_event_directory", lambda *args, **kwargs: calls.append("acl")
     )
@@ -270,14 +270,19 @@ def test_preflight_checks_paths_readiness_acl_and_empty_events_before_source(
         assert calls.index("readiness") < calls.index("acl") < calls.index("effective-access")
 
 
-@pytest.mark.parametrize("writable", [False, True])
-def test_driver_probe_checks_effective_spark_acl_and_output_ancestors_without_spark(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], writable: bool
+@pytest.mark.parametrize("ready", [False, True])
+def test_driver_probe_checks_exact_publication_namespace_without_ancestor_climbing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], ready: bool
 ) -> None:
-    from warehouse_bigdata.common import config, hdfs_permissions, spark_verification
+    from warehouse_bigdata.common import (
+        config,
+        hdfs_namespace,
+        hdfs_permissions,
+        spark_verification,
+    )
 
     permissions = []
-    commands = []
+    namespaces = []
     events = support._case_event_directories(
         CONFIG, label="smoke", token=TOKEN, include_retries=False
     )
@@ -292,8 +297,6 @@ def test_driver_probe_checks_effective_spark_acl_and_output_ancestors_without_sp
         safe_mode=lambda: "Safe mode is OFF",
         report=lambda: {"hdfs-datanode-1": {}, "hdfs-datanode-2": {}},
         list_children=lambda path: (),
-        exists=lambda path: path == CONFIG.base_path,
-        is_directory=lambda path: True,
         whoami=lambda: "spark",
     )
     monkeypatch.setattr(config, "load_hdfs_config", lambda: CONFIG)
@@ -307,13 +310,14 @@ def test_driver_probe_checks_effective_spark_acl_and_output_ancestors_without_sp
     from warehouse_bigdata.common import spark_hdfs_client
 
     monkeypatch.setattr(spark_hdfs_client, "SparkHdfsCliClient", lambda: client)
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda args, **kw: (
-            commands.append((args, kw)) or SimpleNamespace(returncode=0 if writable else 1)
-        ),
-    )
+    def namespace(actual_client, actual_config):
+        assert actual_client is client and actual_config == CONFIG
+        namespaces.append(actual_config)
+        if not ready:
+            raise RuntimeError("/data/warehouse/curated/sales_daily: identity=spark requires r-x")
+        return {"status": "READY"}
+
+    monkeypatch.setattr(hdfs_namespace, "validate_publication_namespace", namespace)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -326,18 +330,16 @@ def test_driver_probe_checks_effective_spark_acl_and_output_ancestors_without_sp
         ],
     )
 
-    if writable:
+    if ready:
         exec(compile(support._SMOKE_ACCESS_CODE, "m04-smoke-probe", "exec"), {})
         assert json.loads(capsys.readouterr().out)["hdfs_user"] == "spark"
     else:
-        with pytest.raises(RuntimeError, match="cannot create output paths"):
+        with pytest.raises(RuntimeError, match="sales_daily.*spark.*r-x"):
             exec(compile(support._SMOKE_ACCESS_CODE, "m04-smoke-probe", "exec"), {})
     assert permissions == [
         {"pipeline_run_id": run_id, "event_log_dir": CONFIG.uri + path} for path, run_id in events
     ]
-    assert commands == [
-        (["hdfs", "dfs", "-test", "-w", CONFIG.base_path], {"capture_output": True, "timeout": 20})
-    ]
+    assert namespaces == [CONFIG]
 
 
 @pytest.mark.parametrize("verify_recovery", [False, True])

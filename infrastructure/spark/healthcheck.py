@@ -2,9 +2,11 @@
 
 import json
 import os
+import runpy
 import socket
 import sys
 import time
+from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
 
@@ -152,12 +154,17 @@ def main(arguments: list[str] | None = None) -> int:
         if mode == "master":
             check_master()
         elif mode == "worker":
-            check_worker(os.environ.get("SPARK_WORKER_HOST", ""))
+            scratch = runpy.run_path(str(Path(__file__).with_name("scratch.py")))
+            scratch["check_scratch"](scratch["HEALTH_FREE"])
+            deadline = time.monotonic() + PROBE_SECONDS
+            master = check_master(deadline)
+            local = check_worker(os.environ.get("SPARK_WORKER_HOST", ""), master, deadline)
+            scratch["cleanup_work"](local, master)
         elif mode == "ready":
             check_ready()
         else:
             wait_ready(int(extra[0]) if extra else 180)
-    except (ProbeError, ValueError) as error:
+    except (RuntimeError, OSError, ValueError) as error:
         print(f"Spark probe failed: {error}", file=sys.stderr)
         return 1
     print(f"Spark {mode} probe passed")

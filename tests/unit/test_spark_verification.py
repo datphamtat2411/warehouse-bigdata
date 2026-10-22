@@ -411,6 +411,22 @@ def summarize(log=None, **overrides) -> dict:
     )
 
 
+def test_m04_event_limit_is_separate_and_preserves_complete_event_validation() -> None:
+    log = m04_events()
+    payload = b" " * support.MAX_EVENT_BYTES + b"\n".join(json.dumps(e).encode() for e in log) + b"\n"
+    summary = support.summarize_m04_event_log(
+        payload, run_id=RUN, application_name=f"warehouse-spark-hdfs-{RUN}"
+    )
+    assert summary["successful_tasks"] > 0
+    with pytest.raises(VerificationError, match="oversized"):
+        support.parse_events(payload)
+    for invalid in (b"", payload[:-1], b"{bad}\n", b" " * (support.MAX_M04_EVENT_BYTES + 1)):
+        with pytest.raises(VerificationError):
+            support.summarize_m04_event_log(
+                invalid, run_id=RUN, application_name=f"warehouse-spark-hdfs-{RUN}"
+            )
+
+
 def test_event_log_correlates_successful_tasks_workers_groups_and_metrics() -> None:
     summary = summarize()
     assert summary["application_id"] == APP
@@ -446,6 +462,237 @@ def test_m04_smoke_requires_successful_work_on_both_workers(idle_second_worker) 
     else:
         summary = support.summarize_m04_event_log(payload, **arguments)
         assert all(summary["workers"][host]["successful_tasks"] > 0 for host in HOSTS)
+
+
+def m04_events() -> list[dict]:
+    # JobStart contains DAG snapshots, not proof that these stages were submitted.
+    log = [copy.deepcopy(event) for event in events()]
+    for event in log:
+        if "Stage Info" in event:
+            event["Stage Info"]["Parent IDs"] = []
+        if event["Event"] == "SparkListenerStageSubmitted":
+            event["Stage Info"].pop("Completion Time")
+        if event["Event"] == "SparkListenerJobStart":
+            for info in event["Stage Infos"]:
+                info.pop("Submission Time")
+                info.pop("Completion Time")
+                info["Parent IDs"] = []
+    return log
+
+
+def summarize_m04(log: list[dict], **overrides) -> dict:
+    return support.summarize_m04_event_log(
+        b"\n".join(json.dumps(event).encode() for event in log) + b"\n",
+        **{"run_id": RUN, "application_name": f"warehouse-spark-hdfs-{RUN}", **overrides},
+    )
+
+
+def add_skipped_m04_stage(log: list[dict]) -> dict:
+    job = next(event for event in log if event["Event"] == "SparkListenerJobStart")
+    skipped = {
+        "Stage ID": 99, "Stage Attempt ID": 0, "Number of Tasks": 2, "Parent IDs": [],
+    }
+    job["Stage IDs"].insert(0, 99)
+    job["Stage Infos"].insert(0, skipped)
+    job["Stage Infos"][1]["Parent IDs"] = [99]
+    for event in log:
+        if "Stage Info" in event and event["Stage Info"]["Stage ID"] == 0:
+            event["Stage Info"]["Parent IDs"] = [99]
+    return skipped
+
+
+def retried_m04_events() -> list[dict]:
+    log = m04_events()
+    stage_events = [
+        event for event in log
+        if event["Event"] in (
+            "SparkListenerStageSubmitted", "SparkListenerTaskEnd", "SparkListenerStageCompleted",
+        )
+        and event.get("Stage Info", event).get("Stage ID") == 0
+    ]
+    retry = copy.deepcopy(stage_events)
+    for event in retry:
+        info = event.get("Stage Info", event)
+        info["Stage Attempt ID"] = 1
+        if "Submission Time" in info:
+            info["Submission Time"] = 31
+        if "Completion Time" in info:
+            info["Completion Time"] = 50
+        if "Task Info" in event:
+            event["Task Info"]["Task ID"] += 100
+            event["Task Info"].update({"Launch Time": 32, "Finish Time": 45})
+    stage_events[-1]["Stage Info"]["Failure Reason"] = "Fetch failure; resubmitting stage"
+    failed_task = stage_events[2]
+    failed_task["Task End Reason"] = {"Reason": "FetchFailed"}
+    failed_task["Task Info"]["Failed"] = True
+    end = next(i for i, event in enumerate(log) if event["Event"] == "SparkListenerJobEnd")
+    log[end:end] = retry
+    return log
+
+
+def test_m04_accepts_never_submitted_dag_ancestors_of_successful_execution() -> None:
+    log = m04_events()
+    add_skipped_m04_stage(log)
+    summary = summarize_m04(log)
+    assert summary["job_count"] == 3
+    assert summary["stage_count"] == 3
+    assert summary["successful_tasks"] == 6
+    assert summary["execution_metrics"]["input_bytes"] == 600
+
+
+def test_m04_accepts_a_previously_completed_stage_reused_by_another_job() -> None:
+    log = m04_events()
+    job = next(e for e in log if e["Event"] == "SparkListenerJobStart" and e["Job ID"] == 1)
+    previous = next(e for e in log if e["Event"] == "SparkListenerStageCompleted")
+    job["Stage IDs"].insert(0, 0)
+    job["Stage Infos"].insert(0, copy.deepcopy(previous["Stage Info"]))
+    assert summarize_m04(log)["successful_tasks"] == 6
+
+
+def test_m04_accepts_successful_stage_retries_and_excludes_abandoned_task_successes() -> None:
+    summary = summarize_m04(retried_m04_events())
+    assert summary["successful_tasks"] == 6
+    assert summary["stage_count"] == 3
+    assert len(summary["failed_attempts"]) == 2
+    assert summary["execution_metrics"]["task_attempts"] == 8
+    assert summary["execution_metrics"]["input_bytes"] == 600
+    assert {host: values["successful_tasks"] for host, values in summary["workers"].items()} == {
+        HOSTS[0]: 3, HOSTS[1]: 3,
+    }
+
+
+def test_m04_earlier_stage_success_cannot_hide_a_failed_final_attempt() -> None:
+    log = retried_m04_events()
+    completed = [e for e in log if e["Event"] == "SparkListenerStageCompleted"]
+    del completed[0]["Stage Info"]["Failure Reason"]
+    completed[1]["Stage Info"]["Failure Reason"] = "retry failed"
+    with pytest.raises(VerificationError, match="successful final completed attempt"):
+        summarize_m04(log)
+
+
+@pytest.mark.parametrize("retried", [False, True])
+def test_m04_rejects_submitted_attempts_without_completion_even_after_retry(retried) -> None:
+    log = retried_m04_events() if retried else m04_events()
+    missing = next(e for e in log if e["Event"] == "SparkListenerStageCompleted")
+    log.remove(missing)
+    with pytest.raises(VerificationError, match="completion"):
+        summarize_m04(log)
+
+
+def test_m04_rejects_failed_jobs_even_with_completed_stages() -> None:
+    log = m04_events()
+    end = next(e for e in log if e["Event"] == "SparkListenerJobEnd")
+    end["Job Result"] = {"Result": "JobFailed", "Exception": {"Message": "failed"}}
+    with pytest.raises(VerificationError, match="did not succeed"):
+        summarize_m04(log)
+
+
+@pytest.mark.parametrize("missing", ["all", "stage", "partition"])
+def test_m04_rejects_missing_successful_task_evidence(missing) -> None:
+    log = [
+        e for e in m04_events()
+        if e["Event"] != "SparkListenerTaskEnd"
+        or (missing == "stage" and e["Stage ID"] != 0)
+        or (missing == "partition" and e["Task Info"]["Task ID"] != 10)
+    ]
+    with pytest.raises(VerificationError, match="task evidence"):
+        summarize_m04(log, require_both_workers=False)
+
+
+@pytest.mark.parametrize("contradiction", ["submitted", "completed", "failed", "attempt", "leaf"])
+def test_m04_rejects_skipped_stage_snapshots_with_execution_or_inconsistent_dag(contradiction) -> None:
+    log = m04_events()
+    skipped = add_skipped_m04_stage(log)
+    if contradiction == "leaf":
+        skipped["Parent IDs"] = [0]
+    else:
+        field, value = {
+            "submitted": ("Submission Time", 10),
+            "completed": ("Completion Time", 30),
+            "failed": ("Failure Reason", "failed"),
+            "attempt": ("Stage Attempt ID", 1),
+        }[contradiction]
+        skipped[field] = value
+    with pytest.raises(VerificationError):
+        summarize_m04(log)
+
+
+@pytest.mark.parametrize("kind", ["SparkListenerTaskStart", "SparkListenerTaskEnd"])
+def test_m04_rejects_task_events_without_submitted_attempts(kind) -> None:
+    log = m04_events()
+    add_skipped_m04_stage(log)
+    task = copy.deepcopy(next(e for e in log if e["Event"] == "SparkListenerTaskEnd"))
+    task.update({"Event": kind, "Stage ID": 99})
+    task["Task Info"]["Task ID"] = 999
+    log.insert(-1, task)
+    with pytest.raises(VerificationError, match="submitted stage"):
+        summarize_m04(log)
+
+
+@pytest.mark.parametrize("mutation", [
+    "orphan-completion", "duplicate-submission", "failed-final-attempt", "malformed-stage",
+    "missing-job-stage-info", "completion-before-submission", "job-before-stage-completion",
+    "wrong-stage-group", "missing-metrics", "wrong-executor", "invalid-task-time",
+    "wrong-job-group", "malformed-job-group", "inconsistent-parents", "missing-completion-time",
+])
+def test_m04_rejects_inconsistent_or_malformed_execution_histories(mutation) -> None:
+    log = m04_events()
+    submitted = next(e for e in log if e["Event"] == "SparkListenerStageSubmitted")
+    completed = next(e for e in log if e["Event"] == "SparkListenerStageCompleted")
+    task = next(e for e in log if e["Event"] == "SparkListenerTaskEnd")
+    if mutation == "orphan-completion":
+        log.remove(submitted)
+    elif mutation == "duplicate-submission":
+        log.insert(log.index(submitted), copy.deepcopy(submitted))
+    elif mutation == "failed-final-attempt":
+        completed["Stage Info"]["Failure Reason"] = "failed"
+    elif mutation == "malformed-stage":
+        submitted["Stage Info"]["Stage ID"] = None
+    elif mutation == "missing-job-stage-info":
+        next(e for e in log if e["Event"] == "SparkListenerJobStart")["Stage Infos"] = []
+    elif mutation == "completion-before-submission":
+        log.remove(completed)
+        log.insert(log.index(submitted), completed)
+    elif mutation == "job-before-stage-completion":
+        end = next(e for e in log if e["Event"] == "SparkListenerJobEnd")
+        log.remove(end)
+        log.insert(log.index(completed), end)
+    elif mutation == "wrong-stage-group":
+        submitted["Properties"]["spark.jobGroup.id"] = "other-run:normalization"
+    elif mutation == "missing-metrics":
+        del task["Task Metrics"]
+    elif mutation == "wrong-executor":
+        task["Task Info"]["Executor ID"] = "unknown"
+    elif mutation == "invalid-task-time":
+        task["Task Info"]["Finish Time"] = None
+    elif mutation in ("wrong-job-group", "malformed-job-group"):
+        job = next(e for e in log if e["Event"] == "SparkListenerJobStart")
+        job["Properties"]["spark.jobGroup.id"] = (
+            "other-run:normalization" if mutation == "wrong-job-group" else []
+        )
+    elif mutation == "inconsistent-parents":
+        completed["Stage Info"]["Parent IDs"] = [99]
+    elif mutation == "missing-completion-time":
+        del completed["Stage Info"]["Completion Time"]
+    with pytest.raises(VerificationError):
+        summarize_m04(log)
+
+
+@pytest.mark.parametrize("missing", [
+    "SparkListenerLogStart", "SparkListenerApplicationStart", "SparkListenerApplicationEnd",
+    "SparkListenerEnvironmentUpdate", "SparkListenerJobEnd",
+])
+def test_m04_rejects_incomplete_application_logs(missing) -> None:
+    with pytest.raises(VerificationError):
+        summarize_m04([e for e in m04_events() if e["Event"] != missing])
+
+
+@pytest.mark.parametrize("payload", [b"", b'{"Event":', b"[]\n", b"{}\n"])
+def test_m04_rejects_malformed_listener_payloads(payload) -> None:
+    with pytest.raises(VerificationError):
+        support.summarize_m04_event_log(
+            payload, run_id=RUN, application_name=f"warehouse-spark-hdfs-{RUN}",
+        )
 
 
 @pytest.mark.parametrize(

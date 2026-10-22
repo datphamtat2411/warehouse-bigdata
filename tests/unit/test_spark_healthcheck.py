@@ -264,3 +264,16 @@ def test_invalid_wait_bounds_fail_without_checking(seconds: int) -> None:
 @pytest.mark.parametrize("arguments", [[], ["submit"], ["ready", "extra"], ["wait-ready", "bad"]])
 def test_cli_rejects_invalid_commands(arguments: list[str]) -> None:
     assert probe.main(arguments) != 0
+
+
+def test_worker_health_propagates_scratch_capacity_failure(cluster, monkeypatch, capsys):
+    def full_disk(min_free):
+        raise RuntimeError("Insufficient Spark scratch")
+
+    monkeypatch.setattr(
+        probe.runpy,
+        "run_path",
+        lambda path: {"check_scratch": full_disk, "HEALTH_FREE": 512 * 1024**2},
+    )
+    assert probe.main(["worker"]) == 1
+    assert "Insufficient Spark scratch" in capsys.readouterr().err

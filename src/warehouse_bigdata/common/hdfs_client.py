@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import pwd
 import re
@@ -17,6 +18,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
+from urllib.error import HTTPError
+from urllib.parse import quote, urlencode, urlsplit
+from urllib.request import ProxyHandler, Request, build_opener
 
 DEFAULT_METADATA_LIMIT = 64 * 1024
 DEFAULT_TRANSFER_CHUNK_SIZE = 1024 * 1024
@@ -192,6 +196,8 @@ class HdfsCliClient:
         self.command_timeout = command_timeout
         self.transfer_chunk_size = transfer_chunk_size
         self.metadata_limit = metadata_limit
+        self._http_endpoint: str | None = None
+        self._hdfs_identity: str | None = None
 
     def _argv(self, *arguments: str) -> list[str]:
         return [*self.command_prefix, self.hdfs_command, *arguments]
@@ -371,6 +377,95 @@ class HdfsCliClient:
         if not identity or any(character in identity for character in "\0\r\n"):
             raise HdfsCommandError("Malformed local HDFS client identity.")
         return identity
+
+    def effective_user(self) -> str:
+        """Resolve the Hadoop client's actual UGI, including command-prefix runtimes."""
+        if self._hdfs_identity is None:
+            output = self._run(("groups",)).stdout.decode().strip()
+            identity, separator, _groups = output.partition(" :")
+            if not separator or not re.fullmatch(r"[A-Za-z0-9_.-]+", identity):
+                raise HdfsCommandError(f"Cannot resolve effective HDFS identity: {output!r}")
+            self._hdfs_identity = identity
+        return self._hdfs_identity
+
+    def _webhdfs(self, path: str, operation: str, *, method: str = "GET", **parameters):
+        """Use bounded NameNode-only metadata RPCs on the configured internal endpoint."""
+        if self._http_endpoint is None:
+            rpc = urlsplit(self.getconf("fs.defaultFS"))
+            http = urlsplit("//" + self.getconf("dfs.namenode.http-address"))
+            if (
+                rpc.scheme != "hdfs"
+                or not rpc.hostname
+                or http.port is None
+                or http.hostname not in {rpc.hostname, "0.0.0.0", "::"}
+            ):
+                raise HdfsCommandError("WebHDFS endpoint differs from the configured NameNode")
+            self._http_endpoint = f"http://{rpc.hostname}:{http.port}/webhdfs/v1"
+        query = urlencode({"op": operation, "user.name": self.effective_user(), **parameters})
+        request = Request(self._http_endpoint + quote(path, safe="/") + "?" + query, method=method)
+        try:
+            with build_opener(ProxyHandler({})).open(
+                request, timeout=min(self.command_timeout, 20)
+            ) as response:
+                payload = response.read(self.metadata_limit + 1)
+            if len(payload) > self.metadata_limit:
+                raise HdfsCommandError("WebHDFS metadata response exceeded the bounded limit")
+            return json.loads(payload) if payload else None
+        except HTTPError:
+            raise
+        except (OSError, ValueError) as error:
+            raise HdfsCommandError(f"WebHDFS {operation} failed for {path}: {error}") from error
+
+    def path_status(self, path: str) -> dict | None:
+        """Return exact-path metadata; distinguish absent paths from access denial."""
+        try:
+            return self._webhdfs(path, "GETFILESTATUS")["FileStatus"]
+        except HTTPError as error:
+            if error.code == 404:
+                return None
+            raise HdfsCommandError(
+                f"HDFS metadata denied/unavailable: path={path} identity={self.effective_user()} "
+                f"requires --x on ancestors (HTTP {error.code})"
+            ) from error
+
+    def can_access(self, path: str, permission: str) -> bool:
+        """Ask the NameNode to check effective FsAction, including ancestor traversal."""
+        try:
+            self._webhdfs(path, "CHECKACCESS", fsaction=permission)
+        except HTTPError as error:
+            if error.code == 403:
+                return False
+            raise HdfsCommandError(
+                f"HDFS access check failed for {path}: HTTP {error.code}"
+            ) from error
+        return True
+
+    def rename_exclusive(self, source: str, destination: str) -> None:
+        """Atomic rename2(NONE): never overwrite or nest inside an existing directory."""
+        try:
+            result = self._webhdfs(
+                source, "RENAME", method="PUT", destination=destination, renameoptions="NONE"
+            )
+            if isinstance(result, dict) and result.get("boolean") is False:
+                raise HdfsCommandError(
+                    f"exclusive HDFS rename returned false: {source} -> {destination}"
+                )
+        except HTTPError as error:
+            raise HdfsCommandError(
+                f"exclusive HDFS rename failed: {source} -> {destination} (HTTP {error.code})"
+            ) from error
+
+    def clear_acl(self, path: str, *, recursive: bool = False) -> None:
+        """Remove extended/default ACLs only on an explicitly selected subtree."""
+        self._run(("dfs", "-setfacl", *(("-R",) if recursive else ()), "-b", path))
+
+    def set_permission(self, path: str, mode: str, *, recursive: bool = False) -> None:
+        """Set mode on an explicitly selected namespace parent or unpublished candidate."""
+        self._run(("dfs", "-chmod", *(("-R",) if recursive else ()), mode, path))
+
+    def set_owner(self, path: str, owner: str, *, recursive: bool = False) -> None:
+        """Transfer only an explicitly selected unpublished candidate to its publisher."""
+        self._run(("dfs", "-chown", *(("-R",) if recursive else ()), owner, path))
 
     def set_acl(self, remote_path: str, acl_spec: str) -> None:
         """Apply one explicit, non-recursive ACL specification to a path."""

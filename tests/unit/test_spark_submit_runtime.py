@@ -42,6 +42,8 @@ def sandbox(tmp_path: Path) -> dict:
         if args[:2] == ["image", "inspect"]:
             sys.exit(int(os.environ.get("TEST_IMAGE_STATUS", "0")))
         if args[0] == "compose":
+            if "/opt/warehouse-spark/scratch.py" in args:
+                sys.exit(int(os.environ.get("TEST_SCRATCH_STATUS", "0")))
             if "ready" in args:
                 sys.exit(int(os.environ.get("TEST_READY_STATUS", "0")))
             if "run" not in args:
@@ -113,6 +115,32 @@ def commands(sandbox: dict) -> list[list[str]]:
 
 def runs(sandbox: dict) -> list[list[str]]:
     return [args for args in commands(sandbox) if args[0] == "compose" and "run" in args]
+
+
+def test_m04_success_finalizes_as_owner_only_after_driver_success(sandbox: dict) -> None:
+    args = ["--", "warehouse_bigdata/jobs/normalize_sales_daily.py", "--pipeline-run-id", "run-001"]
+    result = invoke(sandbox, *args)
+    assert result.returncode == 0, result.stderr
+    calls = commands(sandbox)
+    publication = [call for call in calls if "warehouse_bigdata.common.hdfs_publication" in call]
+    assert len(publication) == 2
+    assert publication[0][-3:] == ["--recover", "--pipeline-run-id", "run-001"]
+    assert publication[1][-2:] == ["--pipeline-run-id", "run-001"]
+    assert all(call[call.index("--user") + 1] == "1000:100" for call in publication)
+    assert calls.index(publication[0]) < calls.index(runs(sandbox)[1]) < calls.index(publication[1])
+    sandbox["env"]["TEST_RUN_STATUS"] = "7"
+    result = invoke(sandbox, *args)
+    assert result.returncode == 7
+    assert (
+        len(
+            [
+                call
+                for call in commands(sandbox)
+                if "warehouse_bigdata.common.hdfs_publication" in call
+            ]
+        )
+        == 3
+    )
 
 
 def assert_cluster_untouched(sandbox: dict) -> None:
@@ -221,7 +249,7 @@ def test_host_help_is_offline(sandbox: dict) -> None:
     assert not commands(sandbox)
 
 
-@pytest.mark.parametrize("failure", ["IMAGE", "READY"])
+@pytest.mark.parametrize("failure", ["IMAGE", "READY", "SCRATCH"])
 def test_missing_image_and_readiness_failure_never_start_a_driver(
     sandbox: dict, failure: str
 ) -> None:
