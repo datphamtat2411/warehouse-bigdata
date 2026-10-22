@@ -87,6 +87,16 @@ def render_curated_sales_daily_path(base_path: str, source_snapshot_id: str) -> 
     )
 
 
+def render_curated_sales_enriched_path(base_path: str, source_snapshot_id: str) -> str:
+    """Render the immutable curated SALES_ENRICHED directory."""
+    validate_source_snapshot_id(source_snapshot_id)
+    return render_hdfs_artifact_path(
+        base_path,
+        "curated_sales_enriched",
+        source_snapshot_id=source_snapshot_id,
+    )
+
+
 def render_run_manifest_path(base_path: str, pipeline_run_id: str) -> str:
     """Render one immutable Contract v1 run-manifest path."""
     validate_pipeline_run_id(pipeline_run_id)
@@ -141,6 +151,33 @@ def render_normalization_failure_path(staging_path: str) -> str:
     return _join_staging(staging_path, "failure_report.json")
 
 
+def render_enrichment_candidate_path(staging_path: str, output_name: str) -> str:
+    """Render one run-owned enrichment or analytics candidate directory."""
+    _validate_enrichment_output_name(output_name)
+    return _join_staging(staging_path, "candidates", output_name)
+
+
+def render_enrichment_quality_path(staging_path: str) -> str:
+    """Render the run-level enrichment quality report."""
+    return _join_staging(staging_path, "quality_report.json")
+
+
+def render_enrichment_output_quality_path(staging_path: str, output_name: str) -> str:
+    """Render one immutable per-output enrichment quality report."""
+    _validate_enrichment_output_name(output_name)
+    return _join_staging(staging_path, "quality_reports", f"{output_name}.json")
+
+
+def render_enrichment_failure_path(staging_path: str) -> str:
+    """Render the immutable failed-run evidence for one enrichment attempt."""
+    return _join_staging(staging_path, "failure_report.json")
+
+
+def render_enrichment_staging_binding_path(staging_path: str) -> str:
+    """Render the immutable input binding for one enrichment attempt."""
+    return _join_staging(staging_path, "input_binding.json")
+
+
 def _join_staging(staging_path: str, *parts: str) -> str:
     path = PurePosixPath(staging_path)
     if not path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts[1:]):
@@ -148,6 +185,15 @@ def _join_staging(staging_path: str, *parts: str) -> str:
     if any(not part or part in {".", ".."} or "/" in part for part in parts):
         raise HdfsPathError("normalization path components must be safe")
     return str(path.joinpath(*parts))
+
+
+def _validate_enrichment_output_name(output_name: str) -> None:
+    if output_name not in {
+        "sales_enriched",
+        "store_daily_sales",
+        "category_monthly_sales",
+    }:
+        raise HdfsPathError(f"unsupported enrichment output name: {output_name!r}")
 
 
 def _validate_day_range(day_start: int, day_end: int) -> None:
