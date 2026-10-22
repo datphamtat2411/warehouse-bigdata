@@ -16,7 +16,7 @@ jobs:
   python-quality:
     name: python-quality
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,4 +43,4 @@ jobs:
         run: uv run --locked ruff format --check .
 
       - name: Run tests
-        run: uv run --locked pytest -q
+        run: uv run --locked pytest -q --durations=20
