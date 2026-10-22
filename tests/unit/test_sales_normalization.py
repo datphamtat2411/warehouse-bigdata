@@ -113,10 +113,7 @@ def _sales_frame(
     columns.extend(extra_columns)
     schema = StructType([StructField(column, StringType(), True) for column in columns])
     source_rows = rows if rows is not None else _sales_rows()
-    values = [
-        tuple(row.get(column, "0") for column in columns)
-        for row in source_rows
-    ]
+    values = [tuple(row.get(column, "0") for column in columns) for row in source_rows]
     return spark.createDataFrame(values, schema)
 
 
@@ -152,7 +149,9 @@ def _config(*, days_per_chunk: int = 2) -> SalesNormalizationConfig:
 
 
 def _normalized(spark: SparkSession, *, days_per_chunk: int = 2) -> object:
-    return normalize_sales_daily(_sales_frame(spark), _calendar_frame(spark), config=_config(days_per_chunk=days_per_chunk))
+    return normalize_sales_daily(
+        _sales_frame(spark), _calendar_frame(spark), config=_config(days_per_chunk=days_per_chunk)
+    )
 
 
 def test_normalization_emits_sales_daily_v1_and_preserves_zero_observations(
@@ -228,7 +227,9 @@ def test_invalid_day_configuration_is_rejected(kwargs: dict[str, int]) -> None:
     "mutation",
     [
         lambda rows: rows.__setitem__(1, {**rows[1], "id": rows[0]["id"]}),
-        lambda rows: rows.__setitem__(1, {**rows[1], "item_id": rows[0]["item_id"], "store_id": rows[0]["store_id"]}),
+        lambda rows: rows.__setitem__(
+            1, {**rows[1], "item_id": rows[0]["item_id"], "store_id": rows[0]["store_id"]}
+        ),
     ],
     ids=["duplicate-id", "duplicate-series-key"],
 )
@@ -279,8 +280,12 @@ def test_invalid_sales_values_are_rejected_before_casting(
         lambda: [row for row in _calendar_rows() if row["d"] != "d_4"],
         lambda: [*_calendar_rows(), _calendar_rows()[0]],
         lambda: [*_calendar_rows(), {**_calendar_rows()[0], "date": "2011-01-29", "d": "d_9"}],
-        lambda: [{**row, "date": "2011-02-30"} if row["d"] == "d_1" else row for row in _calendar_rows()],
-        lambda: [{**row, "wm_yr_wk": "1.5"} if row["d"] == "d_1" else row for row in _calendar_rows()],
+        lambda: [
+            {**row, "date": "2011-02-30"} if row["d"] == "d_1" else row for row in _calendar_rows()
+        ],
+        lambda: [
+            {**row, "wm_yr_wk": "1.5"} if row["d"] == "d_1" else row for row in _calendar_rows()
+        ],
         lambda: [{**row, "d": "day_1"} if row["d"] == "d_1" else row for row in _calendar_rows()],
     ],
     ids=[
@@ -311,18 +316,18 @@ def test_distributed_output_quality_gate_rejects_tampering(
 
         tampered = result.withColumn(
             "unit_sales",
-            F.when((F.col("series_id") == "item_1_CA_1") & (F.col("day_key") == "d_1"), F.lit(None)).otherwise(
-                F.col("unit_sales")
-            ),
+            F.when(
+                (F.col("series_id") == "item_1_CA_1") & (F.col("day_key") == "d_1"), F.lit(None)
+            ).otherwise(F.col("unit_sales")),
         )
     elif mutation == "total":
         from pyspark.sql import functions as F
 
         tampered = result.withColumn(
             "unit_sales",
-            F.when((F.col("series_id") == "item_1_CA_1") & (F.col("day_key") == "d_2"), F.lit(99)).otherwise(
-                F.col("unit_sales")
-            ),
+            F.when(
+                (F.col("series_id") == "item_1_CA_1") & (F.col("day_key") == "d_2"), F.lit(99)
+            ).otherwise(F.col("unit_sales")),
         )
     else:
         with pytest.raises(NormalizationError):

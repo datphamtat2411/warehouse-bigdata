@@ -743,7 +743,9 @@ def _bundle_from_remote_manifests(
             raise HdfsRawIngestionError(f"raw source_version mismatch for {filename}")
         for field in shared_fields:
             if manifest.get(field) != first.get(field):
-                raise HdfsRawIngestionError(f"raw source provenance mismatch for {filename}: {field}")
+                raise HdfsRawIngestionError(
+                    f"raw source provenance mismatch for {filename}: {field}"
+                )
 
     files = tuple(
         LocalSourceFile(

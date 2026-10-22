@@ -204,13 +204,21 @@ def validate_chunk_coverage(
         raise NormalizationSnapshotError("normalization chunk coverage is empty or invalid")
     ordered = tuple(sorted(chunks, key=lambda chunk: (chunk.day_start, chunk.day_end)))
     if ordered[0].day_start != day_start or ordered[-1].day_end != day_end:
-        raise NormalizationSnapshotError("normalization chunk coverage does not span the full range")
+        raise NormalizationSnapshotError(
+            "normalization chunk coverage does not span the full range"
+        )
     expected_start = day_start
     seen_ranges: set[tuple[int, int]] = set()
     for chunk in ordered:
         current = (chunk.day_start, chunk.day_end)
-        if current in seen_ranges or chunk.day_start != expected_start or chunk.day_start > chunk.day_end:
-            raise NormalizationSnapshotError("normalization chunk coverage contains a gap or overlap")
+        if (
+            current in seen_ranges
+            or chunk.day_start != expected_start
+            or chunk.day_start > chunk.day_end
+        ):
+            raise NormalizationSnapshotError(
+                "normalization chunk coverage contains a gap or overlap"
+            )
         seen_ranges.add(current)
         expected_start = chunk.day_end + 1
     if expected_start != day_end + 1:
@@ -296,9 +304,9 @@ def run_normalization_snapshot(
                     code_revision=code_revision,
                 )
             )
-            timings[
-                f"chunk_{chunk.day_start:04d}_{chunk.day_end:04d}_seconds"
-            ] = time.perf_counter() - phase_started
+            timings[f"chunk_{chunk.day_start:04d}_{chunk.day_end:04d}_seconds"] = (
+                time.perf_counter() - phase_started
+            )
         chunk_metrics = tuple(chunk_metrics_list)
         _validate_staged_chunk_listing(hdfs, staging_path, chunks)
         validate_chunk_coverage(
@@ -405,7 +413,9 @@ def run_normalization_snapshot(
                 hdfs.mkdir_parents(str(PurePosixPath(curated_path).parent))
                 try:
                     _promote_immutable_candidate(
-                        hdfs, render_normalization_candidate_path(staging_path), curated_path,
+                        hdfs,
+                        render_normalization_candidate_path(staging_path),
+                        curated_path,
                     )
                     status = "VALIDATED"
                 except Exception as error:
@@ -419,18 +429,27 @@ def run_normalization_snapshot(
                         ) from error
                     persisted = _read_parquet(spark, curated_uri)
                     metrics = _validate_persisted_output(
-                        persisted, expected_metrics=expected_metrics,
+                        persisted,
+                        expected_metrics=expected_metrics,
                         selected_day_keys=_day_keys(selected_config.expected_day_count),
                     )
                     _validate_dataset_manifest(
-                        hdfs, curated_path, hdfs_config,
-                        source_version=source_version, source_snapshot_id=source_snapshot_id,
-                        pipeline_run_id=pipeline_run_id, expected_metrics=metrics,
-                        expected_row_count=selected_config.row_count, code_revision=code_revision,
+                        hdfs,
+                        curated_path,
+                        hdfs_config,
+                        source_version=source_version,
+                        source_snapshot_id=source_snapshot_id,
+                        pipeline_run_id=pipeline_run_id,
+                        expected_metrics=metrics,
+                        expected_row_count=selected_config.row_count,
+                        code_revision=code_revision,
                     )
                     _recover_unpromoted_candidate(
-                        hdfs, staging_path, source_version=source_version,
-                        source_snapshot_id=source_snapshot_id, pipeline_run_id=pipeline_run_id,
+                        hdfs,
+                        staging_path,
+                        source_version=source_version,
+                        source_snapshot_id=source_snapshot_id,
+                        pipeline_run_id=pipeline_run_id,
                     )
                     status = "REUSED"
 
@@ -472,7 +491,10 @@ def run_normalization_snapshot(
             manifest_path = None
         else:
             manifest_path = _publish_or_reuse_run_manifest(
-                hdfs, hdfs_config, manifest, integrity=raw_snapshot.integrity,
+                hdfs,
+                hdfs_config,
+                manifest,
+                integrity=raw_snapshot.integrity,
             )
         timings["total_seconds"] = time.perf_counter() - started_at
         return NormalizationSnapshotResult(
@@ -517,7 +539,9 @@ def run_normalization_snapshot(
                     ),
                 )
             except Exception as evidence_error:
-                detail = f"{detail}; failure evidence unavailable: {_failure_detail(evidence_error)}"
+                detail = (
+                    f"{detail}; failure evidence unavailable: {_failure_detail(evidence_error)}"
+                )
         return NormalizationSnapshotResult(
             status=FAILED,
             pipeline_run_id=pipeline_run_id,
@@ -542,7 +566,9 @@ def _read_validated_sources(
 ) -> tuple[DataFrame, DataFrame]:
     names = {manifest.get("source_file") for manifest in raw_snapshot.manifests}
     if not _SALES_SOURCE_FILES <= names:
-        raise NormalizationSnapshotError("validated raw snapshot lacks required sales/calendar sources")
+        raise NormalizationSnapshotError(
+            "validated raw snapshot lacks required sales/calendar sources"
+        )
     raw_uri = _hdfs_uri(hdfs_config.uri, raw_snapshot.raw_path)
     reader = spark.read.option("header", True).option("inferSchema", False)
     return (
@@ -712,9 +738,7 @@ def _validate_staged_chunk_listing(
     expected_data = {chunk.parquet_path for chunk in chunks}
     expected_manifests = {chunk.manifest_path for chunk in chunks}
     actual_data = set(hdfs.list_children(render_normalization_chunks_path(staging_path)))
-    actual_manifests = set(
-        hdfs.list_children(str(PurePosixPath(staging_path) / "chunk_manifests"))
-    )
+    actual_manifests = set(hdfs.list_children(str(PurePosixPath(staging_path) / "chunk_manifests")))
     if actual_data != expected_data or actual_manifests != expected_manifests:
         raise NormalizationSnapshotError(
             "staged chunk coverage is incomplete or contains unexpected artifacts"
@@ -780,7 +804,9 @@ def _quarantine_chunk_artifacts(
 
 def _finalize_artifact(hdfs: Any, source: str, destination: str) -> None:
     if not _exists(hdfs, source):
-        raise NormalizationSnapshotError(f"temporary artifact disappeared before finalization: {source}")
+        raise NormalizationSnapshotError(
+            f"temporary artifact disappeared before finalization: {source}"
+        )
     if _exists(hdfs, destination):
         raise NormalizationSnapshotError(
             f"refusing to overwrite an existing immutable artifact: {destination}"
@@ -792,7 +818,9 @@ def _finalize_artifact(hdfs: Any, source: str, destination: str) -> None:
             f"artifact finalization failed without overwrite: {destination}"
         ) from error
     if _exists(hdfs, source):
-        raise NormalizationSnapshotError(f"temporary artifact remained after finalization: {source}")
+        raise NormalizationSnapshotError(
+            f"temporary artifact remained after finalization: {source}"
+        )
 
 
 def _promote_immutable_candidate(hdfs: Any, candidate_path: str, curated_path: str) -> None:
@@ -814,7 +842,9 @@ def _write_parquet_once(
             f"cannot persist non-canonical SALES_DAILY columns: {fields}"
         )
     if any(field not in fields for field in partition_by):
-        raise NormalizationSnapshotError("Parquet partition fields must be persisted dataframe fields")
+        raise NormalizationSnapshotError(
+            "Parquet partition fields must be persisted dataframe fields"
+        )
     writer = (
         dataframe.write.mode("errorifexists")
         .option("compression", _PARQUET_COMPRESSION)
@@ -830,8 +860,7 @@ def _read_parquet(spark: SparkSession, *uris: str) -> DataFrame:
         raise NormalizationSnapshotError("cannot read Parquet without a path")
     try:
         persisted = (
-            spark.read
-            .option("pathGlobFilter", "*.parquet")
+            spark.read.option("pathGlobFilter", "*.parquet")
             .option("recursiveFileLookup", "true")
             .parquet(*uris)
         )
@@ -921,7 +950,10 @@ def _chunk_metrics_from_manifest(
     if any(type(value) is not int or value < 0 for value in values.values()):
         raise NormalizationSnapshotError("chunk manifest metrics are incomplete or invalid")
     metrics = NormalizationMetrics(**values)
-    if metrics.day_count != chunk.day_count or metrics.row_count != metrics.series_count * metrics.day_count:
+    if (
+        metrics.day_count != chunk.day_count
+        or metrics.row_count != metrics.series_count * metrics.day_count
+    ):
         raise NormalizationSnapshotError("chunk manifest cardinality does not match its day range")
     return metrics
 
@@ -1411,7 +1443,9 @@ def _publish_or_reuse_run_manifest(
             config=hdfs_config,
         )
     except HdfsRawIngestionError as error:
-        raise NormalizationSnapshotError(f"pipeline run manifest publication failed: {error}") from error
+        raise NormalizationSnapshotError(
+            f"pipeline run manifest publication failed: {error}"
+        ) from error
 
 
 def _read_json(hdfs: Any, path: str, label: str) -> dict[str, object]:
@@ -1439,7 +1473,9 @@ def _exists(hdfs: Any, path: str) -> bool:
 def _hdfs_uri(uri: str, path: str) -> str:
     parsed = urlsplit(uri)
     if parsed.scheme.lower() != "hdfs" or not parsed.netloc or not path.startswith("/"):
-        raise NormalizationSnapshotError("normalization inputs and outputs must use configured HDFS")
+        raise NormalizationSnapshotError(
+            "normalization inputs and outputs must use configured HDFS"
+        )
     return uri.rstrip("/") + path
 
 
@@ -1450,9 +1486,12 @@ def _json_bytes(value: object) -> bytes:
 
 
 def _schema_fingerprint() -> str:
-    return "sha256:" + hashlib.sha256(
-        json.dumps(SALES_DAILY.field_names, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(SALES_DAILY.field_names, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    )
 
 
 def _configuration_digest(chunks: Sequence[NormalizationChunk]) -> str:

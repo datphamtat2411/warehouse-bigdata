@@ -70,7 +70,9 @@ def source_environment() -> tuple[Path, str, str | None]:
     return source, source_url, downloaded_at
 
 
-def hdfs_client(hdfs: HDFSVerification, *, metadata_limit: int = MAX_M04_EVENT_BYTES) -> HdfsCliClient:
+def hdfs_client(
+    hdfs: HDFSVerification, *, metadata_limit: int = MAX_M04_EVENT_BYTES
+) -> HdfsCliClient:
     return HdfsCliClient(
         command_prefix=(
             "docker",
@@ -100,7 +102,10 @@ def prepare_source(tmp_path: Path, hdfs: HDFSVerification) -> dict[str, object]:
         pipeline_run_id=ingestion_run_id,
     )
     require(result.status == VALIDATED, f"M5 ingestion did not validate: {result.failure_details}")
-    require(result.source_version is not None and result.raw_path is not None, "M5 lineage is incomplete.")
+    require(
+        result.source_version is not None and result.raw_path is not None,
+        "M5 lineage is incomplete.",
+    )
     manifests = json.loads(client.read_remote(result.raw_path + "/source_manifests.json"))
     return {
         "source": source,
@@ -133,10 +138,13 @@ def _prepare_smoke_source(
         snapshot.status == VALIDATED
         and snapshot.source_version == source_version
         and snapshot.raw_path == render_raw_m5_path(hdfs_config.base_path, source_version)
-        and compute_source_version({
-            manifest["source_file"]: manifest["artifact_checksum"]
-            for manifest in snapshot.manifests
-        }) == source_version,
+        and compute_source_version(
+            {
+                manifest["source_file"]: manifest["artifact_checksum"]
+                for manifest in snapshot.manifests
+            }
+        )
+        == source_version,
         "Reused raw snapshot content identity does not match the requested source_version.",
     )
     for manifest in snapshot.manifests:
@@ -171,7 +179,9 @@ def _prepare_smoke_source(
 
 
 def _event_directory(hdfs_config, pipeline_run_id: str) -> str:
-    return str(PurePosixPath(render_staging_path(hdfs_config.base_path, pipeline_run_id)) / "events")
+    return str(
+        PurePosixPath(render_staging_path(hdfs_config.base_path, pipeline_run_id)) / "events"
+    )
 
 
 def _retry_event_directory(hdfs_config, pipeline_run_id: str, phase: str) -> str:
@@ -200,17 +210,14 @@ def _validate_event_directory_path(
         or any(character in path for character in "\0\r\n")
         or any(part in {"", ".", ".."} for part in path.split("/")[1:])
     ):
-        raise VerificationError(
-            f"event directory has unsafe absolute path components: {path!r}"
-        )
+        raise VerificationError(f"event directory has unsafe absolute path components: {path!r}")
 
     event_path = PurePosixPath(path)
     try:
         relative = event_path.relative_to(PurePosixPath(staging_path))
     except ValueError as error:
         raise VerificationError(
-            f"event directory is not under expected run-owned staging path "
-            f"{staging_path}: {path}"
+            f"event directory is not under expected run-owned staging path {staging_path}: {path}"
         ) from error
     if len(relative.parts) != 1 or relative.parts[0] not in _EVENT_DIRECTORY_NAMES:
         raise VerificationError(
@@ -272,7 +279,8 @@ def _case_event_directories(
     )
     if not include_retries:
         return initial
-    return (*initial,
+    return (
+        *initial,
         (_retry_event_directory(hdfs_config, normalization_run_id, "j02"), normalization_run_id),
         (_retry_event_directory(hdfs_config, enrichment_run_id, "j03"), enrichment_run_id),
     )
@@ -343,11 +351,28 @@ def _probe_smoke_access(hdfs, hdfs_config, event_directories, output_paths, prer
     label = "io.warehouse-bigdata.m04-preflight.owner"
     try:
         result = hdfs.compose(
-            "--profile", "spark-submit", "run", "--rm", "--no-deps", "-T", "--pull", "never",
-            "--name", name, "--label", f"{label}={token}",
-            "--entrypoint", "/opt/warehouse-app/.venv/bin/python", "spark-submit",
-            "-c", _SMOKE_ACCESS_CODE, hdfs_config.uri, hdfs_config.base_path,
-            json.dumps(event_directories), json.dumps(output_paths), timeout=240,
+            "--profile",
+            "spark-submit",
+            "run",
+            "--rm",
+            "--no-deps",
+            "-T",
+            "--pull",
+            "never",
+            "--name",
+            name,
+            "--label",
+            f"{label}={token}",
+            "--entrypoint",
+            "/opt/warehouse-app/.venv/bin/python",
+            "spark-submit",
+            "-c",
+            _SMOKE_ACCESS_CODE,
+            hdfs_config.uri,
+            hdfs_config.base_path,
+            json.dumps(event_directories),
+            json.dumps(output_paths),
+            timeout=240,
         )
     finally:
         inspected = hdfs.runner.run(
@@ -369,16 +394,32 @@ def _probe_smoke_access(hdfs, hdfs_config, event_directories, output_paths, prer
             )
     probe = json.loads(result.stdout)
     require(probe.get("status") == "READY", "Smoke driver access probe did not pass.")
-    assert_sources(probe["fingerprint"], prerequisites["expected_sources"], prerequisites["xml_sha256"])
+    assert_sources(
+        probe["fingerprint"], prerequisites["expected_sources"], prerequisites["xml_sha256"]
+    )
     return probe
 
 
 def _probe_publication_owner(hdfs):
     """Prove the trusted publisher's exact-parent create/rename/delete prerequisites."""
     result = hdfs.compose(
-        "--profile", "spark-submit", "run", "--rm", "--no-deps", "-T", "--pull", "never",
-        "--user", "1000:100", "--entrypoint", "/opt/warehouse-app/.venv/bin/python",
-        "spark-submit", "-m", "warehouse_bigdata.common.hdfs_namespace", "check", timeout=240,
+        "--profile",
+        "spark-submit",
+        "run",
+        "--rm",
+        "--no-deps",
+        "-T",
+        "--pull",
+        "never",
+        "--user",
+        "1000:100",
+        "--entrypoint",
+        "/opt/warehouse-app/.venv/bin/python",
+        "spark-submit",
+        "-m",
+        "warehouse_bigdata.common.hdfs_namespace",
+        "check",
+        timeout=240,
     )
     return json.loads(result.stdout)
 
@@ -387,16 +428,15 @@ def _smoke_preflight(hdfs, hdfs_config, client, *, token: str) -> dict[str, obje
     """Fail on cheap readiness/path/permission checks before any M5 profiling or hashing."""
     require(hdfs_config.uri == HDFS_URI, "M04 smoke requires the real project HDFS endpoint.")
     require(load_spark_config().master_url == MASTER, "M04 smoke requires the real Spark Master.")
-    _validate_case_event_directories(
-        hdfs_config, label="smoke", token=token, include_retries=False
-    )
+    _validate_case_event_directories(hdfs_config, label="smoke", token=token, include_retries=False)
     run_ids = _case_run_ids("smoke", token)
-    output_paths = list(_lineage_paths(
-        hdfs_config, f"m04-smoke-snapshot-{token}", run_ids[1]
-    ).values())
+    output_paths = list(
+        _lineage_paths(hdfs_config, f"m04-smoke-snapshot-{token}", run_ids[1]).values()
+    )
     manifest_paths = [render_run_manifest_path(hdfs_config.base_path, run_id) for run_id in run_ids]
     for path in (
-        *output_paths, *manifest_paths,
+        *output_paths,
+        *manifest_paths,
         *(render_staging_path(hdfs_config.base_path, run_id) for run_id in run_ids),
     ):
         require(not client.exists(path), f"Smoke run path already exists; refusing reuse: {path}")
@@ -406,8 +446,15 @@ def _smoke_preflight(hdfs, hdfs_config, client, *, token: str) -> dict[str, obje
     for path, run_id in events:
         _create_event_directory(client, hdfs_config, path, expected_pipeline_run_id=run_id)
         require(not client.list_children(path), f"Smoke event log directory is not empty: {path}")
-    probe = _probe_smoke_access(hdfs, hdfs_config, events, output_paths + manifest_paths, prerequisites)
-    evidence = {"status": "READY", "event_directories": events, "driver": probe, "publisher": publisher}
+    probe = _probe_smoke_access(
+        hdfs, hdfs_config, events, output_paths + manifest_paths, prerequisites
+    )
+    evidence = {
+        "status": "READY",
+        "event_directories": events,
+        "driver": probe,
+        "publisher": publisher,
+    }
     hdfs.evidence.write("m04-smoke-preflight", evidence)
     return evidence
 
@@ -432,9 +479,7 @@ def _submit(
         command.extend(("--conf", f"{key}={value}"))
     command.extend(("--", application, *arguments))
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "command.json").write_text(
-        json.dumps(command, indent=2) + "\n", encoding="utf-8"
-    )
+    (output_dir / "command.json").write_text(json.dumps(command, indent=2) + "\n", encoding="utf-8")
     completed = hdfs.runner.run(command, timeout=1_860, check=False)
     (output_dir / "stdout").write_bytes(completed.stdout)
     (output_dir / "stderr").write_bytes(completed.stderr)
@@ -468,7 +513,9 @@ def _verification_record(stdout: bytes) -> dict[str, object]:
         for line in stdout.decode(errors="strict").splitlines()
         if line.startswith("WAREHOUSE_M04 ")
     ]
-    require(len(records) == 1 and isinstance(records[0], dict), "M04 verifier must emit one result.")
+    require(
+        len(records) == 1 and isinstance(records[0], dict), "M04 verifier must emit one result."
+    )
     return records[0]
 
 
@@ -486,7 +533,10 @@ def _collect_event_summary(
     name = event_path.rsplit("/", 1)[-1]
     require(re.fullmatch(r"app-\d{14}-\d+(?:\.inprogress)?", name), "Unexpected event log name.")
     stat = client.stat(event_path)
-    require(0 < stat.size_bytes <= MAX_M04_EVENT_BYTES, "Event log is empty or exceeds the evidence bound.")
+    require(
+        0 < stat.size_bytes <= MAX_M04_EVENT_BYTES,
+        "Event log is empty or exceeds the evidence bound.",
+    )
     payload = client.read_remote(event_path)
     require(len(payload) == stat.size_bytes, "Event log changed during independent retrieval.")
     (output_dir / "event-log.jsonl").write_bytes(payload)
@@ -654,7 +704,11 @@ def run_case(
     normalization_stdout = _submit(
         hdfs,
         "warehouse_bigdata/jobs/normalize_sales_daily.py",
-        [*normalization_arguments, "--event-log-dir", hdfs_config.uri.rstrip("/") + normalization_events],
+        [
+            *normalization_arguments,
+            "--event-log-dir",
+            hdfs_config.uri.rstrip("/") + normalization_events,
+        ],
         conf,
         case_dir / "j02",
     )
@@ -724,7 +778,10 @@ def run_case(
     )
     snapshot_manifest = _read_json(client, paths["sales_daily"] + "/_snapshot_manifest.json")
     require(snapshot_manifest.get("status") == VALIDATED, "SALES_DAILY snapshot is not VALIDATED.")
-    require(snapshot_manifest.get("source_snapshot_id") == source_snapshot_id, "J02 snapshot lineage mismatch.")
+    require(
+        snapshot_manifest.get("source_snapshot_id") == source_snapshot_id,
+        "J02 snapshot lineage mismatch.",
+    )
     require(
         snapshot_manifest.get("row_count") == SERIES_COUNT * expected_day_count,
         "J02 snapshot row count differs from the selected scope.",
@@ -733,7 +790,11 @@ def run_case(
         j02_snapshot = _immutable_snapshot(
             client,
             {"sales_daily": paths["sales_daily"]},
-            (normalization_manifest_path, normalization_quality_path, paths["sales_daily"] + "/_snapshot_manifest.json"),
+            (
+                normalization_manifest_path,
+                normalization_quality_path,
+                paths["sales_daily"] + "/_snapshot_manifest.json",
+            ),
         )
         j03_snapshot = _immutable_snapshot(
             client,
@@ -741,7 +802,10 @@ def run_case(
             (
                 enrichment_manifest_path,
                 enrichment_quality_path,
-                *tuple(render_enrichment_dataset_manifest_path(paths[name]) for name in J03_OUTPUT_NAMES),
+                *tuple(
+                    render_enrichment_dataset_manifest_path(paths[name])
+                    for name in J03_OUTPUT_NAMES
+                ),
             ),
         )
 
@@ -767,7 +831,11 @@ def run_case(
         normalization_after_retry = _immutable_snapshot(
             client,
             {"sales_daily": paths["sales_daily"]},
-            (normalization_manifest_path, normalization_quality_path, paths["sales_daily"] + "/_snapshot_manifest.json"),
+            (
+                normalization_manifest_path,
+                normalization_quality_path,
+                paths["sales_daily"] + "/_snapshot_manifest.json",
+            ),
         )
 
         enrichment_retry_stdout = _submit(
@@ -795,17 +863,29 @@ def run_case(
             (
                 enrichment_manifest_path,
                 enrichment_quality_path,
-                *tuple(render_enrichment_dataset_manifest_path(paths[name]) for name in J03_OUTPUT_NAMES),
+                *tuple(
+                    render_enrichment_dataset_manifest_path(paths[name])
+                    for name in J03_OUTPUT_NAMES
+                ),
             ),
         )
-        require(normalization_retry_status == "REUSED", "J02 retry did not reuse the immutable snapshot.")
-        require(enrichment_retry_status == "REUSED", "J03 retry did not reuse the immutable outputs.")
+        require(
+            normalization_retry_status == "REUSED",
+            "J02 retry did not reuse the immutable snapshot.",
+        )
+        require(
+            enrichment_retry_status == "REUSED", "J03 retry did not reuse the immutable outputs."
+        )
         require(j02_snapshot == normalization_after_retry, "J02 retry changed immutable evidence.")
         require(j03_snapshot == enrichment_after_retry, "J03 retry changed immutable evidence.")
         _write_json_artifact(case_dir / "j02" / "immutable-before.json", j02_snapshot)
-        _write_json_artifact(case_dir / "j02-retry" / "immutable-after.json", normalization_after_retry)
+        _write_json_artifact(
+            case_dir / "j02-retry" / "immutable-after.json", normalization_after_retry
+        )
         _write_json_artifact(case_dir / "j03" / "immutable-before.json", j03_snapshot)
-        _write_json_artifact(case_dir / "j03-retry" / "immutable-after.json", enrichment_after_retry)
+        _write_json_artifact(
+            case_dir / "j03-retry" / "immutable-after.json", enrichment_after_retry
+        )
 
     verification_stdout = _submit(
         hdfs,
@@ -844,13 +924,17 @@ def run_case(
         output_dir=case_dir / "verify",
     )
 
-    require(verification.get("status") == VALIDATED, "Independent M04 reconciliation did not validate.")
+    require(
+        verification.get("status") == VALIDATED, "Independent M04 reconciliation did not validate."
+    )
 
     report = {
         "schema_version": "m04-task-06-report-v1",
         "status": VALIDATED,
         "case": label,
-        "acceptance_scope": "full-history" if expected_day_count == FULL_DAY_COUNT else "reduced-history",
+        "acceptance_scope": "full-history"
+        if expected_day_count == FULL_DAY_COUNT
+        else "reduced-history",
         "full_history_accepted": expected_day_count == FULL_DAY_COUNT,
         "source_preparation": source.get("preparation", {"mode": "profile-and-ingest"}),
         "preflight": source.get("preflight"),
@@ -928,14 +1012,19 @@ def run_case(
                 "snapshot_before": "j03/immutable-before.json",
                 "snapshot_after": "j03-retry/immutable-after.json",
             },
-        } if verify_recovery else {
+        }
+        if verify_recovery
+        else {
             "enabled": False,
             "reason": "Smoke omits retry acceptance; the full correctness test retains it.",
         },
         "storage": verification.get("storage", {}),
         "limitations": [
-            *(["Reduced-history acceptance is not full-history acceptance."]
-              if expected_day_count != FULL_DAY_COUNT else []),
+            *(
+                ["Reduced-history acceptance is not full-history acceptance."]
+                if expected_day_count != FULL_DAY_COUNT
+                else []
+            ),
             "Worker and executor evidence describes this local two-worker simulation only.",
             "Observed unit sales are not verified inventory or customer orders.",
             "Timings include cluster scheduling and HDFS state and are not a claimed speedup.",
@@ -1066,7 +1155,9 @@ def run_benchmark_matrix(hdfs: HDFSVerification, tmp_path: Path) -> dict[str, ob
             )
     report = {
         "schema_version": "m04-task-06-benchmark-v1",
-        "status": "COMPLETED_WITH_FAILURES" if any(item["status"] != VALIDATED for item in reports) else VALIDATED,
+        "status": "COMPLETED_WITH_FAILURES"
+        if any(item["status"] != VALIDATED for item in reports)
+        else VALIDATED,
         "source_version": source["source_version"],
         "source_snapshot_id_scope": "unique snapshot per benchmark case",
         "workload": {

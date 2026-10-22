@@ -77,9 +77,12 @@ _CODE_REVISION = "warehouse-bigdata:enrichment-analytics-snapshot-v1"
 _QUALITY_SCHEMA_VERSION = "enrichment-analytics-quality-v1"
 _BINDING_SCHEMA_VERSION = "enrichment-analytics-input-binding-v1"
 _DATASET_MANIFEST_SCHEMA_VERSION = "enrichment-dataset-manifest-v1"
-_SALES_SCHEMA_FINGERPRINT = "sha256:" + hashlib.sha256(
-    json.dumps(SALES_DAILY.field_names, separators=(",", ":")).encode("utf-8")
-).hexdigest()
+_SALES_SCHEMA_FINGERPRINT = (
+    "sha256:"
+    + hashlib.sha256(
+        json.dumps(SALES_DAILY.field_names, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+)
 
 
 class EnrichmentAnalyticsSnapshotError(RuntimeError):
@@ -169,11 +172,17 @@ def _validate_existing_completion_marker(
     expected_uris = [
         _hdfs_uri(hdfs_config.uri, curated_output_paths[name]) for name in _OUTPUT_NAMES
     ]
-    if _json_string_list(manifest.get("output_dataset_names"), "completion output names") != expected_names:
+    if (
+        _json_string_list(manifest.get("output_dataset_names"), "completion output names")
+        != expected_names
+    ):
         raise EnrichmentAnalyticsSnapshotError(
             "existing J03 completion marker does not cover every output"
         )
-    if _json_string_list(manifest.get("output_dataset_uris"), "completion output URIs") != expected_uris:
+    if (
+        _json_string_list(manifest.get("output_dataset_uris"), "completion output URIs")
+        != expected_uris
+    ):
         raise EnrichmentAnalyticsSnapshotError(
             "existing J03 completion marker contains non-curated or incomplete output paths"
         )
@@ -238,9 +247,7 @@ def validate_enrichment_analytics_completion_marker(
     """Validate the final J03 marker before a consumer reads any output."""
     path = render_run_manifest_path(hdfs_config.base_path, pipeline_run_id)
     if not _exists(hdfs, path):
-        raise EnrichmentAnalyticsSnapshotError(
-            f"J03 completion marker is missing: {path}"
-        )
+        raise EnrichmentAnalyticsSnapshotError(f"J03 completion marker is missing: {path}")
     _validate_existing_completion_marker(
         hdfs,
         hdfs_config,
@@ -306,8 +313,7 @@ def run_enrichment_analytics_snapshot(
         name: render_enrichment_candidate_path(staging_path, name) for name in _OUTPUT_NAMES
     }
     output_quality_paths = {
-        name: render_enrichment_output_quality_path(staging_path, name)
-        for name in _OUTPUT_NAMES
+        name: render_enrichment_output_quality_path(staging_path, name) for name in _OUTPUT_NAMES
     }
     quality_path = render_enrichment_quality_path(staging_path)
     failure_path = render_enrichment_failure_path(staging_path)
@@ -443,7 +449,9 @@ def run_enrichment_analytics_snapshot(
         if not defer_publication:
             for name in _OUTPUT_NAMES:
                 _promote_validated_output(
-                    hdfs, candidate_paths[name], curated_output_paths[name],
+                    hdfs,
+                    candidate_paths[name],
+                    curated_output_paths[name],
                 )
         timings["promotion_seconds"] = time.perf_counter() - phase_started
 
@@ -503,9 +511,14 @@ def run_enrichment_analytics_snapshot(
 
         persisted_enriched = _read_parquet(
             spark,
-            _hdfs_uri(hdfs_config.uri, (
-                curated_path if _exists(hdfs, curated_path) else candidate_paths["sales_enriched"]
-            )),
+            _hdfs_uri(
+                hdfs_config.uri,
+                (
+                    curated_path
+                    if _exists(hdfs, curated_path)
+                    else candidate_paths["sales_enriched"]
+                ),
+            ),
         ).select(*SALES_ENRICHED.field_names)
         enriched_quality = _basic_quality_values(
             persisted_enriched,
@@ -602,7 +615,10 @@ def run_enrichment_analytics_snapshot(
             result_status = "STAGED"
         else:
             manifest_path = _publish_or_reuse_run_manifest(
-                hdfs, hdfs_config, manifest, integrity=raw_snapshot.integrity,
+                hdfs,
+                hdfs_config,
+                manifest,
+                integrity=raw_snapshot.integrity,
             )
         timings["total_seconds"] = time.perf_counter() - started_at
         return EnrichmentAnalyticsSnapshotResult(
@@ -648,7 +664,9 @@ def run_enrichment_analytics_snapshot(
                 )
                 stored_failure_path = failure_path
             except Exception as evidence_error:
-                detail = f"{detail}; failure evidence unavailable: {_failure_detail(evidence_error)}"
+                detail = (
+                    f"{detail}; failure evidence unavailable: {_failure_detail(evidence_error)}"
+                )
                 if _safe_exists(hdfs, failure_path):
                     stored_failure_path = failure_path
         return EnrichmentAnalyticsSnapshotResult(
@@ -751,9 +769,7 @@ def _read_validated_sales_daily(
         metrics = validate_sales_daily(
             sales_daily,
             expected_series_count=expected_metrics.series_count,
-            selected_day_keys=tuple(
-                f"d_{day}" for day in range(1, expected_metrics.day_count + 1)
-            ),
+            selected_day_keys=tuple(f"d_{day}" for day in range(1, expected_metrics.day_count + 1)),
             expected_unit_sales_total=expected_metrics.unit_sales_total,
             expected_zero_sales_count=expected_metrics.zero_sales_count,
         )
@@ -869,7 +885,9 @@ def _materialize_sales_enriched(
     curated_uri = _hdfs_uri(hdfs_config.uri, curated_path)
     if _exists(hdfs, curated_path):
         if not hdfs.is_directory(curated_path):
-            raise EnrichmentAnalyticsSnapshotError("existing SALES_ENRICHED path is not a directory")
+            raise EnrichmentAnalyticsSnapshotError(
+                "existing SALES_ENRICHED path is not a directory"
+            )
         persisted = _read_parquet(spark, curated_uri)
         metrics = _validate_persisted_enriched_frame(
             persisted,
@@ -892,7 +910,9 @@ def _materialize_sales_enriched(
     candidate_uri = _hdfs_uri(hdfs_config.uri, candidate_path)
     if _exists(hdfs, candidate_path):
         if not hdfs.is_directory(candidate_path):
-            raise EnrichmentAnalyticsSnapshotError("existing SALES_ENRICHED candidate is not a directory")
+            raise EnrichmentAnalyticsSnapshotError(
+                "existing SALES_ENRICHED candidate is not a directory"
+            )
     else:
         _write_parquet_once(spark, enriched, candidate_uri, partition_by=("year",))
 
@@ -1114,9 +1134,7 @@ def _promote_validated_output(hdfs: Any, candidate_path: str, curated_path: str)
             f"candidate remained after output promotion: {candidate_path}"
         )
     if not _exists(hdfs, curated_path) or not hdfs.is_directory(curated_path):
-        raise EnrichmentAnalyticsSnapshotError(
-            f"curated output was not finalized: {curated_path}"
-        )
+        raise EnrichmentAnalyticsSnapshotError(f"curated output was not finalized: {curated_path}")
 
 
 def _validate_dataset_manifest(
@@ -1154,7 +1172,10 @@ def _validate_dataset_manifest(
         raise EnrichmentAnalyticsSnapshotError(
             f"{contract.name} dataset manifest does not match persisted validation"
         )
-    if expected_pipeline_run_id is not None and manifest.get("pipeline_run_id") != expected_pipeline_run_id:
+    if (
+        expected_pipeline_run_id is not None
+        and manifest.get("pipeline_run_id") != expected_pipeline_run_id
+    ):
         raise EnrichmentAnalyticsSnapshotError(
             f"{contract.name} dataset manifest pipeline lineage conflicts with retry"
         )
@@ -1227,7 +1248,9 @@ def _output_quality_document(
         "quality_schema_version": _QUALITY_SCHEMA_VERSION,
         "status": VALIDATED,
         "dataset_name": (
-            dataset_name if dataset_name is not None else (None if contract is None else contract.name)
+            dataset_name
+            if dataset_name is not None
+            else (None if contract is None else contract.name)
         ),
         "contract_name": None if contract is None else contract.name,
         "contract_version": None if contract is None else contract.version,
@@ -1274,14 +1297,18 @@ def _basic_quality_values(dataframe: DataFrame, *, total_field: str) -> dict[str
     if null_row is None or null_row["unit_sales_total"] is None:
         raise EnrichmentAnalyticsSnapshotError("cannot measure an empty aggregate candidate")
     zero_field = "is_zero_sale" if "is_zero_sale" in fields else total_field
-    zero_count = dataframe.where(F.col(zero_field) == F.lit(0) if zero_field == total_field else F.col(zero_field)).count()
+    zero_count = dataframe.where(
+        F.col(zero_field) == F.lit(0) if zero_field == total_field else F.col(zero_field)
+    ).count()
     null_counts = {field: int(null_row[field] or 0) for field in fields}
     coverage: dict[str, object] = {}
     for field in ("series_id", "store_id", "cat_id", "date", "month_start"):
         if field in fields:
             coverage[f"distinct_{field}_count"] = dataframe.select(field).distinct().count()
     if "date" in fields:
-        bounds = dataframe.agg(F.min("date").alias("min_date"), F.max("date").alias("max_date")).first()
+        bounds = dataframe.agg(
+            F.min("date").alias("min_date"), F.max("date").alias("max_date")
+        ).first()
         coverage["min_date"] = _date_text(bounds["min_date"])
         coverage["max_date"] = _date_text(bounds["max_date"])
     if "month_start" in fields:
@@ -1371,10 +1398,7 @@ def _build_pipeline_manifest(
         _hdfs_uri(hdfs_config.uri, output_paths["category_monthly_sales"]),
     ]
     schema_fingerprint = _schema_fingerprint_map(
-        {
-            name: tuple(document["schema"])
-            for name, document in output_documents.items()
-        }
+        {name: tuple(document["schema"]) for name, document in output_documents.items()}
     )
     output_manifest_uris = {
         name: _hdfs_uri(
@@ -1496,7 +1520,9 @@ def _publish_or_reuse_run_manifest(
             "quality_report_uri",
         )
         if any(existing.get(field) != manifest.get(field) for field in identity_fields):
-            raise EnrichmentAnalyticsSnapshotError("existing pipeline run manifest conflicts with retry")
+            raise EnrichmentAnalyticsSnapshotError(
+                "existing pipeline run manifest conflicts with retry"
+            )
         return path
     try:
         return publish_run_manifest(
@@ -1608,7 +1634,9 @@ def _write_json_once(hdfs: Any, path: str, document: Mapping[str, object]) -> No
     payload = _json_bytes(document)
     if _exists(hdfs, path):
         if hdfs.read_remote(path) != payload:
-            raise EnrichmentAnalyticsSnapshotError(f"refusing to overwrite immutable evidence: {path}")
+            raise EnrichmentAnalyticsSnapshotError(
+                f"refusing to overwrite immutable evidence: {path}"
+            )
         return
     hdfs.upload_bytes(payload, path)
     if hdfs.read_remote(path) != payload:
@@ -1645,9 +1673,12 @@ def _manifest_int(manifest: Mapping[str, object], field: str) -> int:
 
 
 def _schema_fingerprint(fields: Sequence[str]) -> str:
-    return "sha256:" + hashlib.sha256(
-        json.dumps(tuple(fields), separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(tuple(fields), separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    )
 
 
 def _physical_schema(dataframe: DataFrame) -> dict[str, str]:
@@ -1723,16 +1754,18 @@ def _failure_detail(error: BaseException) -> str:
 
 
 def _json_bytes(value: object) -> bytes:
-    return (json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode(
-        "utf-8"
-    )
+    return (
+        json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
 
 
 def _exists(hdfs: Any, path: str) -> bool:
     try:
         return bool(hdfs.exists(path))
     except Exception as error:
-        raise EnrichmentAnalyticsSnapshotError(f"cannot inspect HDFS path {path}: {error}") from error
+        raise EnrichmentAnalyticsSnapshotError(
+            f"cannot inspect HDFS path {path}: {error}"
+        ) from error
 
 
 def _safe_exists(hdfs: Any, path: str) -> bool:

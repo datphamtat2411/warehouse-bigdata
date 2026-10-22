@@ -211,7 +211,9 @@ def test_aggregation_emits_contract_store_rows_and_provisional_category_rows(
         ("store_b", date(2026, 2, 1)): (0, 1),
         ("store_b", date(2026, 2, 2)): (5, 1),
     }
-    assert all(row.source_snapshot_id == "snapshot-001" for row in result.store_daily_sales.collect())
+    assert all(
+        row.source_snapshot_id == "snapshot-001" for row in result.store_daily_sales.collect()
+    )
     assert {
         (row.cat_id, row.month_start): row.total_units
         for row in result.category_monthly_sales.collect()
@@ -257,8 +259,9 @@ def test_snapshot_argument_is_required_nonempty_and_never_read_from_source(
         lambda frame: frame.unionByName(frame.limit(1)),
         lambda frame: frame.withColumn(
             "series_id",
-            F.when(F.col("date") == F.lit(date(2026, 2, 1)), F.lit("different-series"))
-            .otherwise(F.col("series_id")),
+            F.when(F.col("date") == F.lit(date(2026, 2, 1)), F.lit("different-series")).otherwise(
+                F.col("series_id")
+            ),
         ),
     ],
     ids=[
@@ -306,7 +309,9 @@ def test_distributed_output_validators_reject_tampered_store_rows(
 
     mutations = (
         valid.unionByName(valid.limit(1)),
-        valid.filter(~((F.col("store_id") == "store_a") & (F.col("date") == F.lit(date(2026, 1, 31)))),),
+        valid.filter(
+            ~((F.col("store_id") == "store_a") & (F.col("date") == F.lit(date(2026, 1, 31)))),
+        ),
         valid.withColumn(
             "store_id",
             F.when(F.col("store_id") == "store_a", F.lit("unexpected-store")).otherwise(
@@ -379,5 +384,9 @@ def test_separate_snapshot_invocations_remain_isolated(spark: SparkSession) -> N
 
     assert {row.source_snapshot_id for row in first.store_daily_sales.collect()} == {"snapshot-a"}
     assert {row.source_snapshot_id for row in second.store_daily_sales.collect()} == {"snapshot-b"}
-    assert {row.source_snapshot_id for row in first.category_monthly_sales.collect()} == {"snapshot-a"}
-    assert {row.source_snapshot_id for row in second.category_monthly_sales.collect()} == {"snapshot-b"}
+    assert {row.source_snapshot_id for row in first.category_monthly_sales.collect()} == {
+        "snapshot-a"
+    }
+    assert {row.source_snapshot_id for row in second.category_monthly_sales.collect()} == {
+        "snapshot-b"
+    }

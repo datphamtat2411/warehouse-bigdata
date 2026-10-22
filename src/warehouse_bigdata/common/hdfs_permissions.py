@@ -11,9 +11,7 @@ from warehouse_bigdata.common.config import HDFSConfig
 from warehouse_bigdata.common.hdfs_paths import HdfsPathError, render_staging_path
 
 SPARK_HDFS_USER = "spark"
-HDFS_SPARK_ACL_SPEC = (
-    "user:spark:rwx,mask::rwx,default:user:spark:rwx,default:mask::rwx"
-)
+HDFS_SPARK_ACL_SPEC = "user:spark:rwx,mask::rwx,default:user:spark:rwx,default:mask::rwx"
 _REQUIRED_ACL_ENTRIES = frozenset(
     {
         "user:spark:rwx",
@@ -87,9 +85,8 @@ def _event_path(hdfs_config: HDFSConfig, event_log_dir: str) -> str:
         raise HdfsPermissionError(
             "event_log_dir must use the configured HDFS endpoint and an absolute path"
         )
-    if (
-        not actual.path.startswith("/")
-        or any(part in {"", ".", ".."} for part in actual.path.split("/")[1:])
+    if not actual.path.startswith("/") or any(
+        part in {"", ".", ".."} for part in actual.path.split("/")[1:]
     ):
         raise HdfsPermissionError(
             "event_log_dir must use an absolute path with safe HDFS path components"
@@ -129,7 +126,9 @@ def _require_directory(client: Any, path: str) -> None:
     except HdfsPermissionError:
         raise
     except Exception as error:
-        raise HdfsPermissionError(f"cannot inspect HDFS permission target {path}: {error}") from error
+        raise HdfsPermissionError(
+            f"cannot inspect HDFS permission target {path}: {error}"
+        ) from error
 
 
 def _ensure_acl(client: Any, path: str) -> None:

@@ -413,7 +413,9 @@ def summarize(log=None, **overrides) -> dict:
 
 def test_m04_event_limit_is_separate_and_preserves_complete_event_validation() -> None:
     log = m04_events()
-    payload = b" " * support.MAX_EVENT_BYTES + b"\n".join(json.dumps(e).encode() for e in log) + b"\n"
+    payload = (
+        b" " * support.MAX_EVENT_BYTES + b"\n".join(json.dumps(e).encode() for e in log) + b"\n"
+    )
     summary = support.summarize_m04_event_log(
         payload, run_id=RUN, application_name=f"warehouse-spark-hdfs-{RUN}"
     )
@@ -449,9 +451,9 @@ def test_m04_smoke_requires_successful_work_on_both_workers(idle_second_worker) 
     log = events()
     if idle_second_worker:
         log = [
-            event for event in log
-            if event["Event"] != "SparkListenerTaskEnd"
-            or event["Task Info"]["Host"] != HOSTS[1]
+            event
+            for event in log
+            if event["Event"] != "SparkListenerTaskEnd" or event["Task Info"]["Host"] != HOSTS[1]
         ]
     payload = b"\n".join(json.dumps(event).encode() for event in log) + b"\n"
     arguments = {"run_id": RUN, "application_name": f"warehouse-spark-hdfs-{RUN}"}
@@ -490,7 +492,10 @@ def summarize_m04(log: list[dict], **overrides) -> dict:
 def add_skipped_m04_stage(log: list[dict]) -> dict:
     job = next(event for event in log if event["Event"] == "SparkListenerJobStart")
     skipped = {
-        "Stage ID": 99, "Stage Attempt ID": 0, "Number of Tasks": 2, "Parent IDs": [],
+        "Stage ID": 99,
+        "Stage Attempt ID": 0,
+        "Number of Tasks": 2,
+        "Parent IDs": [],
     }
     job["Stage IDs"].insert(0, 99)
     job["Stage Infos"].insert(0, skipped)
@@ -504,9 +509,13 @@ def add_skipped_m04_stage(log: list[dict]) -> dict:
 def retried_m04_events() -> list[dict]:
     log = m04_events()
     stage_events = [
-        event for event in log
-        if event["Event"] in (
-            "SparkListenerStageSubmitted", "SparkListenerTaskEnd", "SparkListenerStageCompleted",
+        event
+        for event in log
+        if event["Event"]
+        in (
+            "SparkListenerStageSubmitted",
+            "SparkListenerTaskEnd",
+            "SparkListenerStageCompleted",
         )
         and event.get("Stage Info", event).get("Stage ID") == 0
     ]
@@ -557,7 +566,8 @@ def test_m04_accepts_successful_stage_retries_and_excludes_abandoned_task_succes
     assert summary["execution_metrics"]["task_attempts"] == 8
     assert summary["execution_metrics"]["input_bytes"] == 600
     assert {host: values["successful_tasks"] for host, values in summary["workers"].items()} == {
-        HOSTS[0]: 3, HOSTS[1]: 3,
+        HOSTS[0]: 3,
+        HOSTS[1]: 3,
     }
 
 
@@ -590,7 +600,8 @@ def test_m04_rejects_failed_jobs_even_with_completed_stages() -> None:
 @pytest.mark.parametrize("missing", ["all", "stage", "partition"])
 def test_m04_rejects_missing_successful_task_evidence(missing) -> None:
     log = [
-        e for e in m04_events()
+        e
+        for e in m04_events()
         if e["Event"] != "SparkListenerTaskEnd"
         or (missing == "stage" and e["Stage ID"] != 0)
         or (missing == "partition" and e["Task Info"]["Task ID"] != 10)
@@ -600,7 +611,9 @@ def test_m04_rejects_missing_successful_task_evidence(missing) -> None:
 
 
 @pytest.mark.parametrize("contradiction", ["submitted", "completed", "failed", "attempt", "leaf"])
-def test_m04_rejects_skipped_stage_snapshots_with_execution_or_inconsistent_dag(contradiction) -> None:
+def test_m04_rejects_skipped_stage_snapshots_with_execution_or_inconsistent_dag(
+    contradiction,
+) -> None:
     log = m04_events()
     skipped = add_skipped_m04_stage(log)
     if contradiction == "leaf":
@@ -629,12 +642,26 @@ def test_m04_rejects_task_events_without_submitted_attempts(kind) -> None:
         summarize_m04(log)
 
 
-@pytest.mark.parametrize("mutation", [
-    "orphan-completion", "duplicate-submission", "failed-final-attempt", "malformed-stage",
-    "missing-job-stage-info", "completion-before-submission", "job-before-stage-completion",
-    "wrong-stage-group", "missing-metrics", "wrong-executor", "invalid-task-time",
-    "wrong-job-group", "malformed-job-group", "inconsistent-parents", "missing-completion-time",
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "orphan-completion",
+        "duplicate-submission",
+        "failed-final-attempt",
+        "malformed-stage",
+        "missing-job-stage-info",
+        "completion-before-submission",
+        "job-before-stage-completion",
+        "wrong-stage-group",
+        "missing-metrics",
+        "wrong-executor",
+        "invalid-task-time",
+        "wrong-job-group",
+        "malformed-job-group",
+        "inconsistent-parents",
+        "missing-completion-time",
+    ],
+)
 def test_m04_rejects_inconsistent_or_malformed_execution_histories(mutation) -> None:
     log = m04_events()
     submitted = next(e for e in log if e["Event"] == "SparkListenerStageSubmitted")
@@ -678,10 +705,16 @@ def test_m04_rejects_inconsistent_or_malformed_execution_histories(mutation) -> 
         summarize_m04(log)
 
 
-@pytest.mark.parametrize("missing", [
-    "SparkListenerLogStart", "SparkListenerApplicationStart", "SparkListenerApplicationEnd",
-    "SparkListenerEnvironmentUpdate", "SparkListenerJobEnd",
-])
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "SparkListenerLogStart",
+        "SparkListenerApplicationStart",
+        "SparkListenerApplicationEnd",
+        "SparkListenerEnvironmentUpdate",
+        "SparkListenerJobEnd",
+    ],
+)
 def test_m04_rejects_incomplete_application_logs(missing) -> None:
     with pytest.raises(VerificationError):
         summarize_m04([e for e in m04_events() if e["Event"] != missing])
@@ -691,7 +724,9 @@ def test_m04_rejects_incomplete_application_logs(missing) -> None:
 def test_m04_rejects_malformed_listener_payloads(payload) -> None:
     with pytest.raises(VerificationError):
         support.summarize_m04_event_log(
-            payload, run_id=RUN, application_name=f"warehouse-spark-hdfs-{RUN}",
+            payload,
+            run_id=RUN,
+            application_name=f"warehouse-spark-hdfs-{RUN}",
         )
 
 

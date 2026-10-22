@@ -230,9 +230,10 @@ def _prices_csv(*, duplicate: bool = False) -> str:
 def _schema_fingerprint(fields: tuple[str, ...]) -> str:
     import hashlib
 
-    return "sha256:" + hashlib.sha256(
-        json.dumps(fields, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return (
+        "sha256:"
+        + hashlib.sha256(json.dumps(fields, separators=(",", ":")).encode("utf-8")).hexdigest()
+    )
 
 
 def _pipeline_manifest(hdfs_config: HDFSConfig, *, schema_fingerprint: str) -> dict[str, object]:
@@ -259,9 +260,7 @@ def _pipeline_manifest(hdfs_config: HDFSConfig, *, schema_fingerprint: str) -> d
         "source_version": SOURCE_VERSION,
         "output_dataset_names": json.dumps(["sales_daily"], separators=(",", ":")),
         "output_dataset_uris": json.dumps(
-            [
-                f"{hdfs_config.uri}{render_curated_sales_daily_path(BASE_PATH, SOURCE_SNAPSHOT_ID)}"
-            ],
+            [f"{hdfs_config.uri}{render_curated_sales_daily_path(BASE_PATH, SOURCE_SNAPSHOT_ID)}"],
             separators=(",", ":"),
         ),
         "quality_report_uri": f"{hdfs_config.uri}/data/warehouse/staging/input/quality.json",
@@ -323,7 +322,7 @@ def _prepare_inputs(
     sales_local.parent.mkdir(parents=True, exist_ok=True)
     _sales_frame(spark).write.mode("errorifexists").parquet(str(sales_local))
 
-    raw_path = f"{BASE_PATH}/raw/m5/source_version={SOURCE_VERSION.replace(':', '-') }"
+    raw_path = f"{BASE_PATH}/raw/m5/source_version={SOURCE_VERSION.replace(':', '-')}"
     raw_local = hdfs._local(raw_path)
     raw_local.mkdir(parents=True, exist_ok=True)
     (raw_local / "calendar.csv").write_text(_calendar_csv(), encoding="utf-8")
@@ -336,9 +335,7 @@ def _prepare_inputs(
     snapshot["artifact_uri"] = str(sales_local)
     upstream = _pipeline_manifest(hdfs_config, schema_fingerprint=source_schema)
     upstream["source_snapshot_id"] = snapshot_id
-    upstream["output_dataset_uris"] = json.dumps(
-        [str(sales_local)], separators=(",", ":")
-    )
+    upstream["output_dataset_uris"] = json.dumps([str(sales_local)], separators=(",", ":"))
     hdfs.upload_bytes(
         (json.dumps(snapshot, separators=(",", ":")) + "\n").encode("utf-8"),
         sales_path + "/_snapshot_manifest.json",
@@ -355,12 +352,22 @@ def _prepare_inputs(
         source_version=SOURCE_VERSION,
         raw_path=raw_path,
         manifests=(
-            {"source_file": "calendar.csv", "status": "VALIDATED", "source_version": SOURCE_VERSION},
-            {"source_file": "sell_prices.csv", "status": "VALIDATED", "source_version": SOURCE_VERSION},
+            {
+                "source_file": "calendar.csv",
+                "status": "VALIDATED",
+                "source_version": SOURCE_VERSION,
+            },
+            {
+                "source_file": "sell_prices.csv",
+                "status": "VALIDATED",
+                "source_version": SOURCE_VERSION,
+            },
         ),
         integrity=object(),
     )
-    monkeypatch.setattr(snapshot_module, "validate_hdfs_raw_snapshot", lambda *args, **kwargs: raw_snapshot)
+    monkeypatch.setattr(
+        snapshot_module, "validate_hdfs_raw_snapshot", lambda *args, **kwargs: raw_snapshot
+    )
     monkeypatch.setattr(
         snapshot_module,
         "_hdfs_uri",
@@ -434,8 +441,12 @@ def test_deferred_publication_keeps_all_three_outputs_in_run_staging(spark, tmp_
     requests = []
     monkeypatch.setattr(module, "stage_publication", lambda *args, **kw: requests.append(args[2]))
     result = run_enrichment_analytics_snapshot(
-        spark, source_version=SOURCE_VERSION, source_snapshot_id=SOURCE_SNAPSHOT_ID,
-        pipeline_run_id=PIPELINE_RUN_ID, hdfs_config=settings, client=hdfs,
+        spark,
+        source_version=SOURCE_VERSION,
+        source_snapshot_id=SOURCE_SNAPSHOT_ID,
+        pipeline_run_id=PIPELINE_RUN_ID,
+        hdfs_config=settings,
+        client=hdfs,
         defer_publication=True,
     )
     assert result.status == "STAGED", result.failure_details
@@ -515,7 +526,9 @@ def test_retry_reuses_immutable_outputs_without_appending_rows(
 
     assert second.status == "REUSED"
     assert spark.read.option("pathGlobFilter", "*.parquet").parquet(str(curated_local)).count() == 4
-    assert before == sorted(path.relative_to(curated_local).as_posix() for path in curated_local.rglob("*"))
+    assert before == sorted(
+        path.relative_to(curated_local).as_posix() for path in curated_local.rglob("*")
+    )
 
 
 def test_retry_recovers_when_one_output_was_finalized_before_interruption(
@@ -535,7 +548,9 @@ def test_retry_recovers_when_one_output_was_finalized_before_interruption(
     assert interrupted.run_manifest_path is None
     assert hdfs.exists(render_curated_sales_enriched_path(BASE_PATH, SOURCE_SNAPSHOT_ID))
     assert hdfs.exists(render_curated_store_daily_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID))
-    assert not hdfs.exists(render_curated_category_monthly_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID))
+    assert not hdfs.exists(
+        render_curated_category_monthly_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID)
+    )
 
     recovered = _run(spark, hdfs, hdfs_config)
 
@@ -621,7 +636,10 @@ def test_mismatched_sales_manifest_and_snapshot_inputs_fail_without_validated_ma
     assert result.status == "FAILED"
     assert result.run_manifest_path is None
     assert not hdfs.exists(result.curated_path)
-    assert json.loads(hdfs.read_remote(result.failure_report_path).decode("utf-8"))["status"] == "FAILED"
+    assert (
+        json.loads(hdfs.read_remote(result.failure_report_path).decode("utf-8"))["status"]
+        == "FAILED"
+    )
 
 
 def test_duplicate_price_keys_fail_and_leave_no_promoted_output(

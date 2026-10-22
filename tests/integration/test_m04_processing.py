@@ -11,9 +11,7 @@ from tests.integration.m04_support import run_correctness
 
 pytestmark = pytest.mark.integration
 
-if not all(
-    (os.environ.get("WAREHOUSE_M5_SOURCE_DIR"), os.environ.get("WAREHOUSE_M5_SOURCE_URL"))
-):
+if not all((os.environ.get("WAREHOUSE_M5_SOURCE_DIR"), os.environ.get("WAREHOUSE_M5_SOURCE_URL"))):
     pytestmark = [
         pytest.mark.integration,
         pytest.mark.skip(
@@ -35,11 +33,15 @@ def test_full_scope_m04_processing_reconciles_independent_parquet_reads(
     assert metrics["sales_enriched"]["row_count"] == 59_181_090
     assert metrics["sales_daily"]["zero_sales_count"] == metrics["raw"]["zero_sales_count"]
     assert metrics["sales_enriched"]["price_reconciliation_mismatches"] == 0
-    assert metrics["sales_enriched"]["nullable_price_count"] + metrics["sales_enriched"][
-        "matched_price_count"
-    ] == 59_181_090
+    assert (
+        metrics["sales_enriched"]["nullable_price_count"]
+        + metrics["sales_enriched"]["matched_price_count"]
+        == 59_181_090
+    )
     assert metrics["store_daily_sales"]["unit_sales_total"] == metrics["raw"]["unit_sales_total"]
-    assert metrics["category_monthly_sales"]["unit_sales_total"] == metrics["raw"]["unit_sales_total"]
+    assert (
+        metrics["category_monthly_sales"]["unit_sales_total"] == metrics["raw"]["unit_sales_total"]
+    )
     assert set(report["lineage"]["paths"]) == {
         "sales_daily",
         "sales_enriched",

@@ -60,7 +60,7 @@ def test_bounded_m04_benchmark_matrix_retains_measured_results(
         for output in case["storage"].values():
             assert output["file_count"] > 0
             assert output["total_bytes"] > 0
-            assert output["size_distribution"]["max_bytes"] >= output["size_distribution"][
-                "min_bytes"
-            ]
+            assert (
+                output["size_distribution"]["max_bytes"] >= output["size_distribution"]["min_bytes"]
+            )
     print("M04 benchmark report: artifacts/m04/benchmark/report.json")

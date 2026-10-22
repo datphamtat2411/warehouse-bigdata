@@ -177,9 +177,7 @@ def test_acl_commands_are_non_recursive_and_bounded(tmp_path: Path) -> None:
         "/data/warehouse/staging/pipeline_run_id=run-001",
         "user:spark:rwx,mask::rwx,default:user:spark:rwx,default:mask::rwx",
     )
-    assert "user:spark:rwx" in client.get_acl(
-        "/data/warehouse/staging/pipeline_run_id=run-001"
-    )
+    assert "user:spark:rwx" in client.get_acl("/data/warehouse/staging/pipeline_run_id=run-001")
 
     commands = [json.loads(line) for line in log.read_text().splitlines()]
     assert commands == [

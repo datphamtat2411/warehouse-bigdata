@@ -365,9 +365,7 @@ def _validate_category_values(category_monthly_sales: DataFrame, expected: DataF
         ("cat_id", "month_start"),
         ("total_units",),
     )
-    mismatched = comparison.where(
-        F.col("actual_total_units") != F.col("expected_total_units")
-    )
+    mismatched = comparison.where(F.col("actual_total_units") != F.col("expected_total_units"))
     _raise_for_rows(
         mismatched,
         F.lit(True),
@@ -386,45 +384,43 @@ def _join_output_to_expected(
 
     actual_alias = actual.alias("actual")
     expected_alias = expected.alias("expected")
-    join_condition = [
-        F.col(f"actual.{key}") == F.col(f"expected.{key}") for key in keys
-    ]
-    selections = [
-        F.col(f"actual.{key}").alias(key)
-        for key in keys
-    ]
+    join_condition = [F.col(f"actual.{key}") == F.col(f"expected.{key}") for key in keys]
+    selections = [F.col(f"actual.{key}").alias(key) for key in keys]
     for field in values:
-        selections.append(
-            F.col(f"actual.{field}").cast("decimal(38,0)").alias(f"actual_{field}")
-        )
-        selections.append(
-            F.col(f"expected._expected_{field}").alias(f"expected_{field}")
-        )
+        selections.append(F.col(f"actual.{field}").cast("decimal(38,0)").alias(f"actual_{field}"))
+        selections.append(F.col(f"expected._expected_{field}").alias(f"expected_{field}"))
     return actual_alias.join(expected_alias, join_condition, "inner").select(*selections)
 
 
 def _expected_store_values(sales_daily: DataFrame) -> DataFrame:
     from pyspark.sql import functions as F
 
-    return sales_daily.groupBy("store_id", "date").agg(
-        F.sum(_decimal_units("unit_sales")).alias("_expected_total_units"),
-        F.countDistinct("series_id").cast("long").alias("_expected_observed_series_count"),
-    ).select(
-        "store_id",
-        "date",
-        F.col("_expected_total_units"),
-        F.col("_expected_observed_series_count"),
+    return (
+        sales_daily.groupBy("store_id", "date")
+        .agg(
+            F.sum(_decimal_units("unit_sales")).alias("_expected_total_units"),
+            F.countDistinct("series_id").cast("long").alias("_expected_observed_series_count"),
+        )
+        .select(
+            "store_id",
+            "date",
+            F.col("_expected_total_units"),
+            F.col("_expected_observed_series_count"),
+        )
     )
 
 
 def _expected_category_values(sales_daily: DataFrame) -> DataFrame:
     from pyspark.sql import functions as F
 
-    return sales_daily.withColumn(
-        "month_start", F.trunc(F.col("date"), "month")
-    ).groupBy("cat_id", "month_start").agg(
-        F.sum(_decimal_units("unit_sales")).alias("_expected_total_units"),
-    ).select("cat_id", "month_start", F.col("_expected_total_units"))
+    return (
+        sales_daily.withColumn("month_start", F.trunc(F.col("date"), "month"))
+        .groupBy("cat_id", "month_start")
+        .agg(
+            F.sum(_decimal_units("unit_sales")).alias("_expected_total_units"),
+        )
+        .select("cat_id", "month_start", F.col("_expected_total_units"))
+    )
 
 
 def _validate_reconciled_total(
@@ -503,18 +499,22 @@ def _validate_sales_daily(sales_daily: DataFrame) -> None:
     _reject_duplicate_grain(sales_daily, ("item_id", "store_id", "day_key"), "day key")
     _reject_duplicate_grain(sales_daily, ("item_id", "store_id", "date"), "date")
 
-    multiple_series = sales_daily.groupBy("item_id", "store_id").agg(
-        F.countDistinct("series_id").alias("series_count")
-    ).where(F.col("series_count") != F.lit(1))
+    multiple_series = (
+        sales_daily.groupBy("item_id", "store_id")
+        .agg(F.countDistinct("series_id").alias("series_count"))
+        .where(F.col("series_count") != F.lit(1))
+    )
     _raise_for_rows(
         multiple_series,
         F.lit(True),
         ("item_id", "store_id", "series_count"),
         "inconsistent SALES_DAILY series mapping",
     )
-    multiple_pairs = sales_daily.groupBy("series_id").agg(
-        F.countDistinct("item_id", "store_id").alias("pair_count")
-    ).where(F.col("pair_count") != F.lit(1))
+    multiple_pairs = (
+        sales_daily.groupBy("series_id")
+        .agg(F.countDistinct("item_id", "store_id").alias("pair_count"))
+        .where(F.col("pair_count") != F.lit(1))
+    )
     _raise_for_rows(
         multiple_pairs,
         F.lit(True),

@@ -118,10 +118,7 @@ def enrich_sales_daily(
         F.col("calendar.snap_CA").alias("_snap_CA"),
         F.col("calendar.snap_TX").alias("_snap_TX"),
         F.col("calendar.snap_WI").alias("_snap_WI"),
-        *[
-            F.col(f"calendar.{field}").alias(f"_{field}")
-            for field in _CALENDAR_EVENT_FIELDS
-        ],
+        *[F.col(f"calendar.{field}").alias(f"_{field}") for field in _CALENDAR_EVENT_FIELDS],
     )
     _raise_for_rows(
         calendar_enriched,
@@ -506,10 +503,7 @@ def _validate_calendar(calendar: DataFrame) -> DataFrame:
         parsed_numeric["wday"].cast(IntegerType()).alias("wday"),
         parsed_numeric["month"].cast(IntegerType()).alias("month"),
         parsed_numeric["year"].cast(IntegerType()).alias("year"),
-        *[
-            nullable_event(field).alias(field)
-            for field in _CALENDAR_EVENT_FIELDS
-        ],
+        *[nullable_event(field).alias(field) for field in _CALENDAR_EVENT_FIELDS],
         *[
             (parsed_snap[field] == F.lit(1)).alias(field)
             for field in ("snap_CA", "snap_TX", "snap_WI")
@@ -605,13 +599,8 @@ def _unit_sales_total(dataframe: DataFrame) -> int:
 def _invalid_price_expression(column, *, allow_null: bool = False):
     from pyspark.sql import functions as F
 
-    invalid = (
-        column.isNotNull()
-        & (
-            F.isnan(column)
-            | (column <= F.lit(0.0))
-            | (column > F.lit(_MAX_FINITE_DOUBLE))
-        )
+    invalid = column.isNotNull() & (
+        F.isnan(column) | (column <= F.lit(0.0)) | (column > F.lit(_MAX_FINITE_DOUBLE))
     )
     return invalid if allow_null else invalid | column.isNull()
 
@@ -631,9 +620,7 @@ def _canonical_digits(column):
     from pyspark.sql import functions as F
 
     without_leading_zeroes = F.regexp_replace(column, r"^0+", "")
-    return F.when(without_leading_zeroes == F.lit(""), F.lit("0")).otherwise(
-        without_leading_zeroes
-    )
+    return F.when(without_leading_zeroes == F.lit(""), F.lit("0")).otherwise(without_leading_zeroes)
 
 
 def _validate_expected_metrics(expected_row_count: int, expected_unit_sales_total: int) -> None:

@@ -617,9 +617,9 @@ def test_legacy_calendar_reuse_does_not_rewrite_existing_snapshot(tmp_path: Path
 
     assert reused.status == "REUSED"
     assert client.files == before_files
-    assert json.loads(
-        client.files[f"{first.raw_path}/source_manifests.json"]
-    ) == json.loads(before_files[f"{first.raw_path}/source_manifests.json"])
+    assert json.loads(client.files[f"{first.raw_path}/source_manifests.json"]) == json.loads(
+        before_files[f"{first.raw_path}/source_manifests.json"]
+    )
     mutating = {
         "mkdir_parents",
         "mkdir_exclusive",

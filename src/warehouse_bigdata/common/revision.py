@@ -52,6 +52,10 @@ def _package_files(root: Traversable, prefix: str = "") -> tuple[tuple[str, Trav
         if path.is_dir():
             if path.name not in _IGNORED_PARTS:
                 files.extend(_package_files(path, relative))
-        elif path.is_file() and path.name not in {".DS_Store"} and path.suffix not in {".pyc", ".pyo"}:
+        elif (
+            path.is_file()
+            and path.name not in {".DS_Store"}
+            and path.suffix not in {".pyc", ".pyo"}
+        ):
             files.append((relative, path))
     return tuple(files)

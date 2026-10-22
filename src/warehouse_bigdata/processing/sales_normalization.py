@@ -138,9 +138,7 @@ def normalize_sales_daily(
             )
         )
 
-    normalized_long = reduce(
-        lambda left, right: left.unionByName(right), normalized_chunks
-    )
+    normalized_long = reduce(lambda left, right: left.unionByName(right), normalized_chunks)
     source_metrics = _sales_metrics(normalized_long)
     calendar = F.broadcast(calendar_lookup).alias("calendar")
     sales = normalized_long.alias("sales")
@@ -214,9 +212,7 @@ def validate_sales_daily(
                 f"received {field.dataType.simpleString()}"
             )
 
-    null_condition = reduce(
-        or_, (F.col(field).isNull() for field in _OUTPUT_FIELDS)
-    )
+    null_condition = reduce(or_, (F.col(field).isNull() for field in _OUTPUT_FIELDS))
     _raise_for_rows(sales_daily, null_condition, _OUTPUT_FIELDS, "null SALES_DAILY field")
 
     for field in ("item_id", "dept_id", "cat_id", "store_id", "state_id", "series_id"):
@@ -232,9 +228,7 @@ def validate_sales_daily(
         ("day_key",),
         "unexpected SALES_DAILY day key",
     )
-    expected_index = F.regexp_extract(F.col("day_key"), r"^d_([1-9][0-9]*)$", 1).cast(
-        IntegerType()
-    )
+    expected_index = F.regexp_extract(F.col("day_key"), r"^d_([1-9][0-9]*)$", 1).cast(IntegerType())
     _raise_for_rows(
         sales_daily,
         (F.col("day_index") < 1)
@@ -266,9 +260,7 @@ def validate_sales_daily(
             f"SALES_DAILY day coverage mismatch: expected {len(selected_days)}, received {day_count}"
         )
     uneven_days = (
-        sales_daily.groupBy("day_key")
-        .count()
-        .where(F.col("count") != expected_series_count)
+        sales_daily.groupBy("day_key").count().where(F.col("count") != expected_series_count)
     )
     _raise_for_rows(uneven_days, F.lit(True), ("day_key", "count"), "incomplete day coverage")
 
@@ -338,10 +330,7 @@ def _validate_calendar(calendar: DataFrame, selected_day_keys: Sequence[str]) ->
         & (canonical_day_index <= F.lit(calendar_day_limit))
     )
     valid_day = F.coalesce(
-        day_key.isNotNull()
-        & valid_day_shape
-        & valid_day_index
-        & valid_calendar_day_range,
+        day_key.isNotNull() & valid_day_shape & valid_day_index & valid_calendar_day_range,
         F.lit(False),
     )
     _raise_for_rows(calendar, ~valid_day, _CALENDAR_FIELDS, "invalid calendar day key")
@@ -349,7 +338,9 @@ def _validate_calendar(calendar: DataFrame, selected_day_keys: Sequence[str]) ->
     date_text = F.col("date")
     valid_date_shape = date_text.rlike(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
     parsed_date = F.expr("try_to_timestamp(`date`, 'yyyy-MM-dd')").cast(DateType())
-    valid_date = F.coalesce(date_text.isNotNull() & valid_date_shape & parsed_date.isNotNull(), F.lit(False))
+    valid_date = F.coalesce(
+        date_text.isNotNull() & valid_date_shape & parsed_date.isNotNull(), F.lit(False)
+    )
     _raise_for_rows(calendar, ~valid_date, _CALENDAR_FIELDS, "invalid calendar date")
 
     retail_week = F.col("wm_yr_wk")
@@ -371,9 +362,12 @@ def _validate_calendar(calendar: DataFrame, selected_day_keys: Sequence[str]) ->
         .otherwise(F.lit(None).cast(IntegerType()))
         .alias("wm_yr_wk"),
     )
-    selected_count = lookup.filter(F.col("calendar_day_key").isin(list(selected_day_keys))).select(
-        "calendar_day_key"
-    ).distinct().count()
+    selected_count = (
+        lookup.filter(F.col("calendar_day_key").isin(list(selected_day_keys)))
+        .select("calendar_day_key")
+        .distinct()
+        .count()
+    )
     if selected_count != len(tuple(selected_day_keys)):
         raise NormalizationError(
             f"calendar does not cover all selected days: expected {len(tuple(selected_day_keys))}, "

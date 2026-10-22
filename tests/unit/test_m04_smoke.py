@@ -310,6 +310,7 @@ def test_driver_probe_checks_exact_publication_namespace_without_ancestor_climbi
     from warehouse_bigdata.common import spark_hdfs_client
 
     monkeypatch.setattr(spark_hdfs_client, "SparkHdfsCliClient", lambda: client)
+
     def namespace(actual_client, actual_config):
         assert actual_client is client and actual_config == CONFIG
         namespaces.append(actual_config)

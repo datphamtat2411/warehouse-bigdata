@@ -568,9 +568,7 @@ def summarize_event_log(
         "task_attempts": len(tasks),
         "failed_attempts": len(failures),
         "successful_task_hosts": sorted({record["host"] for record in successes.values()}),
-        "successful_executor_ids": sorted(
-            {record["executor_id"] for record in successes.values()}
-        ),
+        "successful_executor_ids": sorted({record["executor_id"] for record in successes.values()}),
     }
     return {
         "application_id": application_id,
@@ -614,7 +612,8 @@ def _require_m04_job_stages(infos: dict[int, dict], submitted: dict, completed: 
     remaining = set(infos)
     while remaining:
         ready = {
-            stage for stage in remaining
+            stage
+            for stage in remaining
             if not (set(infos[stage].get("Parent IDs", [])) & remaining)
         }
         require(ready, "Cyclic M04 job stage DAG.")
@@ -712,10 +711,12 @@ def summarize_m04_event_log(
             )
             stage_ids, infos = event.get("Stage IDs"), event.get("Stage Infos")
             require(
-                isinstance(stage_ids, list) and stage_ids
+                isinstance(stage_ids, list)
+                and stage_ids
                 and all(type(stage) is int and stage >= 0 for stage in stage_ids)
                 and len(stage_ids) == len(set(stage_ids))
-                and isinstance(infos, list) and len(infos) == len(stage_ids),
+                and isinstance(infos, list)
+                and len(infos) == len(stage_ids),
                 "Malformed M04 job stage evidence.",
             )
             infos = [_m04_stage_info(info) for info in infos]
@@ -754,7 +755,8 @@ def summarize_m04_event_log(
                 "M04 stage retry precedes prior attempt completion or has invalid attempt order.",
             )
             require(
-                type(info.get("Submission Time")) is int and info["Submission Time"] >= 0
+                type(info.get("Submission Time")) is int
+                and info["Submission Time"] >= 0
                 and isinstance(event.get("Properties"), dict),
                 "Invalid M04 stage submission evidence.",
             )
@@ -762,7 +764,8 @@ def summarize_m04_event_log(
             require(
                 isinstance(group, str)
                 and any(
-                    identifier not in job_ends and key[0] in job_stages[identifier]
+                    identifier not in job_ends
+                    and key[0] in job_stages[identifier]
                     and job["Properties"]["spark.jobGroup.id"] == group
                     for identifier, job in jobs.items()
                 ),
@@ -781,8 +784,7 @@ def summarize_m04_event_log(
                 and info["Completion Time"] >= start["Submission Time"]
                 and info["Number of Tasks"] == start["Number of Tasks"]
                 and info.get("Parent IDs", []) == start.get("Parent IDs", [])
-                and (info.get("Failure Reason") is None
-                     or isinstance(info["Failure Reason"], str)),
+                and (info.get("Failure Reason") is None or isinstance(info["Failure Reason"], str)),
                 "Inconsistent M04 stage completion history.",
             )
             completed[key] = event
@@ -805,7 +807,8 @@ def summarize_m04_event_log(
                     for field in ("Partition ID", "Attempt", "Launch Time", "Finish Time")
                 )
                 and info["Finish Time"] >= info["Launch Time"]
-                and type(info.get("Failed")) is bool and type(info.get("Killed")) is bool
+                and type(info.get("Failed")) is bool
+                and type(info.get("Killed")) is bool
                 and isinstance(info.get("Executor ID"), str)
                 and isinstance(info.get("Host"), str)
                 and isinstance(event.get("Task End Reason"), dict)
@@ -820,7 +823,8 @@ def summarize_m04_event_log(
         "M04 submitted stage attempts are missing completion evidence.",
     )
     require(
-        {key[0] for key in submitted} <= set().union(*(set(infos) for infos in job_stages.values())),
+        {key[0] for key in submitted}
+        <= set().union(*(set(infos) for infos in job_stages.values())),
         "M04 submitted stages have no job attribution.",
     )
     successful_stages = {
@@ -868,9 +872,14 @@ def summarize_m04_event_log(
         metrics = record["metrics"]
         require(
             isinstance(metrics, dict)
-            and all(isinstance(metrics.get(section), dict) for section in (
-                "Input Metrics", "Shuffle Read Metrics", "Shuffle Write Metrics",
-            )),
+            and all(
+                isinstance(metrics.get(section), dict)
+                for section in (
+                    "Input Metrics",
+                    "Shuffle Read Metrics",
+                    "Shuffle Write Metrics",
+                )
+            ),
             "M04 successful task metrics are incomplete or invalid.",
         )
         required_metrics = [
@@ -902,7 +911,8 @@ def summarize_m04_event_log(
     require(successes, "M04 event log has no successful task evidence.")
     for key in successful_stages:
         partitions = {
-            task["partition_id"] for task in successes
+            task["partition_id"]
+            for task in successes
             if (task["stage_id"], task["stage_attempt"]) == key
         }
         require(

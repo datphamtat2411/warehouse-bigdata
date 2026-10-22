@@ -284,7 +284,9 @@ def test_snapshot_config_supports_bounded_calibration_scope() -> None:
     )
 
     assert config.row_count == 30_490 * 128
-    assert build_chunk_plan(config, "/data/warehouse/staging/pipeline_run_id=run-1")[-1].day_end == 128
+    assert (
+        build_chunk_plan(config, "/data/warehouse/staging/pipeline_run_id=run-1")[-1].day_end == 128
+    )
 
 
 def test_snapshot_persists_revalidates_promotes_and_reuses_without_duplicate_data(
@@ -356,12 +358,11 @@ def test_snapshot_persists_revalidates_promotes_and_reuses_without_duplicate_dat
         "coarse_partition_bucket_days": 128,
         "coarse_partition_count": 16,
     }
-    assert json.loads(
-        hdfs.read_remote(first.chunks[0].manifest_path).decode("utf-8")
-    )["code_revision"] == "sha256:" + "b" * 64
-    run_manifest = json.loads(
-        hdfs.read_remote(first.run_manifest_path).decode("utf-8")
+    assert (
+        json.loads(hdfs.read_remote(first.chunks[0].manifest_path).decode("utf-8"))["code_revision"]
+        == "sha256:" + "b" * 64
     )
+    run_manifest = json.loads(hdfs.read_remote(first.run_manifest_path).decode("utf-8"))
     assert run_manifest["code_revision"] == "sha256:" + "b" * 64
     curated_files_before = sorted(
         path.relative_to(curated_local).as_posix() for path in curated_local.rglob("*")
@@ -386,9 +387,7 @@ def test_snapshot_persists_revalidates_promotes_and_reuses_without_duplicate_dat
     )
 
 
-def test_deferred_publication_keeps_validated_snapshot_in_run_staging(
-    spark, tmp_path, monkeypatch
-):
+def test_deferred_publication_keeps_validated_snapshot_in_run_staging(spark, tmp_path, monkeypatch):
     from warehouse_bigdata.processing import normalization_snapshot as module
 
     hdfs = _LocalHdfs(tmp_path)
@@ -399,9 +398,15 @@ def test_deferred_publication_keeps_validated_snapshot_in_run_staging(
     requests = []
     monkeypatch.setattr(module, "stage_publication", lambda *args, **kw: requests.append(args[2]))
     result = run_normalization_snapshot(
-        spark, source_version=SOURCE_VERSION, source_snapshot_id="deferred-001",
-        pipeline_run_id="deferred-001", hdfs_config=settings, client=hdfs,
-        config=NormalizationSnapshotConfig(days_per_chunk=2, expected_series_count=2, expected_day_count=2),
+        spark,
+        source_version=SOURCE_VERSION,
+        source_snapshot_id="deferred-001",
+        pipeline_run_id="deferred-001",
+        hdfs_config=settings,
+        client=hdfs,
+        config=NormalizationSnapshotConfig(
+            days_per_chunk=2, expected_series_count=2, expected_day_count=2
+        ),
         defer_publication=True,
     )
     assert result.status == "STAGED", result.failure_details
@@ -457,9 +462,7 @@ def test_retry_quarantines_interrupted_and_orphaned_staging_artifacts(
     assert any("candidate-orphan" in name for name in quarantined)
     assert any("orphan-chunk" in name for name in quarantined)
     assert any("orphan.json" in name for name in quarantined)
-    assert not (staging_local / "_tmp").exists() or not tuple(
-        (staging_local / "_tmp").iterdir()
-    )
+    assert not (staging_local / "_tmp").exists() or not tuple((staging_local / "_tmp").iterdir())
 
 
 def test_conflicting_candidate_lineage_is_preserved_and_not_promoted(

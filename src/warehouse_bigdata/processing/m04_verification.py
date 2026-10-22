@@ -117,9 +117,7 @@ def run_m04_verification(
     timings: dict[str, float] = {}
     raw_uri = _hdfs_uri(hdfs_config, raw_path)
     selected_days = tuple(f"d_{day}" for day in range(1, expected_day_count + 1))
-    output_uris = {
-        name: _hdfs_uri(hdfs_config, path) for name, path in output_paths.items()
-    }
+    output_uris = {name: _hdfs_uri(hdfs_config, path) for name, path in output_paths.items()}
     normalization_manifest = _read_and_validate_run_manifest(
         client,
         hdfs_config,
@@ -182,7 +180,9 @@ def run_m04_verification(
         (StringType(),) * (len(_SALES_METADATA) + REFERENCE_EVALUATION_DAYS),
         "raw sales source",
     )
-    _check_schema(calendar, _CALENDAR_FIELDS, (StringType(),) * len(_CALENDAR_FIELDS), "raw calendar")
+    _check_schema(
+        calendar, _CALENDAR_FIELDS, (StringType(),) * len(_CALENDAR_FIELDS), "raw calendar"
+    )
     _check_schema(sell_prices, _PRICE_FIELDS, (StringType(),) * len(_PRICE_FIELDS), "raw prices")
     raw_series_count = sales_wide.count()
     raw_identifier_nulls = _null_count(sales_wide, _SALES_METADATA)
@@ -212,10 +212,7 @@ def run_m04_verification(
 
     phase_started = time.perf_counter()
     raw_totals = sales_wide.agg(
-        *[
-            F.sum(F.col(day).cast("decimal(38,0)")).alias(f"total_{day}")
-            for day in selected_days
-        ],
+        *[F.sum(F.col(day).cast("decimal(38,0)")).alias(f"total_{day}") for day in selected_days],
         *[
             F.sum(F.when(F.col(day).cast("long") == 0, F.lit(1)).otherwise(F.lit(0))).alias(
                 f"zero_{day}"
@@ -286,15 +283,17 @@ def run_m04_verification(
         "item_id",
         "store_id",
     ).distinct()
-    raw_series_key_mismatches = raw_series_keys.join(
-        daily_series_keys,
-        (raw_series_keys.raw_series_id == daily_series_keys.daily_series_id)
-        & (raw_series_keys.item_id == daily_series_keys.item_id)
-        & (raw_series_keys.store_id == daily_series_keys.store_id),
-        "full_outer",
-    ).where(
-        F.col("raw_series_id").isNull() | F.col("daily_series_id").isNull()
-    ).count()
+    raw_series_key_mismatches = (
+        raw_series_keys.join(
+            daily_series_keys,
+            (raw_series_keys.raw_series_id == daily_series_keys.daily_series_id)
+            & (raw_series_keys.item_id == daily_series_keys.item_id)
+            & (raw_series_keys.store_id == daily_series_keys.store_id),
+            "full_outer",
+        )
+        .where(F.col("raw_series_id").isNull() | F.col("daily_series_id").isNull())
+        .count()
+    )
     _require_sales_daily_scope(
         sales_daily,
         sales_daily_metrics,
@@ -349,7 +348,15 @@ def run_m04_verification(
     enriched_metrics = _sales_metrics(sales_enriched, "unit_sales", SALES_DAILY.field_names)
     enriched_nulls = _null_count(
         sales_enriched,
-        (*SALES_DAILY.field_names, "price_missing", "wday", "month", "year", "snap_applicable", "is_zero_sale"),
+        (
+            *SALES_DAILY.field_names,
+            "price_missing",
+            "wday",
+            "month",
+            "year",
+            "snap_applicable",
+            "is_zero_sale",
+        ),
     )
     missing_prices = sales_enriched.where(F.col("price_missing")).count()
     nullable_prices = sales_enriched.where(F.col("sell_price").isNull()).count()
@@ -365,24 +372,29 @@ def run_m04_verification(
         F.col("wm_yr_wk").cast("int").alias("price_wm_yr_wk"),
         F.col("sell_price").cast("double").alias("expected_sell_price"),
     ).alias("price_lookup")
-    expected_prices = sales_daily.select(
-        "item_id",
-        "store_id",
-        "wm_yr_wk",
-        "day_key",
-    ).alias("sales_daily").join(
-        price_lookup,
-        (F.col("sales_daily.store_id") == F.col("price_lookup.store_id"))
-        & (F.col("sales_daily.item_id") == F.col("price_lookup.item_id"))
-        & (F.col("sales_daily.wm_yr_wk") == F.col("price_lookup.price_wm_yr_wk")),
-        "left",
-    ).select(
-        F.col("sales_daily.item_id").alias("item_id"),
-        F.col("sales_daily.store_id").alias("store_id"),
-        F.col("sales_daily.wm_yr_wk").alias("wm_yr_wk"),
-        F.col("sales_daily.day_key").alias("day_key"),
-        F.col("price_lookup.expected_sell_price").alias("expected_sell_price"),
-        F.lit(1).alias("expected_present"),
+    expected_prices = (
+        sales_daily.select(
+            "item_id",
+            "store_id",
+            "wm_yr_wk",
+            "day_key",
+        )
+        .alias("sales_daily")
+        .join(
+            price_lookup,
+            (F.col("sales_daily.store_id") == F.col("price_lookup.store_id"))
+            & (F.col("sales_daily.item_id") == F.col("price_lookup.item_id"))
+            & (F.col("sales_daily.wm_yr_wk") == F.col("price_lookup.price_wm_yr_wk")),
+            "left",
+        )
+        .select(
+            F.col("sales_daily.item_id").alias("item_id"),
+            F.col("sales_daily.store_id").alias("store_id"),
+            F.col("sales_daily.wm_yr_wk").alias("wm_yr_wk"),
+            F.col("sales_daily.day_key").alias("day_key"),
+            F.col("price_lookup.expected_sell_price").alias("expected_sell_price"),
+            F.lit(1).alias("expected_present"),
+        )
     )
     actual_prices = sales_enriched.select(
         "item_id",
@@ -404,9 +416,7 @@ def run_m04_verification(
             F.col("expected_present").isNull()
             | F.col("actual_present").isNull()
             | ~F.col("expected_sell_price").eqNullSafe(F.col("actual_sell_price"))
-            | (
-                F.col("expected_sell_price").isNull() != F.col("actual_price_missing")
-            )
+            | (F.col("expected_sell_price").isNull() != F.col("actual_price_missing"))
         )
         .count()
     )
@@ -420,7 +430,9 @@ def run_m04_verification(
         or price_reconciliation_mismatches
         or _duplicate_count(sales_enriched, SALES_ENRICHED.unique_key)
     ):
-        raise M04VerificationError("SALES_ENRICHED cardinality, nullability, key, or total reconciliation failed")
+        raise M04VerificationError(
+            "SALES_ENRICHED cardinality, nullability, key, or total reconciliation failed"
+        )
     _validate_enriched_manifest(
         client,
         hdfs_config,
@@ -657,7 +669,9 @@ def _validate_arguments(
 ) -> None:
     if not isinstance(source_version, str) or not _SOURCE_VERSION_PATTERN.fullmatch(source_version):
         raise M04VerificationError("source_version must identify the validated M5 snapshot")
-    if not isinstance(source_snapshot_id, str) or not _IDENTIFIER_PATTERN.fullmatch(source_snapshot_id):
+    if not isinstance(source_snapshot_id, str) or not _IDENTIFIER_PATTERN.fullmatch(
+        source_snapshot_id
+    ):
         raise M04VerificationError("source_snapshot_id must be nonempty")
     paths = [raw_path, *output_paths.values()]
     if any(
@@ -674,7 +688,10 @@ def _validate_arguments(
         raise M04VerificationError("output paths do not match the independent M04 scope")
     if type(expected_series_count) is not int or expected_series_count < 1:
         raise M04VerificationError("expected_series_count must be positive")
-    if type(expected_day_count) is not int or not 1 <= expected_day_count <= REFERENCE_EVALUATION_DAYS:
+    if (
+        type(expected_day_count) is not int
+        or not 1 <= expected_day_count <= REFERENCE_EVALUATION_DAYS
+    ):
         raise M04VerificationError("expected_day_count must be within the evaluation scope")
 
 
@@ -750,13 +767,17 @@ def _validate_pipeline_manifest_outputs(
         if manifest.get("quality_report_uri") != expected_quality_uri:
             raise M04VerificationError("pipeline manifest quality-report lineage is inconsistent")
         if not client.exists(expected_quality_path):
-            raise M04VerificationError(f"pipeline quality report is missing: {expected_quality_path}")
+            raise M04VerificationError(
+                f"pipeline quality report is missing: {expected_quality_path}"
+            )
     try:
         coverage = json.loads(str(manifest["coverage_and_exclusion_counts"]))
     except (KeyError, TypeError, json.JSONDecodeError) as error:
         raise M04VerificationError("pipeline manifest coverage metadata is malformed") from error
     if not isinstance(coverage, dict) or coverage.get("persisted_parquet_validated") is not True:
-        raise M04VerificationError("pipeline manifest does not certify persisted Parquet validation")
+        raise M04VerificationError(
+            "pipeline manifest does not certify persisted Parquet validation"
+        )
     if require_complete_bundle:
         expected_manifests = {
             name: _hdfs_uri(
@@ -766,7 +787,9 @@ def _validate_pipeline_manifest_outputs(
             for name, uri in zip(expected_names, expected_uris, strict=True)
         }
         if coverage.get("publication_complete") is not True:
-            raise M04VerificationError("J03 pipeline manifest does not certify complete publication")
+            raise M04VerificationError(
+                "J03 pipeline manifest does not certify complete publication"
+            )
         if coverage.get("output_paths_are_curated") is not True:
             raise M04VerificationError("J03 pipeline manifest contains non-curated output paths")
         if coverage.get("output_dataset_manifests") != expected_manifests:
@@ -807,7 +830,9 @@ def _validate_sales_daily_manifest(
     if pipeline_run_id is not None:
         expected["pipeline_run_id"] = pipeline_run_id
     if any(manifest.get(field) != value for field, value in expected.items()):
-        raise M04VerificationError("SALES_DAILY snapshot manifest does not match persisted evidence")
+        raise M04VerificationError(
+            "SALES_DAILY snapshot manifest does not match persisted evidence"
+        )
 
 
 def _validate_enriched_manifest(
@@ -894,9 +919,12 @@ def _json_string_list(value: object, label: str) -> list[str]:
 
 
 def _schema_fingerprint(fields: Sequence[str]) -> str:
-    return "sha256:" + hashlib.sha256(
-        json.dumps(tuple(fields), separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(tuple(fields), separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    )
 
 
 def _hdfs_path_from_uri(config: HDFSConfig, uri: str) -> str:
@@ -960,7 +988,9 @@ def _total(dataframe: DataFrame, field: str) -> int:
     return int(row["total"] or 0)
 
 
-def _sales_metrics(dataframe: DataFrame, total_field: str, fields: Sequence[str]) -> dict[str, object]:
+def _sales_metrics(
+    dataframe: DataFrame, total_field: str, fields: Sequence[str]
+) -> dict[str, object]:
     from pyspark.sql import functions as F
     from pyspark.sql.types import DecimalType
 
@@ -1014,12 +1044,16 @@ def _require_sales_daily_scope(
         .where(~F.col("day_key").isin(list(selected_days)))
         .count()
     )
-    incomplete_days = dataframe.groupBy("day_key").count().where(F.col("count") != expected_series_count).count()
+    incomplete_days = (
+        dataframe.groupBy("day_key").count().where(F.col("count") != expected_series_count).count()
+    )
     if unexpected_days or incomplete_days:
         raise M04VerificationError("SALES_DAILY selected day coverage is incomplete")
 
 
-def _store_reconciliation(store_daily: DataFrame, sales_daily: DataFrame, source_snapshot_id: str) -> int:
+def _store_reconciliation(
+    store_daily: DataFrame, sales_daily: DataFrame, source_snapshot_id: str
+) -> int:
     from pyspark.sql import functions as F
     from pyspark.sql.types import DecimalType
 
@@ -1054,9 +1088,11 @@ def _category_reconciliation(
 
     if category_monthly.where(F.col("source_snapshot_id") != source_snapshot_id).count():
         raise M04VerificationError("category_monthly_sales source snapshot identity differs")
-    expected = sales_daily.withColumn("month_start", F.trunc(F.col("date"), "month")).groupBy(
-        "cat_id", "month_start"
-    ).agg(F.sum(F.col("unit_sales").cast(DecimalType(38, 0))).alias("expected_total_units"))
+    expected = (
+        sales_daily.withColumn("month_start", F.trunc(F.col("date"), "month"))
+        .groupBy("cat_id", "month_start")
+        .agg(F.sum(F.col("unit_sales").cast(DecimalType(38, 0))).alias("expected_total_units"))
+    )
     actual = category_monthly.select(
         "cat_id",
         "month_start",

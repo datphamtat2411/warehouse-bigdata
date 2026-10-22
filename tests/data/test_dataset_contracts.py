@@ -101,7 +101,9 @@ def test_category_monthly_contract_rejects_duplicate_negative_and_cross_snapshot
         "month_start": "2026-01-01",
         "total_units": 5,
     }
-    validate_dataset(contract, [valid], lineage_context={"source_snapshot_id": valid["source_snapshot_id"]})
+    validate_dataset(
+        contract, [valid], lineage_context={"source_snapshot_id": valid["source_snapshot_id"]}
+    )
 
     for mutation in (
         lambda row: {**row, "total_units": -1},

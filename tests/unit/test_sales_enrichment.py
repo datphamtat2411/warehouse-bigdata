@@ -260,14 +260,16 @@ def test_enrichment_selects_state_snap_and_normalizes_nullable_events(
 ) -> None:
     rows = {
         row.store_id: row.asDict()
-        for row in _enriched(spark).select(
+        for row in _enriched(spark)
+        .select(
             "store_id",
             "snap_applicable",
             "event_name_1",
             "event_type_1",
             "event_name_2",
             "event_type_2",
-        ).collect()
+        )
+        .collect()
     }
 
     assert rows["CA_1"]["snap_applicable"] is True
@@ -315,9 +317,7 @@ def test_price_coverage_reports_distributed_counts_and_match_rates(spark: SparkS
         lambda rows: [*rows, rows[0]],
         lambda rows: [("2011-02-30", *row[1:]) if row[6] == "d_1" else row for row in rows],
         lambda rows: [row for row in rows if row[6] != "d_3"],
-        lambda rows: [
-            (*row[:1], "11199", *row[2:]) if row[6] == "d_1" else row for row in rows
-        ],
+        lambda rows: [(*row[:1], "11199", *row[2:]) if row[6] == "d_1" else row for row in rows],
     ],
     ids=["duplicate-day", "invalid-date", "incomplete-coverage", "calendar-mismatch"],
 )
@@ -360,9 +360,10 @@ def test_duplicate_price_keys_fail_and_valid_prices_do_not_multiply_rows(
     with pytest.raises(SalesEnrichmentError):
         enrich_sales_daily(_sales_frame(spark), _calendar_frame(spark), duplicate)
 
-    assert enrich_sales_daily(
-        _sales_frame(spark), _calendar_frame(spark), _price_frame(spark)
-    ).count() == _sales_frame(spark).count()
+    assert (
+        enrich_sales_daily(_sales_frame(spark), _calendar_frame(spark), _price_frame(spark)).count()
+        == _sales_frame(spark).count()
+    )
 
 
 @pytest.mark.parametrize(

@@ -31,7 +31,9 @@ def validate_pipeline_run_id(pipeline_run_id: str) -> str:
 
 def validate_source_snapshot_id(source_snapshot_id: str) -> str:
     """Validate and return one explicit immutable curated-snapshot identity."""
-    if not isinstance(source_snapshot_id, str) or not _SAFE_IDENTIFIER.fullmatch(source_snapshot_id):
+    if not isinstance(source_snapshot_id, str) or not _SAFE_IDENTIFIER.fullmatch(
+        source_snapshot_id
+    ):
         raise HdfsPathError("source_snapshot_id must be a bounded safe identifier")
     return source_snapshot_id
 

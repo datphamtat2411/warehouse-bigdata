@@ -21,7 +21,9 @@ from warehouse_bigdata.common.spark_hdfs_client import SparkHdfsCliClient
 HDFS_CONFIG = HDFSConfig("hdfs://hdfs-namenode:8020", "/data/warehouse")
 
 
-def test_m04_event_collection_accepts_measured_scale_with_its_own_finite_bound(tmp_path, monkeypatch):
+def test_m04_event_collection_accepts_measured_scale_with_its_own_finite_bound(
+    tmp_path, monkeypatch
+):
     from tests.integration import spark_support
 
     payload = b" " * (spark_support.MAX_EVENT_BYTES + 1) + b'{"Event":"fixture"}\n'
@@ -79,7 +81,9 @@ class _Client:
         return self.root / path.lstrip("/")
 
     def list_children(self, path: str) -> tuple[str, ...]:
-        return tuple(sorted(f"{path.rstrip('/')}/{child.name}" for child in self._local(path).iterdir()))
+        return tuple(
+            sorted(f"{path.rstrip('/')}/{child.name}" for child in self._local(path).iterdir())
+        )
 
     def is_directory(self, path: str) -> bool:
         return self._local(path).is_dir()
@@ -292,11 +296,10 @@ def test_create_event_directory_accepts_canonical_j02_and_j03_paths(
     [
         _event_path("m04-correctness-full-j03-" + "a" * 32),
         _event_path("m04-correctness-full-j02-" + "a" * 32) + "/../events-other",
-        "/data/warehouse/staging/pipeline_run_id=m04-correctness-full-j02-" + "a" * 32
-        + "-unrelated/events",
-        "/wrong/warehouse/staging/pipeline_run_id=m04-correctness-full-j02-"
+        "/data/warehouse/staging/pipeline_run_id=m04-correctness-full-j02-"
         + "a" * 32
-        + "/events",
+        + "-unrelated/events",
+        "/wrong/warehouse/staging/pipeline_run_id=m04-correctness-full-j02-" + "a" * 32 + "/events",
         "/data/warehouse/raw/m5/source_version=sha256-" + "a" * 64 + "/events",
         "/data/warehouse/curated/sales_daily/source_snapshot_id=snapshot-001/events",
         _event_path("m04-correctness-full-j02-" + "a" * 32) + "/nested",
