@@ -6,7 +6,8 @@ import argparse
 import json
 
 from warehouse_bigdata.common.config import load_hdfs_config, load_spark_config
-from warehouse_bigdata.common.hdfs_client import HdfsCliClient
+from warehouse_bigdata.common.hdfs_permissions import prepare_spark_run_permissions
+from warehouse_bigdata.common.spark_hdfs_client import SparkHdfsCliClient
 from warehouse_bigdata.processing.enrichment_analytics_snapshot import (
     EnrichmentAnalyticsSnapshotResult,
     run_enrichment_analytics_snapshot,
@@ -25,6 +26,13 @@ def run_enrich_analytics(
     """Run one explicitly identified J03 attempt on HDFS/Spark."""
     hdfs_config = load_hdfs_config({"WAREHOUSE_HDFS_URI": hdfs_uri})
     spark_config = load_spark_config({"WAREHOUSE_SPARK_MASTER_URL": spark_master})
+    hdfs = SparkHdfsCliClient()
+    prepare_spark_run_permissions(
+        hdfs,
+        hdfs_config,
+        pipeline_run_id=pipeline_run_id,
+        event_log_dir=event_log_dir,
+    )
 
     from pyspark.sql import SparkSession
 
@@ -34,10 +42,6 @@ def run_enrich_analytics(
         .config("spark.ui.enabled", "false")
     )
     if event_log_dir is not None:
-        if not event_log_dir.startswith("hdfs://") or any(
-            character in event_log_dir for character in "\0\r\n"
-        ):
-            raise ValueError("event_log_dir must be an absolute HDFS URI")
         builder = (
             builder.config("spark.eventLog.enabled", "true")
             .config("spark.eventLog.dir", event_log_dir)
@@ -56,7 +60,7 @@ def run_enrich_analytics(
             pipeline_run_id=pipeline_run_id,
             hdfs_config=hdfs_config,
             spark_master=spark_config.master_url,
-            client=HdfsCliClient(),
+            client=hdfs,
         )
     finally:
         spark.stop()

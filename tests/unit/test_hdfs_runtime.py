@@ -81,6 +81,7 @@ def _patch_runtime(
                 {
                     "fs.defaultFS": HDFS_CONFIG.uri,
                     "dfs.replication": "2",
+                    "dfs.namenode.acls.enabled": "true",
                     "dfs.client.use.datanode.hostname": "true",
                     "dfs.datanode.use.datanode.hostname": "true",
                 }[key],

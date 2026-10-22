@@ -621,6 +621,10 @@ class HDFSVerification:
                 "Configured replication must be 2; no setrep override.",
             )
             require(
+                xml.get("dfs.namenode.acls.enabled") == "true",
+                "HDFS ACL authorization must be enabled for scoped Spark permissions.",
+            )
+            require(
                 xml.get("dfs.namenode.rpc-address") == "hdfs-namenode:8020",
                 "Unexpected RPC address.",
             )
@@ -645,6 +649,7 @@ class HDFSVerification:
             for key, expected in (
                 ("fs.defaultFS", xml["fs.defaultFS"]),
                 ("dfs.replication", "2"),
+                ("dfs.namenode.acls.enabled", "true"),
                 ("dfs.client.use.datanode.hostname", "true"),
                 ("dfs.datanode.use.datanode.hostname", "true"),
             ):

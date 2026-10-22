@@ -7,6 +7,9 @@
 !src/**
 !scripts/
 !scripts/package-spark-app.py
+!infrastructure/
+!infrastructure/spark/
+!infrastructure/spark/hadoop-cli-log4j.properties
 **/__pycache__/
 **/.pytest_cache/
 **/.ruff_cache/

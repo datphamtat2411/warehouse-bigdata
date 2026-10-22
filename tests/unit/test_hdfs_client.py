@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 from pathlib import Path
 from textwrap import dedent
+from types import SimpleNamespace
 
 import pytest
 
+from warehouse_bigdata.common import hdfs_client
 from warehouse_bigdata.common.hdfs_client import (
     HdfsCliClient,
     HdfsCommandError,
@@ -140,3 +143,71 @@ def test_metadata_output_is_bounded(tmp_path: Path) -> None:
 
     with pytest.raises(HdfsCommandError, match="bounded"):
         client.getconf("fs.defaultFS")
+
+
+def test_acl_commands_are_non_recursive_and_bounded(tmp_path: Path) -> None:
+    stub = tmp_path / "acl-stub.py"
+    log = tmp_path / "commands.jsonl"
+    stub.write_text(
+        dedent(
+            """
+            import json
+            import os
+            import sys
+
+            args = sys.argv[1:]
+            with open(os.environ["HDFS_STUB_LOG"], "a") as stream:
+                stream.write(json.dumps(args) + "\\n")
+            if args[:3] == ["hdfs", "dfs", "-getfacl"]:
+                print("# owner: hadoop\\nuser:spark:rwx\\ndefault:user:spark:rwx")
+            elif args[:3] == ["hdfs", "dfs", "-setfacl"]:
+                pass
+            else:
+                raise SystemExit(f"unexpected command: {args!r}")
+            """
+        ),
+        encoding="utf-8",
+    )
+    client = HdfsCliClient(
+        command_prefix=(sys.executable, str(stub)),
+        env={"HDFS_STUB_LOG": str(log)},
+    )
+
+    client.set_acl(
+        "/data/warehouse/staging/pipeline_run_id=run-001",
+        "user:spark:rwx,mask::rwx,default:user:spark:rwx,default:mask::rwx",
+    )
+    assert "user:spark:rwx" in client.get_acl(
+        "/data/warehouse/staging/pipeline_run_id=run-001"
+    )
+
+    commands = [json.loads(line) for line in log.read_text().splitlines()]
+    assert commands == [
+        [
+            "hdfs",
+            "dfs",
+            "-setfacl",
+            "-m",
+            "user:spark:rwx,mask::rwx,default:user:spark:rwx,default:mask::rwx",
+            "/data/warehouse/staging/pipeline_run_id=run-001",
+        ],
+        [
+            "hdfs",
+            "dfs",
+            "-getfacl",
+            "/data/warehouse/staging/pipeline_run_id=run-001",
+        ],
+    ]
+
+
+def test_whoami_uses_the_local_simple_authentication_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(hdfs_client.os, "getuid", lambda: 185)
+    monkeypatch.setattr(
+        hdfs_client.pwd,
+        "getpwuid",
+        lambda uid: SimpleNamespace(pw_name="spark"),
+    )
+
+    assert HdfsCliClient().whoami() == "spark"

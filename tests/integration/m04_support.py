@@ -16,6 +16,7 @@ from tests.integration.spark_support import MAX_EVENT_BYTES, summarize_m04_event
 from warehouse_bigdata.common.config import load_hdfs_config, load_spark_config
 from warehouse_bigdata.common.hdfs_client import HdfsCliClient
 from warehouse_bigdata.common.hdfs_paths import (
+    HdfsPathError,
     render_curated_category_monthly_sales_path,
     render_curated_sales_daily_path,
     render_curated_sales_enriched_path,
@@ -26,6 +27,7 @@ from warehouse_bigdata.common.hdfs_paths import (
     render_run_manifest_path,
     render_staging_path,
 )
+from warehouse_bigdata.common.hdfs_permissions import prepare_spark_run_permissions
 from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import validate_manifest
 from warehouse_bigdata.ingestion.orchestration import run_m5_ingestion
@@ -39,6 +41,7 @@ CALIBRATION_DAY_COUNT = 128
 SERIES_COUNT = 30_490
 FULL_ROW_COUNT = 59_181_090
 J03_OUTPUT_NAMES = ("sales_enriched", "store_daily_sales", "category_monthly_sales")
+_EVENT_DIRECTORY_NAMES = frozenset({"events", "events-retry-j02", "events-retry-j03"})
 
 
 def source_environment() -> tuple[Path, str, str | None]:
@@ -106,9 +109,109 @@ def _retry_event_directory(hdfs_config, pipeline_run_id: str, phase: str) -> str
     )
 
 
-def _create_event_directory(client: HdfsCliClient, path: str) -> None:
-    client.mkdir_parents(str(PurePosixPath(path).parent))
-    client.mkdir_exclusive(path)
+def _validate_event_directory_path(
+    hdfs_config,
+    path: str,
+    *,
+    expected_pipeline_run_id: str,
+) -> str:
+    try:
+        staging_path = render_staging_path(hdfs_config.base_path, expected_pipeline_run_id)
+    except HdfsPathError as error:
+        raise VerificationError(
+            f"invalid expected pipeline run ID for event directory {path!r}: {error}"
+        ) from error
+
+    if (
+        not isinstance(path, str)
+        or not path.startswith("/")
+        or any(character in path for character in "\0\r\n")
+        or any(part in {"", ".", ".."} for part in path.split("/")[1:])
+    ):
+        raise VerificationError(
+            f"event directory has unsafe absolute path components: {path!r}"
+        )
+
+    event_path = PurePosixPath(path)
+    try:
+        relative = event_path.relative_to(PurePosixPath(staging_path))
+    except ValueError as error:
+        raise VerificationError(
+            f"event directory is not under expected run-owned staging path "
+            f"{staging_path}: {path}"
+        ) from error
+    if len(relative.parts) != 1 or relative.parts[0] not in _EVENT_DIRECTORY_NAMES:
+        raise VerificationError(
+            f"event directory must be a direct J02/J03 event child of {staging_path}: {path}"
+        )
+    return staging_path
+
+
+def _create_event_directory(
+    client: HdfsCliClient,
+    hdfs_config,
+    path: str,
+    *,
+    expected_pipeline_run_id: str,
+) -> None:
+    staging_path = _validate_event_directory_path(
+        hdfs_config,
+        path,
+        expected_pipeline_run_id=expected_pipeline_run_id,
+    )
+    if not client.exists(staging_path):
+        client.mkdir_parents(str(PurePosixPath(staging_path).parent))
+        client.mkdir_exclusive(staging_path)
+    elif not client.is_directory(staging_path):
+        raise VerificationError(f"Run staging path is not a directory: {staging_path}")
+    if not client.exists(path):
+        client.mkdir_exclusive(path)
+    elif not client.is_directory(path):
+        raise VerificationError(f"Event log path is not a directory: {path}")
+    prepare_spark_run_permissions(
+        client,
+        hdfs_config,
+        pipeline_run_id=expected_pipeline_run_id,
+        event_log_dir=hdfs_config.uri.rstrip("/") + path,
+        verify_effective_access=False,
+    )
+
+
+def _case_run_ids(label: str, token: str) -> tuple[str, str, str]:
+    return (
+        f"m04-{label}-j02-{token}",
+        f"m04-{label}-j03-{token}",
+        f"m04-{label}-verify-{token}",
+    )
+
+
+def _case_event_directories(
+    hdfs_config,
+    *,
+    label: str,
+    token: str,
+) -> tuple[tuple[str, str], ...]:
+    normalization_run_id, enrichment_run_id, verification_run_id = _case_run_ids(label, token)
+    return (
+        (_event_directory(hdfs_config, normalization_run_id), normalization_run_id),
+        (_event_directory(hdfs_config, enrichment_run_id), enrichment_run_id),
+        (_event_directory(hdfs_config, verification_run_id), verification_run_id),
+        (_retry_event_directory(hdfs_config, normalization_run_id, "j02"), normalization_run_id),
+        (_retry_event_directory(hdfs_config, enrichment_run_id, "j03"), enrichment_run_id),
+    )
+
+
+def _validate_case_event_directories(hdfs_config, *, label: str, token: str) -> None:
+    for path, pipeline_run_id in _case_event_directories(
+        hdfs_config,
+        label=label,
+        token=token,
+    ):
+        _validate_event_directory_path(
+            hdfs_config,
+            path,
+            expected_pipeline_run_id=pipeline_run_id,
+        )
 
 
 def _submit(
@@ -139,8 +242,10 @@ def _submit(
     (output_dir / "stderr").write_bytes(completed.stderr)
     require(
         completed.returncode == 0,
-        f"Spark application failed ({application}, exit {completed.returncode}): "
-        f"{completed.stderr.decode(errors='replace')[-2000:]}",
+        f"Spark application failed ({application}, exit {completed.returncode})\n"
+        f"stdout (last 2000 characters):\n{completed.stdout.decode(errors='replace')[-2000:]}\n"
+        f"stderr (last 2000 characters):\n{completed.stderr.decode(errors='replace')[-2000:]}\n"
+        f"Full logs: {output_dir}",
     )
     return completed.stdout
 
@@ -293,15 +398,15 @@ def run_case(
     shuffle_partitions: int,
     adaptive: bool,
     cores_max: int,
+    token: str | None = None,
 ) -> dict[str, object]:
     hdfs_config = source["hdfs_config"]
     client = source["client"]
     source_version = str(source["source_version"])
-    token = uuid.uuid4().hex
+    token = uuid.uuid4().hex if token is None else token
     source_snapshot_id = f"m04-{label}-snapshot-{token}"
-    normalization_run_id = f"m04-{label}-j02-{token}"
-    enrichment_run_id = f"m04-{label}-j03-{token}"
-    verification_run_id = f"m04-{label}-verify-{token}"
+    normalization_run_id, enrichment_run_id, verification_run_id = _case_run_ids(label, token)
+    _validate_case_event_directories(hdfs_config, label=label, token=token)
     case_dir = REPORT_ROOT / label / token
     case_dir.mkdir(parents=True, exist_ok=False)
     conf = {
@@ -315,14 +420,17 @@ def run_case(
     verification_events = _event_directory(hdfs_config, verification_run_id)
     normalization_retry_events = _retry_event_directory(hdfs_config, normalization_run_id, "j02")
     enrichment_retry_events = _retry_event_directory(hdfs_config, enrichment_run_id, "j03")
-    for event_dir in (
-        normalization_events,
-        enrichment_events,
-        verification_events,
-        normalization_retry_events,
-        enrichment_retry_events,
+    for event_dir, pipeline_run_id in _case_event_directories(
+        hdfs_config,
+        label=label,
+        token=token,
     ):
-        _create_event_directory(client, event_dir)
+        _create_event_directory(
+            client,
+            hdfs_config,
+            event_dir,
+            expected_pipeline_run_id=pipeline_run_id,
+        )
 
     normalization_arguments = [
         "--source-version",
@@ -627,6 +735,9 @@ def run_case(
 
 
 def run_correctness(hdfs: HDFSVerification, tmp_path: Path) -> dict[str, object]:
+    hdfs_config = load_hdfs_config()
+    token = uuid.uuid4().hex
+    _validate_case_event_directories(hdfs_config, label="correctness-full", token=token)
     source = prepare_source(tmp_path, hdfs)
     return run_case(
         hdfs,
@@ -637,10 +748,29 @@ def run_correctness(hdfs: HDFSVerification, tmp_path: Path) -> dict[str, object]
         shuffle_partitions=32,
         adaptive=True,
         cores_max=2,
+        token=token,
     )
 
 
 def run_benchmark_matrix(hdfs: HDFSVerification, tmp_path: Path) -> dict[str, object]:
+    hdfs_config = load_hdfs_config()
+    case_tokens: dict[str, str] = {}
+    for label, *_ in (
+        ("baseline", 128, 32, True, 2),
+        ("chunk-64", 64, 32, True, 2),
+        ("chunk-256", 256, 32, True, 2),
+        ("shuffle-16", 128, 16, True, 2),
+        ("shuffle-64", 128, 64, True, 2),
+        ("aqe-off", 128, 32, False, 2),
+        ("cores-1", 128, 32, True, 1),
+    ):
+        token = uuid.uuid4().hex
+        case_tokens[label] = token
+        _validate_case_event_directories(
+            hdfs_config,
+            label=f"benchmark-{label}",
+            token=token,
+        )
     source = prepare_source(tmp_path, hdfs)
     matrix = (
         ("baseline", 128, 32, True, 2),
@@ -664,6 +794,7 @@ def run_benchmark_matrix(hdfs: HDFSVerification, tmp_path: Path) -> dict[str, ob
                 shuffle_partitions=shuffle,
                 adaptive=adaptive,
                 cores_max=cores,
+                token=case_tokens[label],
             )
             reports.append(
                 {

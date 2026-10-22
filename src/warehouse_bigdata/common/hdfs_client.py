@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import pwd
 import re
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -360,6 +361,26 @@ class HdfsCliClient:
         if not output or "\n" in output:
             raise HdfsCommandError(f"Malformed Hadoop configuration output for {key!r}.")
         return output
+
+    def whoami(self) -> str:
+        """Return the local username used by HDFS simple authentication."""
+        try:
+            identity = pwd.getpwuid(os.getuid()).pw_name
+        except (KeyError, OSError) as error:
+            raise HdfsCommandError("Cannot resolve the local HDFS client identity.") from error
+        if not identity or any(character in identity for character in "\0\r\n"):
+            raise HdfsCommandError("Malformed local HDFS client identity.")
+        return identity
+
+    def set_acl(self, remote_path: str, acl_spec: str) -> None:
+        """Apply one explicit, non-recursive ACL specification to a path."""
+        if not acl_spec or any(character in acl_spec for character in "\0\r\n"):
+            raise HdfsCommandError("Unsafe HDFS ACL specification.")
+        self._run(("dfs", "-setfacl", "-m", acl_spec, remote_path))
+
+    def get_acl(self, remote_path: str) -> str:
+        """Read one bounded HDFS ACL listing without traversing descendants."""
+        return self._run(("dfs", "-getfacl", remote_path)).stdout.decode(errors="replace")
 
     def safe_mode(self) -> str:
         """Return the NameNode safe-mode status text."""

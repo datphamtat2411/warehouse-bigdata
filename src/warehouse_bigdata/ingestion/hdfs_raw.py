@@ -53,6 +53,9 @@ _MUTABLE_MANIFEST_FIELDS = frozenset(
         "completed_at",
     }
 )
+_COVERAGE_MANIFEST_FIELD: Final = "coverage_and_exclusion_counts"
+_LEGACY_CALENDAR_LAST_DAY: Final = "d_999"
+_CORRECT_CALENDAR_LAST_DAY: Final = "d_1969"
 
 
 class HdfsRawIngestionError(RuntimeError):
@@ -570,6 +573,7 @@ def _verify_cluster_prerequisites(client: Any, config: HDFSConfig) -> dict[str, 
     expected_configuration = {
         "fs.defaultFS": config.uri,
         "dfs.replication": str(EXPECTED_REPLICATION),
+        "dfs.namenode.acls.enabled": "true",
         "dfs.client.use.datanode.hostname": "true",
         "dfs.datanode.use.datanode.hostname": "true",
     }
@@ -877,9 +881,76 @@ def _assert_existing_manifest(
                 )
             continue
         if field_name not in _MUTABLE_MANIFEST_FIELDS and stored.get(field_name) != expected:
+            if _is_legacy_calendar_coverage_discrepancy(
+                local_file.source_file,
+                field_name,
+                stored.get(field_name),
+                expected,
+            ):
+                continue
             raise HdfsRawIngestionError(
-                f"existing source manifest metadata conflicts for {local_file.source_file}"
+                f"existing source manifest metadata conflicts for {local_file.source_file}: "
+                f"{field_name} (stored={stored.get(field_name)!r}, expected={expected!r})"
             )
+
+
+def _is_legacy_calendar_coverage_discrepancy(
+    source_file: str,
+    field_name: str,
+    stored_value: object,
+    expected_value: object,
+) -> bool:
+    if (
+        source_file != "calendar.csv"
+        or field_name != _COVERAGE_MANIFEST_FIELD
+        or not isinstance(stored_value, str)
+        or not isinstance(expected_value, str)
+    ):
+        return False
+    try:
+        stored_document = json.loads(stored_value)
+        expected_document = json.loads(expected_value)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(stored_document, Mapping) or not isinstance(expected_document, Mapping):
+        return False
+    stored_coverage = stored_document.get("coverage")
+    expected_coverage = expected_document.get("coverage")
+    if not isinstance(stored_coverage, Mapping) or not isinstance(expected_coverage, Mapping):
+        return False
+    if not _is_complete_calendar_coverage(stored_coverage, _LEGACY_CALENDAR_LAST_DAY):
+        return False
+    if not _is_complete_calendar_coverage(expected_coverage, _CORRECT_CALENDAR_LAST_DAY):
+        return False
+
+    stored_without_last_day = dict(stored_coverage)
+    expected_without_last_day = dict(expected_coverage)
+    stored_without_last_day.pop("last_day", None)
+    expected_without_last_day.pop("last_day", None)
+    if stored_without_last_day != expected_without_last_day:
+        return False
+
+    stored_normalized = dict(stored_document)
+    expected_normalized = dict(expected_document)
+    stored_normalized["coverage"] = stored_without_last_day
+    expected_normalized["coverage"] = expected_without_last_day
+    return stored_normalized == expected_normalized
+
+
+def _is_complete_calendar_coverage(coverage: Mapping[str, object], last_day: str) -> bool:
+    expected = {
+        "expected_day_count": 1969,
+        "observed_day_count": 1969,
+        "missing_day_count": 0,
+        "unexpected_day_count": 0,
+        "first_day": "d_1",
+        "last_day": last_day,
+    }
+    return all(
+        type(coverage.get(field_name)) is type(expected_value)
+        and coverage.get(field_name) == expected_value
+        for field_name, expected_value in expected.items()
+    )
 
 
 def _assert_existing_sidecar(

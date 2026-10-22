@@ -263,8 +263,34 @@ docker compose -f infrastructure/compose.yaml --profile spark-submit build spark
 ```
 
 This derives `warehouse-bigdata-spark-submit:3.5.7-python3.11.17` from T01 without
-changing its Dockerfile or bundled Spark/PySpark, Java, Scala, Hadoop client, or
-Python. The repository-context allowlist includes packaging metadata, the locked
+changing its Dockerfile or bundled Spark/PySpark, Java, Scala, Hadoop client JARs, or
+Python. The driver additionally includes the official **HDFS CLI 3.4.3**, copied
+from the same digest-pinned Apache Hadoop image used by the HDFS services. Only its
+`hdfs` launcher, shell support/configuration, and common/HDFS libraries are copied;
+YARN, MapReduce, and native libraries are excluded. `/opt/hadoop/bin` is on the
+driver PATH, with `HADOOP_HOME=/opt/hadoop` and a 256 MiB maximum CLI JVM heap.
+The shell-required `HADOOP_YARN_HOME` and `HADOOP_MAPRED_HOME` also point to
+`/opt/hadoop`; their component libraries are not installed. Driver-only Log4j
+configuration sends Hadoop diagnostics to stderr so metadata/byte stdout remains
+machine-readable.
+The CLI uses its own `/opt/hadoop/share/hadoop` libraries and the existing XML mounts;
+Spark retains its separate bundled Hadoop 3.3.4 classpath. No CLI installation is
+needed on the Master or Workers.
+
+M04's driver-side `HdfsCliClient` requires `hdfs dfs`, `getconf`, `dfsadmin`, and
+`fsck`, including ACL/write preflight before SparkContext creation. Bundled Spark
+Hadoop JARs alone do not provide this CLI. Rebuild the driver image with the command
+above before rerunning M04 after this runtime change.
+
+J02/J03 use `SparkHdfsCliClient`: file operations, safe-mode reads, checksums, and
+file-specific `fsck` remain CLI-backed. Live DataNode registrations/transfer addresses
+come from the same NameNode's read-only `NameNodeInfo` JMX endpoint, with bounded
+responses and a five-second I/O timeout. The adapter requires both expected live
+DataNodes in normal service and distinct transfer addresses. Standard
+`dfsadmin -report` requires superuser privileges for its DataNode report; the driver
+continues to run as `spark`, while owner-side verification retains DFSAdmin checks.
+
+The repository-context allowlist includes packaging metadata, the locked
 dependencies, `src/`, and the ZIP helper. During the build, `uv sync --locked
 --no-dev --no-editable --python /opt/python/bin/python3.11` installs the project in
 `/opt/warehouse-app/.venv`. A deterministic ZIP of the same copied source tree is

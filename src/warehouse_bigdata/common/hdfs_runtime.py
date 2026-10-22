@@ -70,6 +70,7 @@ def create_hdfs_cli_client(
     expected_configuration = {
         "fs.defaultFS": hdfs_config.uri,
         "dfs.replication": "2",
+        "dfs.namenode.acls.enabled": "true",
         "dfs.client.use.datanode.hostname": "true",
         "dfs.datanode.use.datanode.hostname": "true",
     }

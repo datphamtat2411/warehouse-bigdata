@@ -16,6 +16,7 @@ from warehouse_bigdata.common.hdfs_paths import (
     render_raw_m5_path,
     render_staging_path,
 )
+from warehouse_bigdata.common.hdfs_permissions import prepare_spark_run_permissions
 from warehouse_bigdata.processing.enrichment_analytics_snapshot import (
     validate_enrichment_analytics_completion_marker,
 )
@@ -40,6 +41,13 @@ def run_verify_m04_outputs(
     """Run the independent verifier against explicit immutable lineage paths."""
     hdfs_config = load_hdfs_config({"WAREHOUSE_HDFS_URI": hdfs_uri})
     spark_config = load_spark_config({"WAREHOUSE_SPARK_MASTER_URL": spark_master})
+    hdfs = HdfsCliClient()
+    prepare_spark_run_permissions(
+        hdfs,
+        hdfs_config,
+        pipeline_run_id=pipeline_run_id,
+        event_log_dir=event_log_dir,
+    )
 
     from pyspark.sql import SparkSession
 
@@ -49,10 +57,6 @@ def run_verify_m04_outputs(
         .config("spark.ui.enabled", "false")
     )
     if event_log_dir is not None:
-        if not event_log_dir.startswith("hdfs://") or any(
-            character in event_log_dir for character in "\0\r\n"
-        ):
-            raise ValueError("event_log_dir must be an absolute HDFS URI")
         builder = (
             builder.config("spark.eventLog.enabled", "true")
             .config("spark.eventLog.dir", event_log_dir)
@@ -79,7 +83,7 @@ def run_verify_m04_outputs(
             ),
         }
         validate_enrichment_analytics_completion_marker(
-            HdfsCliClient(),
+            hdfs,
             hdfs_config,
             source_version=source_version,
             source_snapshot_id=source_snapshot_id,
@@ -98,7 +102,7 @@ def run_verify_m04_outputs(
             raw_path=render_raw_m5_path(hdfs_config.base_path, source_version),
             output_paths=output_paths,
             hdfs_config=hdfs_config,
-            client=HdfsCliClient(),
+            client=hdfs,
             expected_series_count=expected_series_count,
             expected_day_count=expected_day_count,
             normalization_run_id=normalization_run_id,

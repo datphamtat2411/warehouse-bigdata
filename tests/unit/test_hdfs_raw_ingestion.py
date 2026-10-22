@@ -47,10 +47,37 @@ def _digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
+def _coverage_document(
+    *,
+    last_day: str,
+    observed_day_count: int = 1969,
+    missing_day_count: int = 0,
+    unexpected_day_count: int = 0,
+) -> str:
+    return json.dumps(
+        {
+            "validation_scope": "local_source_file",
+            "coverage": {
+                "expected_day_count": 1969,
+                "observed_day_count": observed_day_count,
+                "missing_day_count": missing_day_count,
+                "unexpected_day_count": unexpected_day_count,
+                "first_day": "d_1",
+                "last_day": last_day,
+            },
+            "duplicate_counts": {},
+            "invalid_counts": {},
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _artifacts(
     root: Path,
     *,
     downloaded_at_utc: str | None = DOWNLOADED_AT,
+    coverage_by_file: dict[str, str] | None = None,
 ) -> tuple[Path, Path, Path]:
     source = root / "source"
     source.mkdir(exist_ok=True)
@@ -110,7 +137,7 @@ def _artifacts(
                 "configuration_digest": "sha256:" + "1" * 64,
                 "created_at": DOWNLOADED_AT,
                 "completed_at": DOWNLOADED_AT,
-                "coverage_and_exclusion_counts": "{}",
+                "coverage_and_exclusion_counts": (coverage_by_file or {}).get(filename, "{}"),
                 "source_version": source_version,
                 "source_name": "m5-forecasting-accuracy",
                 "source_url": SOURCE_URL,
@@ -165,6 +192,7 @@ class FakeHdfs:
         return {
             "fs.defaultFS": "hdfs://hdfs-namenode:8020",
             "dfs.replication": "2",
+            "dfs.namenode.acls.enabled": "true",
             "dfs.client.use.datanode.hostname": "true",
             "dfs.datanode.use.datanode.hostname": "true",
         }[key]
@@ -292,8 +320,13 @@ def _ingest(
     run_id: str = "run-one",
     *,
     downloaded_at_utc: str | None = DOWNLOADED_AT,
+    coverage_by_file: dict[str, str] | None = None,
 ):
-    source, profile, manifests = _artifacts(root, downloaded_at_utc=downloaded_at_utc)
+    source, profile, manifests = _artifacts(
+        root,
+        downloaded_at_utc=downloaded_at_utc,
+        coverage_by_file=coverage_by_file,
+    )
     return ingest_m5_raw(
         source,
         profile,
@@ -303,6 +336,23 @@ def _ingest(
         config=TEST_HDFS_CONFIG,
         now=lambda: DOWNLOADED_AT,
     )
+
+
+def _replace_remote_manifest_field(
+    client: FakeHdfs,
+    raw_path: str,
+    filename: str,
+    field_name: str,
+    value: object,
+) -> None:
+    manifest_path = f"{raw_path}/source_manifests.json"
+    records = json.loads(client.files[manifest_path])
+    for record in records:
+        if record["source_file"] == filename:
+            record[field_name] = value
+            client.files[manifest_path] = json.dumps(records).encode()
+            return
+    raise AssertionError(f"missing remote manifest for {filename}")
 
 
 def test_fake_client_ingestion_does_not_require_hdfs_environment(
@@ -444,6 +494,141 @@ def test_matching_rerun_is_idempotent_without_overwrite_or_new_stage(tmp_path: P
         "remove",
     }
     assert not any(call[0] in mutating for call in client.calls[before:])
+
+
+def test_legacy_calendar_coverage_is_accepted_for_matching_reuse(tmp_path: Path) -> None:
+    client = FakeHdfs()
+    legacy = _coverage_document(last_day="d_999")
+    corrected = _coverage_document(last_day="d_1969")
+
+    first = _ingest(
+        tmp_path,
+        client,
+        "run-legacy-calendar",
+        coverage_by_file={"calendar.csv": legacy},
+    )
+    second = _ingest(
+        tmp_path,
+        client,
+        "run-corrected-calendar",
+        coverage_by_file={"calendar.csv": corrected},
+    )
+
+    assert first.status == "PROMOTED"
+    assert second.status == "REUSED"
+    assert second.raw_path == first.raw_path
+
+
+@pytest.mark.parametrize(
+    ("legacy_coverage", "corrected_coverage"),
+    [
+        (
+            _coverage_document(last_day="d_999", observed_day_count=1968, missing_day_count=1),
+            _coverage_document(last_day="d_1969"),
+        ),
+        (
+            _coverage_document(last_day="d_999"),
+            _coverage_document(last_day="d_1969", observed_day_count=1968, missing_day_count=1),
+        ),
+    ],
+)
+def test_legacy_calendar_coverage_requires_complete_coverage(
+    tmp_path: Path,
+    legacy_coverage: str,
+    corrected_coverage: str,
+) -> None:
+    client = FakeHdfs()
+    _ingest(
+        tmp_path,
+        client,
+        "run-incomplete-legacy-calendar",
+        coverage_by_file={"calendar.csv": legacy_coverage},
+    )
+    before = dict(client.files)
+
+    with pytest.raises(HdfsRawIngestionError, match="coverage_and_exclusion_counts"):
+        _ingest(
+            tmp_path,
+            client,
+            "run-incomplete-corrected-calendar",
+            coverage_by_file={"calendar.csv": corrected_coverage},
+        )
+
+    assert client.files == before
+
+
+@pytest.mark.parametrize(
+    ("filename", "field_name", "value", "message"),
+    [
+        (
+            "sell_prices.csv",
+            "coverage_and_exclusion_counts",
+            _coverage_document(last_day="d_1"),
+            "coverage_and_exclusion_counts",
+        ),
+        ("calendar.csv", "source_file_row_count", 2, "source_file_row_count"),
+    ],
+)
+def test_legacy_calendar_exception_rejects_unrelated_manifest_mismatches(
+    tmp_path: Path,
+    filename: str,
+    field_name: str,
+    value: object,
+    message: str,
+) -> None:
+    client = FakeHdfs()
+    first = _ingest(
+        tmp_path,
+        client,
+        "run-unrelated-mismatch-first",
+        coverage_by_file={"calendar.csv": _coverage_document(last_day="d_999")},
+    )
+    _replace_remote_manifest_field(client, first.raw_path, filename, field_name, value)
+    before = dict(client.files)
+
+    with pytest.raises(HdfsRawIngestionError, match=message):
+        _ingest(
+            tmp_path,
+            client,
+            "run-unrelated-mismatch-second",
+            coverage_by_file={"calendar.csv": _coverage_document(last_day="d_1969")},
+        )
+
+    assert client.files == before
+
+
+def test_legacy_calendar_reuse_does_not_rewrite_existing_snapshot(tmp_path: Path) -> None:
+    client = FakeHdfs()
+    first = _ingest(
+        tmp_path,
+        client,
+        "run-immutable-legacy-calendar",
+        coverage_by_file={"calendar.csv": _coverage_document(last_day="d_999")},
+    )
+    before_files = dict(client.files)
+    before_calls = len(client.calls)
+
+    reused = _ingest(
+        tmp_path,
+        client,
+        "run-immutable-corrected-calendar",
+        coverage_by_file={"calendar.csv": _coverage_document(last_day="d_1969")},
+    )
+
+    assert reused.status == "REUSED"
+    assert client.files == before_files
+    assert json.loads(
+        client.files[f"{first.raw_path}/source_manifests.json"]
+    ) == json.loads(before_files[f"{first.raw_path}/source_manifests.json"])
+    mutating = {
+        "mkdir_parents",
+        "mkdir_exclusive",
+        "upload_file",
+        "upload_bytes",
+        "rename",
+        "remove",
+    }
+    assert not any(call[0] in mutating for call in client.calls[before_calls:])
 
 
 def test_validated_raw_snapshot_can_be_rechecked_before_spark_reads(
