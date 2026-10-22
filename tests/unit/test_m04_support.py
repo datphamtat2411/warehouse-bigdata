@@ -21,6 +21,117 @@ from warehouse_bigdata.common.spark_hdfs_client import SparkHdfsCliClient
 HDFS_CONFIG = HDFSConfig("hdfs://hdfs-namenode:8020", "/data/warehouse")
 
 
+def _benchmark_report(
+    statuses: dict[str, str] | None = None, *, overall_status: str | None = None
+) -> dict[str, object]:
+    statuses = statuses or {}
+    cases = [
+        {"case": label, "status": statuses.get(label, "VALIDATED")}
+        for label in m04_support.EXPECTED_BENCHMARK_CASES
+    ]
+    if overall_status is None:
+        overall_status = (
+            "VALIDATED"
+            if all(case["status"] == "VALIDATED" for case in cases)
+            else "COMPLETED_WITH_FAILURES"
+        )
+    return {"status": overall_status, "cases": cases}
+
+
+def test_benchmark_report_accepts_all_validated_cases() -> None:
+    report = _benchmark_report()
+
+    m04_support.validate_benchmark_report(report)
+
+    assert report["status"] == "VALIDATED"
+
+
+def test_benchmark_report_accepts_visible_partial_failures() -> None:
+    failed_cases = {"chunk-256", "aqe-off"}
+    report = _benchmark_report({label: "FAILED" for label in failed_cases})
+
+    m04_support.validate_benchmark_report(report)
+
+    assert report["status"] == "COMPLETED_WITH_FAILURES"
+    assert {case["case"] for case in report["cases"] if case["status"] == "FAILED"} == failed_cases
+
+
+def test_benchmark_report_rejects_all_failed_cases() -> None:
+    report = _benchmark_report({label: "FAILED" for label in m04_support.EXPECTED_BENCHMARK_CASES})
+
+    with pytest.raises(VerificationError):
+        m04_support.validate_benchmark_report(report)
+
+
+def test_benchmark_report_rejects_failed_baseline_with_successful_comparisons() -> None:
+    report = _benchmark_report({"baseline": "FAILED"})
+
+    with pytest.raises(VerificationError):
+        m04_support.validate_benchmark_report(report)
+
+
+def test_benchmark_report_rejects_successful_baseline_with_failed_comparisons() -> None:
+    report = _benchmark_report(
+        {label: "FAILED" for label in m04_support.EXPECTED_BENCHMARK_CASES if label != "baseline"}
+    )
+
+    with pytest.raises(VerificationError):
+        m04_support.validate_benchmark_report(report)
+
+
+def test_benchmark_report_rejects_missing_case() -> None:
+    report = _benchmark_report()
+    cases = report["cases"]
+    assert isinstance(cases, list)
+    cases.pop()
+
+    with pytest.raises(VerificationError):
+        m04_support.validate_benchmark_report(report)
+
+
+def test_benchmark_report_rejects_duplicate_case_identity() -> None:
+    report = _benchmark_report()
+    cases = report["cases"]
+    assert isinstance(cases, list)
+    cases[-1]["case"] = cases[0]["case"]
+
+    with pytest.raises(VerificationError):
+        m04_support.validate_benchmark_report(report)
+
+
+def test_benchmark_report_rejects_unexpected_case_identity() -> None:
+    report = _benchmark_report()
+    cases = report["cases"]
+    assert isinstance(cases, list)
+    cases[-1]["case"] = "unexpected"
+
+    with pytest.raises(VerificationError):
+        m04_support.validate_benchmark_report(report)
+
+
+@pytest.mark.parametrize(
+    ("statuses", "overall_status"),
+    [
+        ({}, "COMPLETED_WITH_FAILURES"),
+        ({"chunk-256": "FAILED"}, "VALIDATED"),
+    ],
+)
+def test_benchmark_report_rejects_inconsistent_overall_status(
+    statuses: dict[str, str], overall_status: str
+) -> None:
+    report = _benchmark_report(statuses, overall_status=overall_status)
+
+    with pytest.raises(VerificationError):
+        m04_support.validate_benchmark_report(report)
+
+
+def test_benchmark_report_rejects_unknown_case_status() -> None:
+    report = _benchmark_report({"chunk-256": "UNKNOWN"}, overall_status="COMPLETED_WITH_FAILURES")
+
+    with pytest.raises(VerificationError):
+        m04_support.validate_benchmark_report(report)
+
+
 def test_m04_event_collection_accepts_measured_scale_with_its_own_finite_bound(
     tmp_path, monkeypatch
 ):

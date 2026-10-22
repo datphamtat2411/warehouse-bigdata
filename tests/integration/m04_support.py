@@ -39,7 +39,7 @@ from warehouse_bigdata.common.hdfs_paths import (
 )
 from warehouse_bigdata.common.hdfs_permissions import prepare_spark_run_permissions
 from warehouse_bigdata.common.spark_verification import HDFS_URI, MASTER
-from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, VALIDATED
+from warehouse_bigdata.contracts.manifests import FAILED, PIPELINE_RUN_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import validate_manifest
 from warehouse_bigdata.ingestion.hdfs_raw import validate_hdfs_raw_snapshot
 from warehouse_bigdata.ingestion.m5_source import SourceProvenance, compute_source_version
@@ -57,7 +57,71 @@ SMOKE_DAY_COUNT = 30
 SMOKE_ROW_COUNT = 914_700
 SMOKE_SOURCE_VERSION_ENV = "WAREHOUSE_M04_SOURCE_VERSION"
 J03_OUTPUT_NAMES = ("sales_enriched", "store_daily_sales", "category_monthly_sales")
+EXPECTED_BENCHMARK_CASES = (
+    "baseline",
+    "chunk-64",
+    "chunk-256",
+    "shuffle-16",
+    "shuffle-64",
+    "aqe-off",
+    "cores-1",
+)
+_BENCHMARK_CASE_STATUSES = frozenset({FAILED, VALIDATED})
+_BENCHMARK_FAILURE_STATUS = "COMPLETED_WITH_FAILURES"
 _EVENT_DIRECTORY_NAMES = frozenset({"events", "events-retry-j02", "events-retry-j03"})
+
+
+def validate_benchmark_report(report: dict[str, object]) -> None:
+    """Validate the benchmark matrix acceptance contract without changing the report."""
+    cases = report.get("cases")
+    require(isinstance(cases, list), "Benchmark report cases must be a list.")
+    require(
+        len(cases) == len(EXPECTED_BENCHMARK_CASES),
+        "Benchmark report must contain exactly seven cases.",
+    )
+    require(
+        all(isinstance(case, dict) for case in cases),
+        "Benchmark report cases must be objects.",
+    )
+    case_records = [case for case in cases if isinstance(case, dict)]
+    identities = [case.get("case") for case in case_records]
+    require(
+        all(isinstance(identity, str) for identity in identities),
+        "Benchmark case identities must be strings.",
+    )
+    require(
+        len(identities) == len(set(identities)),
+        "Benchmark report contains duplicate case identities.",
+    )
+    require(
+        set(identities) == set(EXPECTED_BENCHMARK_CASES),
+        "Benchmark report case identities differ from the expected matrix.",
+    )
+    statuses = [case.get("status") for case in case_records]
+    require(
+        all(isinstance(status, str) and status in _BENCHMARK_CASE_STATUSES for status in statuses),
+        "Benchmark report contains an unknown case status.",
+    )
+    cases_by_identity = dict(zip(identities, case_records, strict=True))
+    require(
+        cases_by_identity["baseline"].get("status") == VALIDATED,
+        "The baseline benchmark case must be VALIDATED.",
+    )
+    require(
+        any(
+            cases_by_identity[label].get("status") == VALIDATED
+            for label in EXPECTED_BENCHMARK_CASES
+            if label != "baseline"
+        ),
+        "At least one comparison benchmark case must be VALIDATED.",
+    )
+    expected_status = (
+        VALIDATED if all(status == VALIDATED for status in statuses) else _BENCHMARK_FAILURE_STATUS
+    )
+    require(
+        report.get("status") == expected_status,
+        "Benchmark report status is inconsistent with its case statuses.",
+    )
 
 
 def source_environment() -> tuple[Path, str, str | None]:
@@ -1230,6 +1294,7 @@ def _write_json_artifact(path: Path, value: object) -> None:
 
 __all__ = [
     "CALIBRATION_DAY_COUNT",
+    "EXPECTED_BENCHMARK_CASES",
     "FULL_DAY_COUNT",
     "FULL_ROW_COUNT",
     "PERFORMANCE_ENV",
@@ -1241,4 +1306,5 @@ __all__ = [
     "run_correctness",
     "run_smoke",
     "source_environment",
+    "validate_benchmark_report",
 ]

@@ -7,7 +7,11 @@ import os
 import pytest
 
 from tests.integration.hdfs_support import HDFSVerification
-from tests.integration.m04_support import PERFORMANCE_ENV, run_benchmark_matrix
+from tests.integration.m04_support import (
+    PERFORMANCE_ENV,
+    run_benchmark_matrix,
+    validate_benchmark_report,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -34,7 +38,7 @@ def test_bounded_m04_benchmark_matrix_retains_measured_results(
 
     assert len(report["cases"]) == 7
     assert report["workload"]["expected_row_count"] == 30_490 * 128
-    assert ("COMPLETED_WITH_FAILURES", "VALIDATED").count(report["status"]) == 1
+    validate_benchmark_report(report)
     assert all(
         "case" in case
         and "status" in case
