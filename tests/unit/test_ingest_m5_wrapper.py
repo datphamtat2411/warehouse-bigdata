@@ -3,12 +3,32 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "ingest-m5.sh"
 SOURCE_URL = "https://www.kaggle.com/competitions/m5-forecasting-accuracy/data"
 TIMESTAMP = "2026-10-21T12:34:56Z"
+
+
+def _isolated_script(tmp_path: Path) -> Path:
+    """Return a wrapper copy whose repository has no developer-local .env file."""
+    repository = tmp_path / "repository"
+    scripts = repository / "scripts"
+    hadoop = repository / "infrastructure" / "hadoop"
+    scripts.mkdir(parents=True)
+    hadoop.mkdir(parents=True)
+    source_root = SCRIPT.parents[1]
+    for source in (
+        SCRIPT,
+        source_root / "scripts" / "load-env.sh",
+        source_root / "infrastructure" / "hadoop" / "core-site.xml",
+        source_root / "infrastructure" / "hadoop" / "hdfs-site.xml",
+    ):
+        destination = repository / source.relative_to(source_root)
+        shutil.copy2(source, destination)
+    return scripts / SCRIPT.name
 
 
 def _fake_runtime(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -80,6 +100,7 @@ def _environment(
 
 def test_wrapper_creates_owned_client_forwards_arguments_and_cleans_it(tmp_path: Path) -> None:
     fake_bin, docker_log, uv_log = _fake_runtime(tmp_path)
+    script = _isolated_script(tmp_path)
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     scratch_dir = tmp_path / "scratch"
@@ -94,7 +115,7 @@ def test_wrapper_creates_owned_client_forwards_arguments_and_cleans_it(tmp_path:
     result = subprocess.run(
         [
             "/bin/bash",
-            str(SCRIPT),
+            str(script),
             "--source-dir",
             str(source_dir),
             "--source-url",
@@ -130,6 +151,7 @@ def test_wrapper_creates_owned_client_forwards_arguments_and_cleans_it(tmp_path:
 
 def test_wrapper_omits_unknown_download_time(tmp_path: Path) -> None:
     fake_bin, docker_log, uv_log = _fake_runtime(tmp_path)
+    script = _isolated_script(tmp_path)
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     environment = _environment(
@@ -143,7 +165,7 @@ def test_wrapper_omits_unknown_download_time(tmp_path: Path) -> None:
     result = subprocess.run(
         [
             "/bin/bash",
-            str(SCRIPT),
+            str(script),
             "--source-dir",
             str(source_dir),
             "--source-url",
@@ -162,6 +184,7 @@ def test_wrapper_omits_unknown_download_time(tmp_path: Path) -> None:
 def test_wrapper_reports_missing_host_prerequisite(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    script = _isolated_script(tmp_path)
     realpath = fake_bin / "realpath"
     realpath.symlink_to("/usr/bin/realpath")
     source_dir = tmp_path / "source"
@@ -170,7 +193,7 @@ def test_wrapper_reports_missing_host_prerequisite(tmp_path: Path) -> None:
     result = subprocess.run(
         [
             "/bin/bash",
-            str(SCRIPT),
+            str(script),
             "--source-dir",
             str(source_dir),
             "--source-url",
@@ -188,6 +211,7 @@ def test_wrapper_reports_missing_host_prerequisite(tmp_path: Path) -> None:
 
 def test_wrapper_cleans_a_client_left_by_a_failed_create_request(tmp_path: Path) -> None:
     fake_bin, docker_log, uv_log = _fake_runtime(tmp_path)
+    script = _isolated_script(tmp_path)
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     environment = _environment(
@@ -202,7 +226,7 @@ def test_wrapper_cleans_a_client_left_by_a_failed_create_request(tmp_path: Path)
     result = subprocess.run(
         [
             "/bin/bash",
-            str(SCRIPT),
+            str(script),
             "--source-dir",
             str(source_dir),
             "--source-url",

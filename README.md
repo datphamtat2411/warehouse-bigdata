@@ -174,11 +174,12 @@ Prerequisites are `uv` and Python 3.11. The required Python version is recorded 
 in [`uv.lock`](uv.lock).
 
 From the repository root, install/select Python 3.11 and synchronize the locked
-development environment:
+development environment. The full default test suite includes Spark unit tests, so
+select the dedicated `spark-test` group:
 
 ```bash
 uv python install 3.11
-uv sync --locked
+uv sync --locked --group spark-test
 ```
 
 For host workflows, create the ignored local configuration before running the validation

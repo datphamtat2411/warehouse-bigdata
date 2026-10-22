@@ -34,7 +34,7 @@ jobs:
           version: "0.13.1"
 
       - name: Install locked dependencies
-        run: uv sync --locked
+        run: uv sync --locked --group spark-test
 
       - name: Lint with Ruff
         run: uv run --locked ruff check .

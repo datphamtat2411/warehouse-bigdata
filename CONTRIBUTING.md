@@ -44,7 +44,7 @@ Use Python 3.11 from [`.python-version`](.python-version) and the committed lock
 
 ```bash
 uv python install 3.11
-uv sync --locked
+uv sync --locked --group spark-test
 uv run --locked ruff check .
 uv run --locked ruff format --check .
 uv run --locked pytest -q

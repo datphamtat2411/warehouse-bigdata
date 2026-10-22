@@ -41,6 +41,7 @@ ALL_VARIABLES = {
     "WAREHOUSE_M5_SOURCE_DIR",
     "WAREHOUSE_M5_SOURCE_URL",
     "WAREHOUSE_M5_DOWNLOADED_AT_UTC",
+    "WAREHOUSE_M04_SOURCE_VERSION",
 }
 
 
@@ -369,6 +370,7 @@ def test_env_example_contains_exact_supported_variables() -> None:
     assert values["WAREHOUSE_M5_SOURCE_DIR"] == ""
     assert values["WAREHOUSE_M5_SOURCE_URL"] == ""
     assert values["WAREHOUSE_M5_DOWNLOADED_AT_UTC"] == ""
+    assert values["WAREHOUSE_M04_SOURCE_VERSION"] == ""
 
 
 def test_local_env_is_ignored_while_the_example_remains_trackable() -> None:
