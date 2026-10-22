@@ -6,6 +6,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
@@ -164,12 +165,20 @@ def test_bounded_runner_preserves_nonzero_status_and_error() -> None:
 
 def test_deadline_kills_stalled_probe_and_its_descendant(tmp_path: Path) -> None:
     child_pid = tmp_path / "child.pid"
-    code = (
-        "import os, signal, time; from pathlib import Path; "
-        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-        "pid = os.fork(); "
-        f"Path({str(child_pid)!r}).write_text(str(os.getpid())) if pid == 0 else None; "
-        "print('success', flush=True); time.sleep(60)"
+    code = dedent(
+        f"""
+        import os
+        import signal
+        import time
+        from pathlib import Path
+
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        pid = os.fork()
+        if pid:
+            Path({str(child_pid)!r}).write_text(str(pid))
+        print("success", flush=True)
+        time.sleep(60)
+        """
     )
     started = time.monotonic()
     result = probe.run_bounded([sys.executable, "-c", code], timeout=0.5)
@@ -177,12 +186,23 @@ def test_deadline_kills_stalled_probe_and_its_descendant(tmp_path: Path) -> None
     assert result["timed_out"] and result["exit_code"] != 0
     assert "success" in result["stdout"]
     assert child_pid.exists(), "The test must exercise descendant cleanup"
+
     state = Path(f"/proc/{child_pid.read_text()}/stat")
-    try:
-        status = state.read_text().rsplit(") ", 1)[1].split()[0]
-    except FileNotFoundError:
-        status = "Z"
-    assert status == "Z"
+
+    def process_state() -> str | None:
+        try:
+            return state.read_text().rsplit(") ", 1)[1].split()[0]
+        except (FileNotFoundError, ProcessLookupError):
+            return None
+
+    status = process_state()
+    deadline = time.monotonic() + 1
+    while status not in (None, "Z") and time.monotonic() < deadline:
+        time.sleep(0.01)
+        status = process_state()
+
+    # A fast reaper removes the zombie entirely; both states mean no live descendant.
+    assert status in (None, "Z"), f"Descendant remained live with state {status!r}"
 
 
 @pytest.mark.parametrize("failed_phase", ["compile", "java"])
