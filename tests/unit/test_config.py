@@ -38,6 +38,9 @@ ALL_VARIABLES = {
     "WAREHOUSE_CLICKHOUSE_PASSWORD",
     "WAREHOUSE_ARTIFACTS_DIR",
     "WAREHOUSE_SCRATCH_DIR",
+    "WAREHOUSE_M5_SOURCE_DIR",
+    "WAREHOUSE_M5_SOURCE_URL",
+    "WAREHOUSE_M5_DOWNLOADED_AT_UTC",
 }
 
 
@@ -362,3 +365,16 @@ def test_env_example_contains_exact_supported_variables() -> None:
     assert RUNTIME_VARIABLES <= values.keys()
     assert values["WAREHOUSE_HDFS_URI"] == ""
     assert values["WAREHOUSE_HDFS_BASE_PATH"] == "/data/warehouse"
+    assert values["WAREHOUSE_CLICKHOUSE_PASSWORD"] == ""
+    assert values["WAREHOUSE_M5_SOURCE_DIR"] == ""
+    assert values["WAREHOUSE_M5_SOURCE_URL"] == ""
+    assert values["WAREHOUSE_M5_DOWNLOADED_AT_UTC"] == ""
+
+
+def test_local_env_is_ignored_while_the_example_remains_trackable() -> None:
+    gitignore = Path(__file__).parents[2] / ".gitignore"
+    entries = gitignore.read_text(encoding="utf-8").splitlines()
+
+    assert ".env" in entries
+    assert ".env.*" in entries
+    assert "!.env.example" in entries

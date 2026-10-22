@@ -24,8 +24,9 @@ pinned Apache Hadoop 3.4.3 image, the existing `warehouse-bigdata` bridge, and t
 read-only `core-site.xml`/`hdfs-site.xml` binds. It does not start, recreate, or reinitialize
 HDFS or Spark services.
 
-Export these host variables explicitly (or source `.env` into the shell); the launcher
-supplies the client container variables itself:
+The host launcher sources the repository `.env` automatically; it supplies the
+run-owned client-container variables itself. With no `.env`, inherited variables remain
+supported:
 
 | Variable | Requirement |
 |---|---|
@@ -33,13 +34,14 @@ supplies the client container variables itself:
 | `WAREHOUSE_HDFS_BASE_PATH` | Optional; defaults to `/data/warehouse` |
 | `WAREHOUSE_ARTIFACTS_DIR` | Optional writable Ubuntu-local evidence directory |
 | `WAREHOUSE_SCRATCH_DIR` | Optional writable disk-backed Ubuntu-local scratch; defaults to `artifacts/scratch` |
+| `WAREHOUSE_M5_SOURCE_DIR` / `WAREHOUSE_M5_SOURCE_URL` | Optional source inputs; explicit launcher flags take precedence |
+| `WAREHOUSE_M5_DOWNLOADED_AT_UTC` | Optional actual acquisition timestamp; blank preserves unknown provenance |
 | `WAREHOUSE_HDFS_CLI_CONTAINER` / `WAREHOUSE_HDFS_CLI_OWNER` | Launcher-owned; do not set manually |
 
 With the existing initialized HDFS and Spark services ready, and the prepared
 Spark runtime available for the later verification, run from the repository root:
 
 ```bash
-WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
 bash scripts/ingest-m5.sh \
   --source-dir /path/to/m5-csvs \
   --source-url https://www.kaggle.com/competitions/m5-forecasting-accuracy/data
@@ -87,8 +89,6 @@ For the live M03 acceptance, first run the launcher above and retain its
 verification job, using the returned actual raw HDFS URI and `source_version`:
 
 ```bash
-WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
-WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
 bash scripts/spark-submit.sh -- \
   warehouse_bigdata/jobs/verify_m5_raw_hdfs.py \
   --raw-uri hdfs://hdfs-namenode:8020/data/warehouse/raw/m5/source_version=sha256-... \
@@ -312,7 +312,7 @@ docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}'
 ## Focused offline checks
 
 ```bash
-uv run --locked pytest -q tests/unit/test_hdfs_lifecycle.py
+bash scripts/load-env.sh uv run --locked pytest -q tests/unit/test_hdfs_lifecycle.py
 bash -n infrastructure/hadoop/lifecycle.sh
 bash -n infrastructure/hadoop/healthcheck.sh
 bash -n scripts/init-hdfs.sh
@@ -343,7 +343,7 @@ uv run --locked ruff format --check tests/integration tests/unit/test_hdfs_verif
 Run the non-disruptive scenario explicitly from the repository root:
 
 ```bash
-WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 uv run --locked pytest -q -m integration tests/integration/test_hdfs.py
+bash scripts/load-env.sh uv run --locked pytest -q -m integration tests/integration/test_hdfs.py
 ```
 
 This executes the independent-client scenario and skips the three disruptive cases
@@ -378,7 +378,7 @@ lifecycle operations, and run serially (no xdist workers). Supplying the additio
 flag acknowledges this window:
 
 ```bash
-WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 uv run --locked pytest -q -m integration tests/integration/test_hdfs.py --run-hdfs-disruptions
+bash scripts/load-env.sh uv run --locked pytest -q -m integration tests/integration/test_hdfs.py --run-hdfs-disruptions
 ```
 
 T03 also takes a non-blocking local lock to prevent overlapping T03 invocations;
@@ -582,7 +582,7 @@ uv run --locked pytest -q tests/unit/test_spark_verification.py tests/unit/test_
 Explicit live acceptance gate, from the repository root:
 
 ```bash
-WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 uv run --locked pytest -q -m integration tests/integration/test_spark_hdfs.py
+bash scripts/load-env.sh uv run --locked pytest -q -m integration tests/integration/test_spark_hdfs.py
 ```
 
 ### Fixture, workload, and required proof

@@ -313,6 +313,11 @@ always selects `--deploy-mode client`; there is no local fallback. The generic
 shared Spark configuration loader still supports explicit local modes for other
 callers.
 
+Host-side wrappers load the repository `.env` through `scripts/load-env.sh`, but that
+file does not replace the explicit container environment above or alter the existing
+`warehouse-bigdata` bridge. Keep host/integration values in `.env`; keep the
+Docker-internal HDFS and Spark endpoints in the Compose service definition.
+
 Both Hadoop XML mounts and `HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop` are reused
 unchanged. Submission sets `spark.hadoop.fs.defaultFS`, retains hostname-based
 DataNode access, and sends the HDFS URI/base path to executor environments. Driver,
@@ -411,8 +416,6 @@ application sources changed and submit only after the existing HDFS and Spark se
 are ready:
 
 ```bash
-WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
-WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
 bash scripts/spark-submit.sh -- \
   warehouse_bigdata/jobs/verify_m5_raw_hdfs.py \
   --raw-uri hdfs://hdfs-namenode:8020/data/warehouse/raw/m5/source_version=sha256-... \
@@ -424,11 +427,7 @@ approved/raw data. The real-source integration command also verifies independent
 byte/hash evidence and both-DataNode placement before this Spark submission:
 
 ```bash
-WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
-WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
-WAREHOUSE_M5_SOURCE_DIR=/path/to/m5-csvs \
-WAREHOUSE_M5_SOURCE_URL=https://www.kaggle.com/competitions/m5-forecasting-accuracy/data \
-uv run --locked pytest -q -m integration tests/integration/test_m5_ingestion.py
+bash scripts/load-env.sh uv run --locked pytest -q -m integration tests/integration/test_m5_ingestion.py
 ```
 
 This is a non-disruptive check against already running services. The local Compose
@@ -772,7 +771,7 @@ selection must match.
 The explicitly selected Docker regression uses **existing local images only**:
 
 ```bash
-uv run --locked pytest -q -m integration tests/integration/test_spark_native_runtime.py
+bash scripts/load-env.sh uv run --locked pytest -q -m integration tests/integration/test_spark_native_runtime.py
 ```
 
 It creates no Spark context/application and attaches no cluster volumes/network.
@@ -911,17 +910,16 @@ Do not use cluster-wide resets, volume removal, or fixture cleanup for this inci
 
 For a future live run, first verify current repository/source/image identities,
 healthy idle Spark and HDFS services, and protected historical evidence/fixtures.
-Supply `WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077`,
-`WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020`, and the recorded
-`WAREHOUSE_HDFS_BASE_PATH=/data/warehouse` through the process environment. The
-loaders do not read `.env` implicitly. Retain the existing 300-second submission,
+Set `WAREHOUSE_SPARK_MASTER_URL`, `WAREHOUSE_HDFS_URI`, and the recorded
+`WAREHOUSE_HDFS_BASE_PATH=/data/warehouse` in the ignored project `.env` (or use
+the host loader with inherited values). Retain the existing 300-second submission,
 45-second cleanup-grace and 360-second host bounds.
 
 After reviewing the current rollout/JNI/preservation evidence and receiving
 **separate explicit approval for that live run**, execute exactly once:
 
 ```bash
-uv run --locked pytest -q -m integration tests/integration/test_spark_hdfs.py::test_distributed_spark_hdfs_round_trip
+bash scripts/load-env.sh uv run --locked pytest -q -m integration tests/integration/test_spark_hdfs.py::test_distributed_spark_hdfs_round_trip
 ```
 
 Require correlated workload/barrier-task evidence from both **current** Workers,

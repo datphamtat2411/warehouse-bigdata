@@ -6,7 +6,11 @@ if [[ $# != 0 ]]; then
     exit 2
 fi
 
-repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+script_dir=${BASH_SOURCE[0]%/*}
+[[ $script_dir == "${BASH_SOURCE[0]}" ]] && script_dir=.
+repository=$(cd -- "$script_dir/.." && pwd)
+# shellcheck disable=SC1091
+source "$repository/scripts/load-env.sh"
 compose=(docker compose -f "$repository/infrastructure/compose.yaml" --profile spark)
 services=(spark-master spark-worker-1 spark-worker-2)
 diagnostics() {

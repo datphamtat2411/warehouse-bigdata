@@ -2,8 +2,14 @@
 # Run the host-side M5 workflow through one owned Hadoop CLI container.
 set -euo pipefail
 
+script_dir=${BASH_SOURCE[0]%/*}
+[[ $script_dir == "${BASH_SOURCE[0]}" ]] && script_dir=.
+repository=$(cd -- "$script_dir/.." && pwd)
+# shellcheck disable=SC1091
+source "$repository/scripts/load-env.sh"
+
 usage() {
-    printf 'Usage: bash scripts/ingest-m5.sh --source-dir PATH --source-url URL [--downloaded-at-utc TIMESTAMP] [--pipeline-run-id ID]\n'
+    printf 'Usage: bash scripts/ingest-m5.sh [--source-dir PATH] [--source-url URL] [--downloaded-at-utc TIMESTAMP] [--pipeline-run-id ID]\n'
 }
 
 if [[ $# == 1 && $1 == --help ]]; then
@@ -11,9 +17,10 @@ if [[ $# == 1 && $1 == --help ]]; then
     exit 0
 fi
 
-source_dir=
-source_url=
-downloaded_at_utc=
+source_dir=${WAREHOUSE_M5_SOURCE_DIR:-}
+source_dir_from_environment=1
+source_url=${WAREHOUSE_M5_SOURCE_URL:-}
+downloaded_at_utc=${WAREHOUSE_M5_DOWNLOADED_AT_UTC:-}
 downloaded_at_utc_provided=0
 pipeline_run_id=
 while [[ $# -gt 0 ]]; do
@@ -21,7 +28,10 @@ while [[ $# -gt 0 ]]; do
         --source-dir|--source-url|--downloaded-at-utc|--pipeline-run-id)
             [[ $# -ge 2 ]] || { usage >&2; exit 2; }
             case "$1" in
-                --source-dir) source_dir=$2 ;;
+                --source-dir)
+                    source_dir=$2
+                    source_dir_from_environment=0
+                    ;;
                 --source-url) source_url=$2 ;;
                 --downloaded-at-utc)
                     downloaded_at_utc=$2
@@ -43,7 +53,10 @@ if [[ -z $source_dir || -z $source_url || $downloaded_at_utc_provided == 1 && -z
     exit 2
 fi
 
-repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+if (( source_dir_from_environment )) && [[ $source_dir != /* ]]; then
+    source_dir=$repository/$source_dir
+fi
+
 image=apache/hadoop:3.4.3@sha256:127774dadab40ce84df7ac668a7a8c99945688b3fe336f1388f4477ca33e1529
 network=warehouse-bigdata
 core_config=$repository/infrastructure/hadoop/core-site.xml
@@ -97,6 +110,8 @@ fi
 
 artifacts_dir=${WAREHOUSE_ARTIFACTS_DIR:-$repository/artifacts}
 scratch_dir=${WAREHOUSE_SCRATCH_DIR:-$repository/artifacts/scratch}
+[[ $artifacts_dir == /* ]] || artifacts_dir=$repository/$artifacts_dir
+[[ $scratch_dir == /* ]] || scratch_dir=$repository/$scratch_dir
 artifacts_dir=$(realpath -m -- "$artifacts_dir")
 scratch_dir=$(realpath -m -- "$scratch_dir")
 if ! mkdir -p -- "$artifacts_dir" "$scratch_dir"; then

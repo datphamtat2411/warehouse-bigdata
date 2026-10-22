@@ -99,7 +99,7 @@ The tracked repository is intentionally small at this stage:
 | [`docs/`](docs/01_PROJECT_OVERVIEW.md) | Design specifications and repository guidance |
 | [`infrastructure/`](infrastructure/) | HDFS deployment, Hadoop configuration, and opt-in Spark topology/runtime/probes; ClickHouse remains planned |
 | `tests/` | Focused offline checks, Spark registration/lifecycle checks, and opt-in HDFS and distributed Spark–HDFS integration scenarios |
-| [`scripts/`](scripts/) | Explicit HDFS initialization, scoped Spark lifecycle/submission commands, and focused smoke checks |
+| [`scripts/`](scripts/) | Repository environment loading, explicit HDFS initialization, scoped Spark lifecycle/submission commands, and focused smoke checks |
 | `app/`, `sql/`, `data/`, `artifacts/` | Planned areas described by the design; not currently present in the tracked tree |
 
 [`docs/BASED_STRUCTURE.md`](docs/BASED_STRUCTURE.md) is a reference layout, not
@@ -181,6 +181,11 @@ uv python install 3.11
 uv sync --locked
 ```
 
+For host workflows, create the ignored local configuration before running the validation
+or integration commands below: `cp .env.example .env`, then fill only the values needed
+for the selected workflow. The shared-configuration section documents validation,
+precedence, and migration from older `.zshrc` exports.
+
 Run the CLI, lint checks, formatting check, tests, and package build with:
 
 ```bash
@@ -201,7 +206,7 @@ directory). Profile the already-acquired package without modifying its CSV files
 acquisition timestamp may be omitted when it is unknown:
 
 ```bash
-uv run --locked warehouse-bigdata profile-m5-source \
+bash scripts/load-env.sh uv run --locked warehouse-bigdata profile-m5-source \
   --source-dir /path/to/m5-csvs \
   --source-url https://www.kaggle.com/competitions/m5-forecasting-accuracy/data
 ```
@@ -225,11 +230,14 @@ under the ignored local `artifacts/` directory, and uses a disk-backed
 write-ready; the launcher creates only its uniquely named Hadoop CLI client:
 
 ```bash
-WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
 bash scripts/ingest-m5.sh \
   --source-dir /path/to/m5-csvs \
   --source-url https://www.kaggle.com/competitions/m5-forecasting-accuracy/data
 ```
+
+The launcher loads the repository `.env` automatically. `--source-dir` and
+`--source-url` remain explicit command arguments and override matching optional
+`WAREHOUSE_M5_*` values from `.env`.
 
 Each attempt receives a unique `pipeline_run_id`. Its local profile, quality report, and
 `PIPELINE_RUN_MANIFEST` are stored below `artifacts/m5-ingestion/<pipeline_run_id>/`.
@@ -264,11 +272,7 @@ real-source acceptance test additionally checks remote byte hashes, replication 
 both-DataNode block placement:
 
 ```bash
-WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 \
-WAREHOUSE_SPARK_MASTER_URL=spark://spark-master:7077 \
-WAREHOUSE_M5_SOURCE_DIR=/path/to/m5-csvs \
-WAREHOUSE_M5_SOURCE_URL=https://www.kaggle.com/competitions/m5-forecasting-accuracy/data \
-uv run --locked pytest -q -m integration tests/integration/test_m5_ingestion.py
+bash scripts/load-env.sh uv run --locked pytest -q -m integration tests/integration/test_m5_ingestion.py
 ```
 
 The live check is non-disruptive and leaves validated M5 raw snapshots and run
@@ -338,7 +342,7 @@ Against an already initialized, running T01 cluster, run the non-disruptive
 independent-client registration, read/write integrity, and two-replica placement check:
 
 ```bash
-WAREHOUSE_HDFS_URI=hdfs://hdfs-namenode:8020 uv run --locked pytest -q -m integration tests/integration/test_hdfs.py
+bash scripts/load-env.sh uv run --locked pytest -q -m integration tests/integration/test_hdfs.py
 ```
 
 Default pytest runs and lightweight CI exclude live HDFS integration tests. The
@@ -365,19 +369,24 @@ separate GitHub administrative setting and is not implied by the workflow file.
 Python components use the typed loaders in
 `warehouse_bigdata.common.config` rather than reading environment variables directly.
 The loaders validate syntax and required fields without reading `.env` files, creating
-directories, resolving paths, opening sockets, or checking service availability.
+directories, resolving paths, opening sockets, or checking service availability. Host-side
+Bash workflows use `scripts/load-env.sh` to inject the repository-local `.env` before
+invoking those typed loaders; this does not add a Python dotenv dependency or a second
+Python configuration system.
 
 Create a local environment file from the safe template when local values are needed:
 
 ```bash
 cp .env.example .env
-uv run --locked --env-file .env python -c \
-  "from warehouse_bigdata.common.config import load_runtime_config; print(load_runtime_config())"
+${EDITOR:-vi} .env
+bash scripts/load-env.sh uv run --locked python -c \
+  'from warehouse_bigdata.common.config import load_hdfs_config, load_paths_config, load_runtime_config, load_spark_config; load_runtime_config(); load_hdfs_config(); load_spark_config(); load_paths_config(); print("warehouse environment syntax is valid")'
 ```
 
-`uv run --env-file` explicitly injects values into the child process. The configuration
-module does not parse `.env` files, and `.env` is ignored by Git. Tests and callers that
-need deterministic settings can pass a complete mapping directly:
+The validation command requires the HDFS and Spark values to be filled in. It prints no
+credentials. `.env` is ignored by Git and `.env.example` is the only environment file
+intended for source control. Tests and callers that need deterministic settings can pass a
+complete mapping directly:
 
 ```python
 from warehouse_bigdata.common.config import load_hdfs_config, load_runtime_config
@@ -398,6 +407,28 @@ usable only where that service hostname resolves. Host-side clients must explici
 supply an endpoint reachable from their network and cannot assume Docker service DNS.
 Actual HDFS access requires both NameNode RPC and DataNode connectivity; see the
 [operations guide](infrastructure/hadoop/README.md).
+
+Host workflow precedence is consistent across the Bash launchers: explicit command
+arguments, the project `.env`, inherited process environment, then application defaults.
+The `.env` file therefore intentionally wins over an inherited value with the same name;
+remove or edit the local entry when testing an inherited value. The ingestion wrapper
+accepts `WAREHOUSE_M5_SOURCE_DIR`, `WAREHOUSE_M5_SOURCE_URL`, and
+`WAREHOUSE_M5_DOWNLOADED_AT_UTC` from `.env`, while its explicit source flags take priority.
+The typed Python loaders retain their existing defaults and validation rules.
+
+The loader resolves `.env` from the repository containing `scripts/load-env.sh`, not from
+the caller's current directory. Use `source scripts/load-env.sh` for a longer host shell
+session or `bash scripts/load-env.sh <command> ...` for a one-shot command. This replaces
+project-specific exports in `.zshrc`: copy the values into the ignored `.env`, remove the
+corresponding `.zshrc` exports, open a new shell (or `unset` the old values), and run the
+launcher or one-shot command through the loader. Existing callers without `.env` continue
+to use inherited variables, and application defaults remain in the typed loaders.
+
+The host file is not used to rewrite Compose networking. The Hadoop client and Spark
+submission containers retain their explicit internal endpoints (`hdfs://hdfs-namenode:8020`
+and `spark://spark-master:7077`) and existing `warehouse-bigdata` bridge. Do not place
+container-only endpoint substitutions or credentials in `infrastructure/compose.yaml`;
+host launchers load `.env` without forwarding unrelated secrets to Compose services.
 
 Spark's shared loader requires `WAREHOUSE_SPARK_MASTER_URL`; it accepts `local[*]`
 for explicit local callers. The submission runtime requires Standalone and rejects

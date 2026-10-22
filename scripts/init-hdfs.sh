@@ -2,7 +2,11 @@
 # Explicit initialization only. Never call this from a daemon's startup path.
 set -euo pipefail
 
-repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+script_dir=${BASH_SOURCE[0]%/*}
+[[ $script_dir == "${BASH_SOURCE[0]}" ]] && script_dir=.
+repository=$(cd -- "$script_dir/.." && pwd)
+# shellcheck disable=SC1091
+source "$repository/scripts/load-env.sh"
 compose=(docker compose -f "$repository/infrastructure/compose.yaml" --profile init)
 services=(hdfs-namenode hdfs-datanode-1 hdfs-datanode-2)
 

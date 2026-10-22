@@ -2,7 +2,11 @@
 # A small T01 check, not node-failure or separate-client integration tooling.
 set -euo pipefail
 
-repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+script_dir=${BASH_SOURCE[0]%/*}
+[[ $script_dir == "${BASH_SOURCE[0]}" ]] && script_dir=.
+repository=$(cd -- "$script_dir/.." && pwd)
+# shellcheck disable=SC1091
+source "$repository/scripts/load-env.sh"
 compose=(docker compose -f "$repository/infrastructure/compose.yaml")
 
 "${compose[@]}" exec -T hdfs-namenode bash /opt/warehouse-hdfs/healthcheck.sh wait-ready 180

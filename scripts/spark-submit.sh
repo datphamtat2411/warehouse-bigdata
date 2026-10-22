@@ -2,6 +2,12 @@
 # Submit one prepared driver; cluster lifecycle remains owned by T01/M01.
 set -euo pipefail
 
+script_dir=${BASH_SOURCE[0]%/*}
+[[ $script_dir == "${BASH_SOURCE[0]}" ]] && script_dir=.
+repository=$(cd -- "$script_dir/.." && pwd)
+# shellcheck disable=SC1091
+source "$repository/scripts/load-env.sh"
+
 usage() {
     printf 'Usage: bash scripts/spark-submit.sh [--conf KEY=VALUE ...] -- APPLICATION.py [APPLICATION_ARGS...]\n'
 }
@@ -22,7 +28,6 @@ if [[ $# -lt 2 || $1 != -- || -z $2 ]]; then
     exit 2
 fi
 
-repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 image=warehouse-bigdata-spark-submit:3.5.7-python3.11.17
 compose=(docker compose -f "$repository/infrastructure/compose.yaml" --profile spark-submit)
 for executable in docker timeout; do
