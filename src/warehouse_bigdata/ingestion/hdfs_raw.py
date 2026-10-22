@@ -23,9 +23,9 @@ from warehouse_bigdata.common.hdfs_client import (
     RemoteFileHash,
     RemoteFileStat,
 )
+from warehouse_bigdata.common.hdfs_paths import HdfsPathError, render_hdfs_artifact_path
 from warehouse_bigdata.common.hdfs_runtime import create_hdfs_cli_client
 from warehouse_bigdata.contracts.manifests import (
-    HDFS_ARTIFACT_PATHS,
     PIPELINE_RUN_MANIFEST,
     SOURCE_MANIFEST,
     VALIDATED,
@@ -120,6 +120,17 @@ class RawIngestionResult:
     source_version: str
     raw_path: str
     staging_path: str | None
+    manifests: tuple[Mapping[str, object], ...]
+    integrity: HdfsIntegrityEvidence
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedHdfsRawSnapshot:
+    """A raw HDFS snapshot independently revalidated before Spark reads it."""
+
+    status: str
+    source_version: str
+    raw_path: str
     manifests: tuple[Mapping[str, object], ...]
     integrity: HdfsIntegrityEvidence
 
@@ -502,6 +513,59 @@ def ingest_m5_raw(
         raise HdfsRawIngestionError(str(error)) from error
 
 
+def validate_hdfs_raw_snapshot(
+    source_version: str,
+    *,
+    client: HdfsCliClient | Any | None = None,
+    config: HDFSConfig | None = None,
+) -> ValidatedHdfsRawSnapshot:
+    """Revalidate one immutable raw snapshot before any Spark source read.
+
+    The source manifests, raw file bytes, metadata sidecars, and HDFS block
+    placement are checked independently of Spark.  Callers receive only a
+    validated HDFS path and never a local-data fallback.
+    """
+    if not isinstance(source_version, str) or not _SOURCE_VERSION.fullmatch(source_version):
+        raise HdfsRawIngestionError("source_version must be a content-derived SHA-256 identity")
+    settings = load_hdfs_config() if config is None else config
+    raw_path = _render_path(settings.base_path, "raw_m5", source_version=source_version)
+
+    try:
+        hdfs = create_hdfs_cli_client(settings) if client is None else client
+        nodes = _verify_cluster_prerequisites(hdfs, settings)
+        if not _exists(hdfs, raw_path) or not _is_directory(hdfs, raw_path):
+            raise HdfsRawIngestionError(f"validated raw snapshot is not a directory: {raw_path}")
+
+        manifest_path = f"{raw_path}/source_manifests.json"
+        manifest_payload = hdfs.read_remote(manifest_path)
+        _verify_metadata_file(
+            hdfs,
+            manifest_path,
+            manifest_payload,
+            {node.address for node in nodes.values()},
+        )
+        raw_manifests = _decode_array(manifest_payload, "raw source manifests")
+        bundle = _bundle_from_remote_manifests(raw_manifests, source_version)
+        manifests, integrity = _validate_snapshot(
+            hdfs,
+            settings,
+            bundle,
+            raw_path,
+            nodes,
+        )
+        return ValidatedHdfsRawSnapshot(
+            status=VALIDATED,
+            source_version=source_version,
+            raw_path=raw_path,
+            manifests=manifests,
+            integrity=integrity,
+        )
+    except HdfsRawIngestionError:
+        raise
+    except (HdfsCommandError, OSError, ValueError, KeyError, TypeError) as error:
+        raise HdfsRawIngestionError(f"raw HDFS snapshot validation failed: {error}") from error
+
+
 def _verify_cluster_prerequisites(client: Any, config: HDFSConfig) -> dict[str, DataNodeReport]:
     expected_configuration = {
         "fs.defaultFS": config.uri,
@@ -633,6 +697,69 @@ def _build_remote_manifest(
             f"generated invalid HDFS SOURCE_MANIFEST for {local_file.source_file}: {error}"
         ) from error
     return MappingProxyType(record)
+
+
+def _bundle_from_remote_manifests(
+    raw_manifests: list[object],
+    source_version: str,
+) -> LocalSourceBundle:
+    expected_files = set(RECOGNIZED_M5_FILES)
+    by_file: dict[str, Mapping[str, object]] = {}
+    for raw_manifest in raw_manifests:
+        if not isinstance(raw_manifest, Mapping):
+            raise HdfsRawIngestionError("raw source manifests must contain JSON objects")
+        filename = raw_manifest.get("source_file")
+        if not isinstance(filename, str) or filename not in expected_files or filename in by_file:
+            raise HdfsRawIngestionError("raw source manifests contain an invalid file set")
+        try:
+            validate_manifest(
+                SOURCE_MANIFEST,
+                raw_manifest,
+                lineage_context={"required_status": VALIDATED, "source_version": source_version},
+            )
+        except ContractValidationError as error:
+            raise HdfsRawIngestionError(
+                f"invalid validated raw SOURCE_MANIFEST for {filename}: {error}"
+            ) from error
+        size_bytes = raw_manifest.get("size_bytes")
+        checksum = raw_manifest.get("artifact_checksum")
+        if not isinstance(size_bytes, int) or size_bytes < 0:
+            raise HdfsRawIngestionError(f"invalid raw source size for {filename}")
+        if not isinstance(checksum, str):
+            raise HdfsRawIngestionError(f"invalid raw source checksum for {filename}")
+        _validate_sha256(checksum, f"raw source {filename}")
+        by_file[filename] = MappingProxyType(dict(raw_manifest))
+
+    if not REQUIRED_M5_FILES <= set(by_file) or not by_file:
+        raise HdfsRawIngestionError("validated raw source manifests do not cover required M5 files")
+    first = next(iter(by_file.values()))
+    shared_fields = ("source_name", "source_url", "downloaded_at_utc", "source_schema_version")
+    for filename, manifest in by_file.items():
+        if manifest.get("source_version") != source_version:
+            raise HdfsRawIngestionError(f"raw source_version mismatch for {filename}")
+        for field in shared_fields:
+            if manifest.get(field) != first.get(field):
+                raise HdfsRawIngestionError(f"raw source provenance mismatch for {filename}: {field}")
+
+    files = tuple(
+        LocalSourceFile(
+            source_file=filename,
+            path=Path("/"),
+            size_bytes=int(manifest["size_bytes"]),
+            sha256=str(manifest["artifact_checksum"]),
+            manifest=manifest,
+        )
+        for filename, manifest in sorted(by_file.items())
+    )
+    return LocalSourceBundle(
+        source_dir=Path("/"),
+        source_version=source_version,
+        source_name=_required_string(first, "source_name"),
+        source_url=_required_string(first, "source_url"),
+        downloaded_at_utc=first.get("downloaded_at_utc"),
+        source_schema_version=_required_string(first, "source_schema_version"),
+        files=files,
+    )
 
 
 def _validate_snapshot(
@@ -817,15 +944,10 @@ def _integrity_document(integrity: HdfsIntegrityEvidence) -> dict[str, object]:
 
 
 def _render_path(base_path: str, artifact_name: str, **values: str) -> str:
-    contract = next((item for item in HDFS_ARTIFACT_PATHS if item.name == artifact_name), None)
-    if contract is None:
-        raise HdfsRawIngestionError(f"missing HDFS artifact path contract: {artifact_name}")
-    # Hadoop Path treats a colon in a path segment as URI syntax. Keep the
-    # Contract v1 source_version unchanged in metadata, but use a safe physical
-    # directory component for the immutable HDFS path.
-    path_values = {name: value.replace(":", "-") for name, value in values.items()}
-    suffix = contract.template.removeprefix("/data/warehouse").format(**path_values)
-    return str(PurePosixPath(base_path.rstrip("/") + suffix))
+    try:
+        return render_hdfs_artifact_path(base_path, artifact_name, **values)
+    except HdfsPathError as error:
+        raise HdfsRawIngestionError(str(error)) from error
 
 
 def _hdfs_uri(uri: str, path: str) -> str:

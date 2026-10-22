@@ -283,8 +283,16 @@ def validate_sales_daily(
     return metrics
 
 
+def measure_sales_daily(sales_daily: DataFrame) -> NormalizationMetrics:
+    """Measure persisted or staged ``SALES_DAILY`` rows with distributed aggregates.
+
+    This helper intentionally returns scalar quality evidence only; it never collects
+    the expanded sales rows to the driver.
+    """
+    return _sales_metrics(sales_daily)
+
+
 def _validate_sales_source(sales_wide: DataFrame) -> None:
-    from pyspark.sql import functions as F
     from pyspark.sql.types import StringType
 
     expected_columns = (*_SALES_METADATA, *_SALES_DAYS)

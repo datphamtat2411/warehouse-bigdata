@@ -13,6 +13,9 @@ import pytest
 from tests.integration.hdfs_support import ROOT, HDFSVerification, require
 from warehouse_bigdata.common.config import load_hdfs_config, load_spark_config
 from warehouse_bigdata.common.hdfs_client import HdfsCliClient
+from warehouse_bigdata.common.hdfs_paths import (
+    render_curated_sales_daily_path,
+)
 from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import validate_manifest
 from warehouse_bigdata.ingestion.hdfs_raw import render_run_manifest_path
@@ -115,6 +118,44 @@ def _submit_spark_read(hdfs: HDFSVerification, raw_uri: str, source_version: str
     return records[0]
 
 
+def _submit_normalization_snapshot(
+    hdfs: HDFSVerification,
+    *,
+    hdfs_uri: str,
+    spark_master: str,
+    source_version: str,
+    source_snapshot_id: str,
+    pipeline_run_id: str,
+) -> bytes:
+    command = [
+        "timeout",
+        "--foreground",
+        "--signal=TERM",
+        "--kill-after=45s",
+        "900s",
+        "bash",
+        str(ROOT / "scripts/spark-submit.sh"),
+        "--",
+        "warehouse_bigdata/jobs/normalize_sales_daily.py",
+        "--source-version",
+        source_version,
+        "--source-snapshot-id",
+        source_snapshot_id,
+        "--pipeline-run-id",
+        pipeline_run_id,
+        "--hdfs-uri",
+        hdfs_uri,
+        "--spark-master",
+        spark_master,
+    ]
+    completed = hdfs.runner.run(command, timeout=960, check=False)
+    require(
+        completed.returncode == 0,
+        f"M04 normalization snapshot failed: {completed.stderr[-2000:]!r}",
+    )
+    return completed.stdout
+
+
 def test_real_m5_ingestion_manifest_integrity_and_spark_hdfs_read(
     tmp_path: Path, hdfs: HDFSVerification
 ) -> None:
@@ -177,6 +218,45 @@ def test_real_m5_ingestion_manifest_integrity_and_spark_hdfs_read(
     assert spark_result["source_version"] == result.source_version
     assert spark_result["hdfs_configuration"]["fs.defaultFS"] == hdfs_config.uri
     assert spark_result["sales_header"].startswith("id,")
+
+    snapshot_id = "integration-snapshot-" + uuid.uuid4().hex
+    normalization_run_id = pipeline_run_id + "-normalize"
+    normalization_stdout = _submit_normalization_snapshot(
+        hdfs,
+        hdfs_uri=hdfs_config.uri,
+        spark_master=spark_config.master_url,
+        source_version=result.source_version,
+        source_snapshot_id=snapshot_id,
+        pipeline_run_id=normalization_run_id,
+    )
+    assert b"status=VALIDATED" in normalization_stdout
+    curated_path = render_curated_sales_daily_path(hdfs_config.base_path, snapshot_id)
+    snapshot_manifest = json.loads(
+        client.read_remote(curated_path + "/_snapshot_manifest.json").decode("utf-8")
+    )
+    assert snapshot_manifest["status"] == VALIDATED
+    assert snapshot_manifest["source_version"] == result.source_version
+    assert snapshot_manifest["source_snapshot_id"] == snapshot_id
+    assert snapshot_manifest["row_count"] == 59_181_090
+    normalization_manifest = json.loads(
+        client.read_remote(
+            render_run_manifest_path(hdfs_config.base_path, normalization_run_id)
+        ).decode("utf-8")
+    )
+    validate_manifest(
+        PIPELINE_RUN_MANIFEST,
+        normalization_manifest,
+        lineage_context={
+            "required_status": VALIDATED,
+            "pipeline_run_id": normalization_run_id,
+            "source_version": result.source_version,
+            "source_snapshot_id": snapshot_id,
+        },
+    )
+    assert normalization_manifest["output_dataset_uris"] == json.dumps(
+        [hdfs_config.uri.rstrip("/") + curated_path],
+        separators=(",", ":"),
+    )
 
     rerun_id = pipeline_run_id + "-rerun"
     rerun = run_m5_ingestion(

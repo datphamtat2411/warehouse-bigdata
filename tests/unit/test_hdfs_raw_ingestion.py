@@ -26,6 +26,7 @@ from warehouse_bigdata.ingestion.hdfs_raw import (
     ingest_m5_raw,
     publish_run_manifest,
     render_run_manifest_path,
+    validate_hdfs_raw_snapshot,
 )
 from warehouse_bigdata.ingestion.m5_source import RECOGNIZED_M5_FILES, compute_source_version
 
@@ -443,6 +444,23 @@ def test_matching_rerun_is_idempotent_without_overwrite_or_new_stage(tmp_path: P
         "remove",
     }
     assert not any(call[0] in mutating for call in client.calls[before:])
+
+
+def test_validated_raw_snapshot_can_be_rechecked_before_spark_reads(
+    tmp_path: Path,
+) -> None:
+    client = FakeHdfs()
+    ingested = _ingest(tmp_path, client, "run-raw-recheck")
+
+    validated = validate_hdfs_raw_snapshot(
+        ingested.source_version,
+        client=client,
+        config=TEST_HDFS_CONFIG,
+    )
+
+    assert validated.status == VALIDATED
+    assert validated.raw_path == ingested.raw_path
+    assert {manifest["source_file"] for manifest in validated.manifests} == set(DATA)
 
 
 def test_conflicting_existing_snapshot_is_rejected_without_modification(tmp_path: Path) -> None:

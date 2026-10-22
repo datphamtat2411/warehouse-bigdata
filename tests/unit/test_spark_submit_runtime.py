@@ -330,6 +330,9 @@ def test_packaging_helper_creates_reproducible_importable_project_zip(tmp_path: 
             "warehouse_bigdata/jobs/ingest_m5.py",
             "warehouse_bigdata/jobs/ingest_m5_raw.py",
             "warehouse_bigdata/jobs/profile_m5_source.py",
+            "warehouse_bigdata/jobs/normalize_sales_daily.py",
+            "warehouse_bigdata/processing/normalization_snapshot.py",
+            "warehouse_bigdata/common/hdfs_paths.py",
             "warehouse_bigdata/ingestion/orchestration.py",
             "warehouse_bigdata/common/hdfs_runtime.py",
         } <= set(names)
@@ -343,19 +346,28 @@ def test_packaging_helper_creates_reproducible_importable_project_zip(tmp_path: 
             import sys
             sys.path.insert(0, sys.argv[1])
             import warehouse_bigdata.cli
-            from warehouse_bigdata.common import config, hdfs_runtime, spark_submit
+            from warehouse_bigdata.common import config, hdfs_paths, hdfs_runtime, spark_submit
             from warehouse_bigdata.ingestion import orchestration
-            from warehouse_bigdata.jobs import ingest_m5, ingest_m5_raw, profile_m5_source
+            from warehouse_bigdata.jobs import (
+                ingest_m5,
+                ingest_m5_raw,
+                normalize_sales_daily,
+                profile_m5_source,
+            )
+            from warehouse_bigdata.processing import normalization_snapshot
             for module in (
                 warehouse_bigdata,
                 warehouse_bigdata.cli,
                 warehouse_bigdata.jobs,
                 config,
+                hdfs_paths,
                 hdfs_runtime,
                 spark_submit,
                 orchestration,
                 ingest_m5,
                 ingest_m5_raw,
+                normalize_sales_daily,
+                normalization_snapshot,
                 profile_m5_source,
             ):
                 assert module.__file__.startswith(sys.argv[1] + '/warehouse_bigdata/'), module.__file__
