@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import time
 from collections.abc import Mapping, Sequence
@@ -11,7 +13,21 @@ from typing import TYPE_CHECKING
 
 from warehouse_bigdata.common.config import HDFSConfig
 from warehouse_bigdata.common.hdfs_client import HdfsCliClient
-from warehouse_bigdata.contracts.datasets import SALES_DAILY, SALES_ENRICHED, STORE_DAILY_SALES
+from warehouse_bigdata.common.hdfs_paths import (
+    render_enrichment_dataset_manifest_path,
+    render_enrichment_quality_path,
+    render_normalization_quality_path,
+    render_run_manifest_path,
+    render_staging_path,
+)
+from warehouse_bigdata.contracts.datasets import (
+    CATEGORY_MONTHLY_SALES,
+    SALES_DAILY,
+    SALES_ENRICHED,
+    STORE_DAILY_SALES,
+)
+from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, VALIDATED
+from warehouse_bigdata.contracts.validation import ContractValidationError, validate_manifest
 from warehouse_bigdata.ingestion.m5_source import (
     REFERENCE_CALENDAR_DAYS,
     REFERENCE_EVALUATION_DAYS,
@@ -44,6 +60,7 @@ _CATEGORY_FIELDS = ("source_snapshot_id", "cat_id", "month_start", "total_units"
 _MAX_OUTPUT_FILES = 100_000
 _SOURCE_VERSION_PATTERN = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 _IDENTIFIER_PATTERN = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+_J03_OUTPUT_NAMES = ("sales_enriched", "store_daily_sales", "category_monthly_sales")
 
 
 class M04VerificationError(RuntimeError):
@@ -83,6 +100,9 @@ def run_m04_verification(
     client: HdfsCliClient,
     expected_series_count: int = REFERENCE_EVALUATION_SERIES,
     expected_day_count: int = REFERENCE_EVALUATION_DAYS,
+    normalization_run_id: str | None = None,
+    enrichment_run_id: str | None = None,
+    hash_output_files: bool = False,
 ) -> M04VerificationResult:
     """Reread raw CSV and persisted Parquet using only distributed scalar checks."""
     _validate_arguments(
@@ -97,6 +117,49 @@ def run_m04_verification(
     timings: dict[str, float] = {}
     raw_uri = _hdfs_uri(hdfs_config, raw_path)
     selected_days = tuple(f"d_{day}" for day in range(1, expected_day_count + 1))
+    output_uris = {
+        name: _hdfs_uri(hdfs_config, path) for name, path in output_paths.items()
+    }
+    normalization_manifest = _read_and_validate_run_manifest(
+        client,
+        hdfs_config,
+        normalization_run_id,
+        source_version=source_version,
+        source_snapshot_id=source_snapshot_id,
+    )
+    enrichment_manifest = _read_and_validate_run_manifest(
+        client,
+        hdfs_config,
+        enrichment_run_id,
+        source_version=source_version,
+        source_snapshot_id=source_snapshot_id,
+    )
+    _validate_pipeline_manifest_outputs(
+        client,
+        hdfs_config,
+        normalization_manifest,
+        expected_names=("sales_daily",),
+        expected_uris=(output_uris["sales_daily"],),
+        expected_quality_path=render_normalization_quality_path(
+            render_staging_path(hdfs_config.base_path, normalization_run_id)
+        )
+        if normalization_run_id is not None
+        else None,
+        require_complete_bundle=False,
+    )
+    _validate_pipeline_manifest_outputs(
+        client,
+        hdfs_config,
+        enrichment_manifest,
+        expected_names=_J03_OUTPUT_NAMES,
+        expected_uris=tuple(output_uris[name] for name in _J03_OUTPUT_NAMES),
+        expected_quality_path=render_enrichment_quality_path(
+            render_staging_path(hdfs_config.base_path, enrichment_run_id)
+        )
+        if enrichment_run_id is not None
+        else None,
+        require_complete_bundle=True,
+    )
 
     from pyspark.sql import functions as F
     from pyspark.sql.types import (
@@ -185,6 +248,15 @@ def run_m04_verification(
         "persisted SALES_DAILY",
     )
     sales_daily_metrics = _sales_metrics(sales_daily, "unit_sales", SALES_DAILY.field_names)
+    _validate_sales_daily_manifest(
+        client,
+        hdfs_config,
+        output_paths["sales_daily"],
+        source_version=source_version,
+        source_snapshot_id=source_snapshot_id,
+        pipeline_run_id=normalization_run_id,
+        metrics=sales_daily_metrics,
+    )
     calendar_lookup = calendar.select(
         F.col("d").alias("calendar_day_key"),
         F.to_date(F.col("date")).alias("calendar_date"),
@@ -348,6 +420,27 @@ def run_m04_verification(
         or _duplicate_count(sales_enriched, SALES_ENRICHED.unique_key)
     ):
         raise M04VerificationError("SALES_ENRICHED cardinality, nullability, key, or total reconciliation failed")
+    _validate_dataset_manifest(
+        client,
+        hdfs_config,
+        output_paths["sales_enriched"],
+        contract=SALES_ENRICHED,
+        source_version=source_version,
+        source_snapshot_id=source_snapshot_id,
+        pipeline_run_id=enrichment_run_id,
+        physical_schema=_physical_schema(sales_enriched),
+        metrics={
+            "row_count": enriched_metrics["row_count"],
+            "unit_sales_total": enriched_metrics["unit_sales_total"],
+            "zero_sales_count": enriched_metrics["zero_sales_count"],
+            "matched_price_count": enriched_metrics["matched_price_count"],
+            "missing_price_count": nullable_prices,
+            "price_match_rate": (
+                enriched_metrics["row_count"] - nullable_prices
+            )
+            / enriched_metrics["row_count"],
+        },
+    )
     timings["sales_enriched_reread_seconds"] = time.perf_counter() - phase_started
 
     phase_started = time.perf_counter()
@@ -383,6 +476,40 @@ def run_m04_verification(
         raise M04VerificationError(
             f"aggregate reconciliation failed: store={store_mismatch}, category={category_mismatch}"
         )
+    store_row_count = store_daily.count()
+    store_total = _total(store_daily, "total_units")
+    category_row_count = category_monthly.count()
+    category_total = _total(category_monthly, "total_units")
+    _validate_dataset_manifest(
+        client,
+        hdfs_config,
+        output_paths["store_daily_sales"],
+        contract=STORE_DAILY_SALES,
+        source_version=source_version,
+        source_snapshot_id=source_snapshot_id,
+        pipeline_run_id=enrichment_run_id,
+        physical_schema=_physical_schema(store_daily),
+        metrics={
+            "row_count": store_row_count,
+            "unit_sales_total": store_total,
+            "zero_sales_count": store_daily.where(F.col("total_units") == 0).count(),
+        },
+    )
+    _validate_dataset_manifest(
+        client,
+        hdfs_config,
+        output_paths["category_monthly_sales"],
+        contract=CATEGORY_MONTHLY_SALES,
+        source_version=source_version,
+        source_snapshot_id=source_snapshot_id,
+        pipeline_run_id=enrichment_run_id,
+        physical_schema=_physical_schema(category_monthly),
+        metrics={
+            "row_count": category_row_count,
+            "unit_sales_total": category_total,
+            "zero_sales_count": category_monthly.where(F.col("total_units") == 0).count(),
+        },
+    )
     timings["aggregate_reread_seconds"] = time.perf_counter() - phase_started
 
     metrics = {
@@ -410,24 +537,35 @@ def run_m04_verification(
             "unique_key_duplicates": 0,
         },
         "store_daily_sales": {
-            "row_count": store_daily.count(),
-            "unit_sales_total": _total(store_daily, "total_units"),
+            "row_count": store_row_count,
+            "unit_sales_total": store_total,
+            "zero_sales_count": store_daily.where(F.col("total_units") == 0).count(),
             "unique_key_duplicates": _duplicate_count(
                 store_daily, ("source_snapshot_id", "store_id", "date")
             ),
         },
         "category_monthly_sales": {
-            "row_count": category_monthly.count(),
-            "unit_sales_total": _total(category_monthly, "total_units"),
+            "row_count": category_row_count,
+            "unit_sales_total": category_total,
+            "zero_sales_count": category_monthly.where(F.col("total_units") == 0).count(),
             "unique_key_duplicates": _duplicate_count(
                 category_monthly, ("source_snapshot_id", "cat_id", "month_start")
             ),
+        },
+        "lineage": {
+            "source_version": source_version,
+            "source_snapshot_id": source_snapshot_id,
+            "normalization_run_id": normalization_run_id,
+            "enrichment_run_id": enrichment_run_id,
+            "pipeline_manifests_validated": True,
+            "dataset_manifests_validated": list(_J03_OUTPUT_NAMES),
         },
     }
     phase_started = time.perf_counter()
     storage = audit_hdfs_outputs(
         client,
         {name: output_paths[name] for name in output_paths},
+        include_hashes=hash_output_files,
     )
     timings["storage_audit_seconds"] = time.perf_counter() - phase_started
     timings["total_seconds"] = time.perf_counter() - started_at
@@ -444,13 +582,24 @@ def run_m04_verification(
 def audit_hdfs_outputs(
     client: HdfsCliClient,
     paths: Mapping[str, str],
+    *,
+    include_hashes: bool = False,
 ) -> dict[str, object]:
     """Measure committed Parquet files without reading their rows into the driver."""
-    return {name: _audit_hdfs_path(client, path) for name, path in paths.items()}
+    return {
+        name: _audit_hdfs_path(client, path, include_hashes=include_hashes)
+        for name, path in paths.items()
+    }
 
 
-def _audit_hdfs_path(client: HdfsCliClient, path: str) -> dict[str, object]:
+def _audit_hdfs_path(
+    client: HdfsCliClient,
+    path: str,
+    *,
+    include_hashes: bool = False,
+) -> dict[str, object]:
     files: list[tuple[str, int]] = []
+    file_stats: dict[str, object] = {}
     partitions: set[str] = set()
     pending = [path]
     while pending:
@@ -460,7 +609,9 @@ def _audit_hdfs_path(client: HdfsCliClient, path: str) -> dict[str, object]:
             if name.startswith("_") or name.startswith("."):
                 continue
             if name.endswith(".parquet"):
-                files.append((child, client.stat(child).size_bytes))
+                stat = client.stat(child)
+                files.append((child, stat.size_bytes))
+                file_stats[child] = stat
                 if len(files) > _MAX_OUTPUT_FILES:
                     raise M04VerificationError("HDFS output file audit exceeded the bounded limit")
             elif client.is_directory(child):
@@ -471,11 +622,29 @@ def _audit_hdfs_path(client: HdfsCliClient, path: str) -> dict[str, object]:
                 pending.append(child)
     if not files:
         raise M04VerificationError(f"HDFS output has no Parquet data files: {path}")
+    files.sort()
     sizes = sorted(size for _, size in files)
+    file_records = []
+    for file_path, size in files:
+        stat = file_stats[file_path]
+        record: dict[str, object] = {
+            "path": file_path,
+            "bytes": size,
+            "replication": stat.replication,
+        }
+        if include_hashes:
+            remote_hash = client.hash_remote(file_path)
+            if remote_hash.size_bytes != size:
+                raise M04VerificationError(
+                    f"HDFS output file changed during hash audit: {file_path}"
+                )
+            record["sha256"] = remote_hash.sha256
+        file_records.append(record)
     return {
         "path": path,
         "file_count": len(files),
         "total_bytes": sum(sizes),
+        "average_bytes": sum(sizes) / len(sizes),
         "size_distribution": {
             "min_bytes": sizes[0],
             "max_bytes": sizes[-1],
@@ -483,7 +652,7 @@ def _audit_hdfs_path(client: HdfsCliClient, path: str) -> dict[str, object]:
             "p95_bytes": sizes[min(len(sizes) - 1, int((len(sizes) - 1) * 0.95))],
         },
         "partition_layout": sorted(partitions),
-        "files": [{"path": file_path, "bytes": size} for file_path, size in files],
+        "files": file_records,
     }
 
 
@@ -527,6 +696,194 @@ def _read_parquet(spark: SparkSession, uri: str) -> DataFrame:
         return spark.read.option("pathGlobFilter", "*.parquet").parquet(uri)
     except Exception as error:
         raise M04VerificationError(f"independent Parquet reread failed: {uri}") from error
+
+
+def _read_json(client: HdfsCliClient, path: str) -> dict[str, object]:
+    try:
+        value = json.loads(client.read_remote(path).decode("utf-8"))
+    except (AttributeError, UnicodeError, json.JSONDecodeError, OSError) as error:
+        raise M04VerificationError(f"metadata is not valid JSON: {path}") from error
+    if not isinstance(value, dict):
+        raise M04VerificationError(f"metadata must be a JSON object: {path}")
+    return value
+
+
+def _read_and_validate_run_manifest(
+    client: HdfsCliClient,
+    hdfs_config: HDFSConfig,
+    pipeline_run_id: str | None,
+    *,
+    source_version: str,
+    source_snapshot_id: str,
+) -> dict[str, object]:
+    if pipeline_run_id is None:
+        raise M04VerificationError("independent M04 verification requires explicit run identities")
+    path = render_run_manifest_path(hdfs_config.base_path, pipeline_run_id)
+    if not client.exists(path):
+        raise M04VerificationError(f"pipeline run manifest is missing: {path}")
+    manifest = _read_json(client, path)
+    try:
+        validate_manifest(
+            PIPELINE_RUN_MANIFEST,
+            manifest,
+            lineage_context={
+                "required_status": VALIDATED,
+                "pipeline_run_id": pipeline_run_id,
+                "source_version": source_version,
+                "source_snapshot_id": source_snapshot_id,
+            },
+        )
+    except ContractValidationError as error:
+        raise M04VerificationError(
+            f"pipeline run manifest is not an independent VALIDATED match: {path}"
+        ) from error
+    return manifest
+
+
+def _validate_pipeline_manifest_outputs(
+    client: HdfsCliClient,
+    hdfs_config: HDFSConfig,
+    manifest: Mapping[str, object],
+    *,
+    expected_names: Sequence[str],
+    expected_uris: Sequence[str],
+    expected_quality_path: str | None,
+    require_complete_bundle: bool,
+) -> None:
+    names = _json_string_list(manifest.get("output_dataset_names"), "output dataset names")
+    uris = _json_string_list(manifest.get("output_dataset_uris"), "output dataset URIs")
+    if names != list(expected_names) or uris != list(expected_uris):
+        raise M04VerificationError("pipeline manifest output set or order does not match M04 scope")
+    if expected_quality_path is not None:
+        expected_quality_uri = _hdfs_uri(hdfs_config, expected_quality_path)
+        if manifest.get("quality_report_uri") != expected_quality_uri:
+            raise M04VerificationError("pipeline manifest quality-report lineage is inconsistent")
+        if not client.exists(expected_quality_path):
+            raise M04VerificationError(f"pipeline quality report is missing: {expected_quality_path}")
+    try:
+        coverage = json.loads(str(manifest["coverage_and_exclusion_counts"]))
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise M04VerificationError("pipeline manifest coverage metadata is malformed") from error
+    if not isinstance(coverage, dict) or coverage.get("persisted_parquet_validated") is not True:
+        raise M04VerificationError("pipeline manifest does not certify persisted Parquet validation")
+    if require_complete_bundle:
+        expected_manifests = {
+            name: _hdfs_uri(
+                hdfs_config,
+                render_enrichment_dataset_manifest_path(_hdfs_path_from_uri(hdfs_config, uri)),
+            )
+            for name, uri in zip(expected_names, expected_uris, strict=True)
+        }
+        if coverage.get("publication_complete") is not True:
+            raise M04VerificationError("J03 pipeline manifest does not certify complete publication")
+        if coverage.get("output_paths_are_curated") is not True:
+            raise M04VerificationError("J03 pipeline manifest contains non-curated output paths")
+        if coverage.get("output_dataset_manifests") != expected_manifests:
+            raise M04VerificationError("J03 dataset-manifest lineage is incomplete")
+
+
+def _validate_sales_daily_manifest(
+    client: HdfsCliClient,
+    hdfs_config: HDFSConfig,
+    dataset_path: str,
+    *,
+    source_version: str,
+    source_snapshot_id: str,
+    pipeline_run_id: str | None,
+    metrics: Mapping[str, object],
+) -> None:
+    path = str(PurePosixPath(dataset_path) / "_snapshot_manifest.json")
+    manifest = _read_json(client, path)
+    expected = {
+        "schema_version": "sales-daily-snapshot-v1",
+        "status": VALIDATED,
+        "dataset_name": SALES_DAILY.name,
+        "dataset_version": SALES_DAILY.version,
+        "provenance": SALES_DAILY.provenance,
+        "source_version": source_version,
+        "source_snapshot_id": source_snapshot_id,
+        "artifact_uri": _hdfs_uri(hdfs_config, dataset_path),
+        "schema": list(SALES_DAILY.field_names),
+        "schema_fingerprint": _schema_fingerprint(SALES_DAILY.field_names),
+        "logical_unique_key": list(SALES_DAILY.unique_key),
+        "persisted_parquet_validated": True,
+        "row_count": metrics["row_count"],
+        "series_count": metrics["series_count"],
+        "day_count": metrics["day_count"],
+        "unit_sales_total": metrics["unit_sales_total"],
+        "zero_sales_count": metrics["zero_sales_count"],
+    }
+    if pipeline_run_id is not None:
+        expected["pipeline_run_id"] = pipeline_run_id
+    if any(manifest.get(field) != value for field, value in expected.items()):
+        raise M04VerificationError("SALES_DAILY snapshot manifest does not match persisted evidence")
+
+
+def _validate_dataset_manifest(
+    client: HdfsCliClient,
+    hdfs_config: HDFSConfig,
+    dataset_path: str,
+    *,
+    contract,
+    source_version: str,
+    source_snapshot_id: str,
+    pipeline_run_id: str | None,
+    physical_schema: Mapping[str, str],
+    metrics: Mapping[str, object],
+) -> None:
+    path = render_enrichment_dataset_manifest_path(dataset_path)
+    manifest = _read_json(client, path)
+    expected = {
+        "schema_version": "enrichment-dataset-manifest-v1",
+        "status": VALIDATED,
+        "dataset_name": contract.name,
+        "dataset_version": contract.version,
+        "provenance": contract.provenance,
+        "source_version": source_version,
+        "source_snapshot_id": source_snapshot_id,
+        "artifact_uri": _hdfs_uri(hdfs_config, dataset_path),
+        "schema": list(contract.field_names),
+        "schema_fingerprint": _schema_fingerprint(contract.field_names),
+        "physical_schema": dict(physical_schema),
+        "logical_unique_key": list(contract.unique_key),
+        "persisted_parquet_validated": True,
+    }
+    if pipeline_run_id is not None:
+        expected["pipeline_run_id"] = pipeline_run_id
+    expected.update(metrics)
+    if any(manifest.get(field) != value for field, value in expected.items()):
+        raise M04VerificationError(
+            f"{contract.name} dataset manifest does not match independent Parquet reread"
+        )
+
+
+def _json_string_list(value: object, label: str) -> list[str]:
+    if not isinstance(value, str):
+        raise M04VerificationError(f"{label} must be a JSON string array")
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise M04VerificationError(f"{label} is malformed JSON") from error
+    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+        raise M04VerificationError(f"{label} must be a JSON string array")
+    return parsed
+
+
+def _schema_fingerprint(fields: Sequence[str]) -> str:
+    return "sha256:" + hashlib.sha256(
+        json.dumps(tuple(fields), separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _hdfs_path_from_uri(config: HDFSConfig, uri: str) -> str:
+    prefix = config.uri.rstrip("/")
+    if not uri.startswith(prefix + "/"):
+        raise M04VerificationError(f"URI is outside the configured HDFS endpoint: {uri}")
+    return uri.removeprefix(prefix)
+
+
+def _physical_schema(dataframe: DataFrame) -> dict[str, str]:
+    return {field.name: field.dataType.simpleString() for field in dataframe.schema.fields}
 
 
 def _check_schema(dataframe: DataFrame, fields: Sequence[str], types: Sequence[object], label: str) -> None:

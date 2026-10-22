@@ -421,6 +421,11 @@ def test_event_log_correlates_successful_tasks_workers_groups_and_metrics() -> N
     assert summary["executors"]["0"]["input_bytes"] == 300
     assert summary["executors"]["0"]["shuffle_read_bytes"] == 36
     assert summary["executors"]["1"]["executor_run_ms"] == 36
+    assert summary["execution_metrics"]["successful_tasks"] == 6
+    assert summary["execution_metrics"]["shuffle_read_bytes"] == 72
+    assert summary["execution_metrics"]["memory_spill_bytes"] == 0
+    assert summary["execution_metrics"]["disk_spill_bytes"] == 0
+    assert summary["execution_metrics"]["successful_task_hosts"] == list(HOSTS)
 
 
 @pytest.mark.parametrize(

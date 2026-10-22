@@ -101,6 +101,9 @@ def run_verify_m04_outputs(
             client=HdfsCliClient(),
             expected_series_count=expected_series_count,
             expected_day_count=expected_day_count,
+            normalization_run_id=normalization_run_id,
+            enrichment_run_id=enrichment_run_id,
+            hash_output_files=True,
         )
         return {
             **result.as_dict(),

@@ -20,11 +20,16 @@ from warehouse_bigdata.common.hdfs_paths import (
     render_curated_sales_daily_path,
     render_curated_sales_enriched_path,
     render_curated_store_daily_sales_path,
+    render_enrichment_dataset_manifest_path,
+    render_enrichment_quality_path,
+    render_normalization_quality_path,
+    render_run_manifest_path,
     render_staging_path,
 )
 from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import validate_manifest
 from warehouse_bigdata.ingestion.orchestration import run_m5_ingestion
+from warehouse_bigdata.processing.m04_verification import audit_hdfs_outputs
 
 ROOT = Path(__file__).resolve().parents[2]
 REPORT_ROOT = ROOT / "artifacts" / "m04"
@@ -33,6 +38,7 @@ FULL_DAY_COUNT = 1_941
 CALIBRATION_DAY_COUNT = 128
 SERIES_COUNT = 30_490
 FULL_ROW_COUNT = 59_181_090
+J03_OUTPUT_NAMES = ("sales_enriched", "store_daily_sales", "category_monthly_sales")
 
 
 def source_environment() -> tuple[Path, str, str | None]:
@@ -91,6 +97,13 @@ def prepare_source(tmp_path: Path, hdfs: HDFSVerification) -> dict[str, object]:
 
 def _event_directory(hdfs_config, pipeline_run_id: str) -> str:
     return str(PurePosixPath(render_staging_path(hdfs_config.base_path, pipeline_run_id)) / "events")
+
+
+def _retry_event_directory(hdfs_config, pipeline_run_id: str, phase: str) -> str:
+    return str(
+        PurePosixPath(_event_directory(hdfs_config, pipeline_run_id)).parent
+        / f"events-retry-{phase}"
+    )
 
 
 def _create_event_directory(client: HdfsCliClient, path: str) -> None:
@@ -196,6 +209,43 @@ def _read_json(client: HdfsCliClient, path: str) -> dict[str, object]:
     return value
 
 
+def _job_status(stdout: bytes) -> str:
+    statuses = [
+        line.removeprefix("status=")
+        for line in stdout.decode(errors="strict").splitlines()
+        if line.startswith("status=")
+    ]
+    require(
+        len(statuses) == 1 and re.fullmatch(r"[A-Z][A-Z0-9_]*", statuses[0] or ""),
+        "Spark job must emit exactly one structured status line.",
+    )
+    return statuses[0]
+
+
+def _immutable_snapshot(
+    client: HdfsCliClient,
+    output_paths: dict[str, str],
+    metadata_paths: tuple[str, ...],
+) -> dict[str, object]:
+    outputs = audit_hdfs_outputs(client, output_paths, include_hashes=True)
+    metadata: dict[str, object] = {}
+    for path in metadata_paths:
+        digest = client.hash_remote(path)
+        metadata[path] = {"bytes": digest.size_bytes, "sha256": digest.sha256}
+    return {
+        "outputs": outputs,
+        "metadata": metadata,
+        "snapshot_sha256": "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                {"outputs": outputs, "metadata": metadata},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
 def _validate_run_manifest(
     client: HdfsCliClient,
     path: str,
@@ -263,33 +313,43 @@ def run_case(
     normalization_events = _event_directory(hdfs_config, normalization_run_id)
     enrichment_events = _event_directory(hdfs_config, enrichment_run_id)
     verification_events = _event_directory(hdfs_config, verification_run_id)
-    for event_dir in (normalization_events, enrichment_events, verification_events):
+    normalization_retry_events = _retry_event_directory(hdfs_config, normalization_run_id, "j02")
+    enrichment_retry_events = _retry_event_directory(hdfs_config, enrichment_run_id, "j03")
+    for event_dir in (
+        normalization_events,
+        enrichment_events,
+        verification_events,
+        normalization_retry_events,
+        enrichment_retry_events,
+    ):
         _create_event_directory(client, event_dir)
+
+    normalization_arguments = [
+        "--source-version",
+        source_version,
+        "--source-snapshot-id",
+        source_snapshot_id,
+        "--pipeline-run-id",
+        normalization_run_id,
+        "--hdfs-uri",
+        hdfs_config.uri,
+        "--spark-master",
+        load_spark_config().master_url,
+        "--days-per-chunk",
+        str(days_per_chunk),
+        "--expected-day-count",
+        str(expected_day_count),
+    ]
 
     normalization_stdout = _submit(
         hdfs,
         "warehouse_bigdata/jobs/normalize_sales_daily.py",
-        [
-            "--source-version",
-            source_version,
-            "--source-snapshot-id",
-            source_snapshot_id,
-            "--pipeline-run-id",
-            normalization_run_id,
-            "--hdfs-uri",
-            hdfs_config.uri,
-            "--spark-master",
-            load_spark_config().master_url,
-            "--days-per-chunk",
-            str(days_per_chunk),
-            "--expected-day-count",
-            str(expected_day_count),
-            "--event-log-dir",
-            hdfs_config.uri.rstrip("/") + normalization_events,
-        ],
+        [*normalization_arguments, "--event-log-dir", hdfs_config.uri.rstrip("/") + normalization_events],
         conf,
         case_dir / "j02",
     )
+    normalization_status = _job_status(normalization_stdout)
+    require(normalization_status == VALIDATED, "Initial J02 normalization did not validate.")
     normalization_execution = _collect_event_summary(
         hdfs_client(hdfs),
         normalization_events,
@@ -298,26 +358,27 @@ def run_case(
         output_dir=case_dir / "j02",
     )
 
+    enrichment_arguments = [
+        "--source-version",
+        source_version,
+        "--source-snapshot-id",
+        source_snapshot_id,
+        "--pipeline-run-id",
+        enrichment_run_id,
+        "--hdfs-uri",
+        hdfs_config.uri,
+        "--spark-master",
+        load_spark_config().master_url,
+    ]
     enrichment_stdout = _submit(
         hdfs,
         "warehouse_bigdata/jobs/enrich_analytics.py",
-        [
-            "--source-version",
-            source_version,
-            "--source-snapshot-id",
-            source_snapshot_id,
-            "--pipeline-run-id",
-            enrichment_run_id,
-            "--hdfs-uri",
-            hdfs_config.uri,
-            "--spark-master",
-            load_spark_config().master_url,
-            "--event-log-dir",
-            hdfs_config.uri.rstrip("/") + enrichment_events,
-        ],
+        [*enrichment_arguments, "--event-log-dir", hdfs_config.uri.rstrip("/") + enrichment_events],
         conf,
         case_dir / "j03",
     )
+    enrichment_status = _job_status(enrichment_stdout)
+    require(enrichment_status == VALIDATED, "Initial J03 enrichment did not validate.")
     enrichment_execution = _collect_event_summary(
         hdfs_client(hdfs),
         enrichment_events,
@@ -327,6 +388,114 @@ def run_case(
     )
 
     paths = _lineage_paths(hdfs_config, source_snapshot_id, enrichment_run_id)
+    normalization_manifest_path = render_run_manifest_path(
+        hdfs_config.base_path, normalization_run_id
+    )
+    enrichment_manifest_path = render_run_manifest_path(hdfs_config.base_path, enrichment_run_id)
+    normalization_quality_path = render_normalization_quality_path(
+        render_staging_path(hdfs_config.base_path, normalization_run_id)
+    )
+    enrichment_quality_path = render_enrichment_quality_path(
+        render_staging_path(hdfs_config.base_path, enrichment_run_id)
+    )
+    normalization_manifest = _validate_run_manifest(
+        client,
+        normalization_manifest_path,
+        pipeline_run_id=normalization_run_id,
+        source_version=source_version,
+        source_snapshot_id=source_snapshot_id,
+    )
+    enrichment_manifest = _validate_run_manifest(
+        client,
+        enrichment_manifest_path,
+        pipeline_run_id=enrichment_run_id,
+        source_version=source_version,
+        source_snapshot_id=source_snapshot_id,
+    )
+    snapshot_manifest = _read_json(client, paths["sales_daily"] + "/_snapshot_manifest.json")
+    require(snapshot_manifest.get("status") == VALIDATED, "SALES_DAILY snapshot is not VALIDATED.")
+    require(snapshot_manifest.get("source_snapshot_id") == source_snapshot_id, "J02 snapshot lineage mismatch.")
+    require(
+        snapshot_manifest.get("row_count") == SERIES_COUNT * expected_day_count,
+        "J02 snapshot row count differs from the selected scope.",
+    )
+    j02_snapshot = _immutable_snapshot(
+        client,
+        {"sales_daily": paths["sales_daily"]},
+        (normalization_manifest_path, normalization_quality_path, paths["sales_daily"] + "/_snapshot_manifest.json"),
+    )
+    j03_snapshot = _immutable_snapshot(
+        client,
+        {name: paths[name] for name in J03_OUTPUT_NAMES},
+        (
+            enrichment_manifest_path,
+            enrichment_quality_path,
+            *tuple(render_enrichment_dataset_manifest_path(paths[name]) for name in J03_OUTPUT_NAMES),
+        ),
+    )
+
+    normalization_retry_stdout = _submit(
+        hdfs,
+        "warehouse_bigdata/jobs/normalize_sales_daily.py",
+        [
+            *normalization_arguments,
+            "--event-log-dir",
+            hdfs_config.uri.rstrip("/") + normalization_retry_events,
+        ],
+        conf,
+        case_dir / "j02-retry",
+    )
+    normalization_retry_status = _job_status(normalization_retry_stdout)
+    normalization_retry_execution = _collect_event_summary(
+        hdfs_client(hdfs),
+        normalization_retry_events,
+        run_id=normalization_run_id,
+        application_name=f"warehouse-sales-daily-{normalization_run_id}",
+        output_dir=case_dir / "j02-retry",
+    )
+    normalization_after_retry = _immutable_snapshot(
+        client,
+        {"sales_daily": paths["sales_daily"]},
+        (normalization_manifest_path, normalization_quality_path, paths["sales_daily"] + "/_snapshot_manifest.json"),
+    )
+
+    enrichment_retry_stdout = _submit(
+        hdfs,
+        "warehouse_bigdata/jobs/enrich_analytics.py",
+        [
+            *enrichment_arguments,
+            "--event-log-dir",
+            hdfs_config.uri.rstrip("/") + enrichment_retry_events,
+        ],
+        conf,
+        case_dir / "j03-retry",
+    )
+    enrichment_retry_status = _job_status(enrichment_retry_stdout)
+    enrichment_retry_execution = _collect_event_summary(
+        hdfs_client(hdfs),
+        enrichment_retry_events,
+        run_id=enrichment_run_id,
+        application_name=f"warehouse-enrich-analytics-{enrichment_run_id}",
+        output_dir=case_dir / "j03-retry",
+    )
+    enrichment_after_retry = _immutable_snapshot(
+        client,
+        {name: paths[name] for name in J03_OUTPUT_NAMES},
+        (
+            enrichment_manifest_path,
+            enrichment_quality_path,
+            *tuple(render_enrichment_dataset_manifest_path(paths[name]) for name in J03_OUTPUT_NAMES),
+        ),
+    )
+    require(normalization_retry_status == "REUSED", "J02 retry did not reuse the immutable snapshot.")
+    require(enrichment_retry_status == "REUSED", "J03 retry did not reuse the immutable outputs.")
+    require(j02_snapshot == normalization_after_retry, "J02 retry changed immutable evidence.")
+    require(j03_snapshot == enrichment_after_retry, "J03 retry changed immutable evidence.")
+    _write_json_artifact(case_dir / "j02" / "immutable-before.json", j02_snapshot)
+    _write_json_artifact(case_dir / "j02-retry" / "immutable-after.json", normalization_after_retry)
+    _write_json_artifact(case_dir / "j03" / "immutable-before.json", j03_snapshot)
+    _write_json_artifact(case_dir / "j03-retry" / "immutable-after.json", enrichment_after_retry)
+
     verification_stdout = _submit(
         hdfs,
         "warehouse_bigdata/jobs/verify_m04_outputs.py",
@@ -364,31 +533,6 @@ def run_case(
         output_dir=case_dir / "verify",
     )
 
-    normalization_manifest_path = (
-        hdfs_config.base_path + "/manifests/runs/" + normalization_run_id + ".json"
-    )
-    enrichment_manifest_path = hdfs_config.base_path + "/manifests/runs/" + enrichment_run_id + ".json"
-    normalization_manifest = _validate_run_manifest(
-        client,
-        normalization_manifest_path,
-        pipeline_run_id=normalization_run_id,
-        source_version=source_version,
-        source_snapshot_id=source_snapshot_id,
-    )
-    enrichment_manifest = _validate_run_manifest(
-        client,
-        enrichment_manifest_path,
-        pipeline_run_id=enrichment_run_id,
-        source_version=source_version,
-        source_snapshot_id=source_snapshot_id,
-    )
-    snapshot_manifest = _read_json(client, paths["sales_daily"] + "/_snapshot_manifest.json")
-    require(snapshot_manifest.get("status") == VALIDATED, "SALES_DAILY snapshot is not VALIDATED.")
-    require(snapshot_manifest.get("source_snapshot_id") == source_snapshot_id, "J02 snapshot lineage mismatch.")
-    require(
-        snapshot_manifest.get("row_count") == SERIES_COUNT * expected_day_count,
-        "J02 snapshot row count differs from the selected scope.",
-    )
     require(verification.get("status") == VALIDATED, "Independent M04 reconciliation did not validate.")
 
     report = {
@@ -403,6 +547,7 @@ def run_case(
         },
         "configuration": {
             "days_per_chunk": days_per_chunk,
+            "chunk_count": (expected_day_count + days_per_chunk - 1) // days_per_chunk,
             "expected_day_count": expected_day_count,
             "expected_series_count": SERIES_COUNT,
             "expected_row_count": SERIES_COUNT * expected_day_count,
@@ -444,6 +589,30 @@ def run_case(
             "normalization": normalization_execution,
             "enrichment": enrichment_execution,
             "verification": verification_execution,
+        },
+        "recovery": {
+            "enabled": True,
+            "j02": {
+                "initial_status": normalization_status,
+                "retry_status": normalization_retry_status,
+                "immutable_before_sha256": j02_snapshot["snapshot_sha256"],
+                "immutable_after_sha256": normalization_after_retry["snapshot_sha256"],
+                "immutable_unchanged": j02_snapshot == normalization_after_retry,
+                "retry_execution": normalization_retry_execution,
+                "snapshot_before": "j02/immutable-before.json",
+                "snapshot_after": "j02-retry/immutable-after.json",
+            },
+            "j03": {
+                "initial_status": enrichment_status,
+                "retry_status": enrichment_retry_status,
+                "immutable_before_sha256": j03_snapshot["snapshot_sha256"],
+                "immutable_after_sha256": enrichment_after_retry["snapshot_sha256"],
+                "immutable_unchanged": j03_snapshot == enrichment_after_retry,
+                "outputs": list(J03_OUTPUT_NAMES),
+                "retry_execution": enrichment_retry_execution,
+                "snapshot_before": "j03/immutable-before.json",
+                "snapshot_after": "j03-retry/immutable-after.json",
+            },
         },
         "storage": verification.get("storage", {}),
         "limitations": [
@@ -515,6 +684,18 @@ def run_benchmark_matrix(hdfs: HDFSVerification, tmp_path: Path) -> dict[str, ob
                     "case": label,
                     "status": "FAILED",
                     "elapsed_seconds": time.monotonic() - started,
+                    "configuration": {
+                        "days_per_chunk": chunk,
+                        "chunk_count": (CALIBRATION_DAY_COUNT + chunk - 1) // chunk,
+                        "expected_day_count": CALIBRATION_DAY_COUNT,
+                        "expected_series_count": SERIES_COUNT,
+                        "expected_row_count": SERIES_COUNT * CALIBRATION_DAY_COUNT,
+                        "spark_sql_shuffle_partitions": shuffle,
+                        "spark_sql_adaptive_enabled": adaptive,
+                        "spark_cores_max": cores,
+                    },
+                    "worker_metrics": {},
+                    "storage": {},
                     "error": f"{error.__class__.__name__}: {error}",
                 }
             )
@@ -581,6 +762,11 @@ def _write_report(directory: Path, report: dict[str, object]) -> None:
     limitations = report.get("limitations", [])
     lines.extend(f"- {item}" for item in limitations if isinstance(item, str))
     (directory / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_json_artifact(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 __all__ = [

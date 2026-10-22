@@ -540,6 +540,35 @@ def summarize_event_log(
             if values["host"] == host:
                 totals.update({key: value for key, value in values.items() if key != "host"})
         worker_metrics[host] = dict(totals)
+    execution_totals = Counter()
+    for task in successes.values():
+        values = task["metrics"]
+        execution_totals.update(
+            {
+                "successful_tasks": 1,
+                "input_bytes": values.get("Input Metrics", {}).get("Bytes Read", 0),
+                "shuffle_read_bytes": sum(
+                    values.get("Shuffle Read Metrics", {}).get(key, 0)
+                    for key in ("Remote Bytes Read", "Local Bytes Read")
+                ),
+                "shuffle_write_bytes": values.get("Shuffle Write Metrics", {}).get(
+                    "Shuffle Bytes Written", 0
+                ),
+                "executor_run_ms": values.get("Executor Run Time", 0),
+                "gc_ms": values.get("JVM GC Time", 0),
+                "memory_spill_bytes": values.get("Memory Bytes Spilled", 0),
+                "disk_spill_bytes": values.get("Disk Bytes Spilled", 0),
+            }
+        )
+    execution_metrics = {
+        **dict(execution_totals),
+        "task_attempts": len(tasks),
+        "failed_attempts": len(failures),
+        "successful_task_hosts": sorted({record["host"] for record in successes.values()}),
+        "successful_executor_ids": sorted(
+            {record["executor_id"] for record in successes.values()}
+        ),
+    }
     return {
         "application_id": application_id,
         "run_id": run_id,
@@ -551,6 +580,7 @@ def summarize_event_log(
         "effective_configuration": properties,
         "stages": [event for event in completed.values()],
         "jobs": [{"start": job, "end": job_ends[identifier]} for identifier, job in jobs.items()],
+        "execution_metrics": execution_metrics,
     }
 
 
@@ -735,6 +765,33 @@ def summarize_m04_event_log(
             if values["host"] == host:
                 totals.update({key: value for key, value in values.items() if key != "host"})
         worker_metrics[host] = dict(totals)
+    execution_totals = Counter()
+    for task in successes:
+        values = task["metrics"]
+        execution_totals.update(
+            {
+                "successful_tasks": 1,
+                "input_bytes": values.get("Input Metrics", {}).get("Bytes Read", 0),
+                "shuffle_read_bytes": sum(
+                    values.get("Shuffle Read Metrics", {}).get(key, 0)
+                    for key in ("Remote Bytes Read", "Local Bytes Read")
+                ),
+                "shuffle_write_bytes": values.get("Shuffle Write Metrics", {}).get(
+                    "Shuffle Bytes Written", 0
+                ),
+                "executor_run_ms": values.get("Executor Run Time", 0),
+                "gc_ms": values.get("JVM GC Time", 0),
+                "memory_spill_bytes": values.get("Memory Bytes Spilled", 0),
+                "disk_spill_bytes": values.get("Disk Bytes Spilled", 0),
+            }
+        )
+    execution_metrics = {
+        **dict(execution_totals),
+        "task_attempts": len(tasks),
+        "failed_attempts": len(failures),
+        "successful_task_hosts": sorted({record["host"] for record in successes}),
+        "successful_executor_ids": sorted({record["executor_id"] for record in successes}),
+    }
     return {
         "application_id": application_id,
         "application_name": application_name,
@@ -746,6 +803,7 @@ def summarize_m04_event_log(
         "effective_configuration": properties,
         "stage_count": len(successful_stages),
         "job_count": len(jobs),
+        "execution_metrics": execution_metrics,
     }
 
 
