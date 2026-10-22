@@ -87,12 +87,15 @@ def normalize_sales_daily(
     calendar: DataFrame,
     *,
     config: SalesNormalizationConfig | None = None,
-) -> DataFrame:
+    return_metrics: bool = False,
+) -> DataFrame | tuple[DataFrame, NormalizationMetrics]:
     """Normalize raw evaluation sales into Contract v1 ``SALES_DAILY`` rows.
 
     The function accepts already-loaded DataFrames only.  It validates source and
     calendar inputs, processes selected days in bounded groups, and validates the
-    complete output before returning it to a caller that may persist it.
+    complete output before returning it to a caller that may persist it. When
+    ``return_metrics`` is true, the metrics from that same quality gate are returned
+    with the DataFrame.
     """
     from pyspark.sql import functions as F
     from pyspark.sql.types import IntegerType, LongType
@@ -157,14 +160,14 @@ def normalize_sales_daily(
         F.col("calendar.wm_yr_wk"),
         F.col("sales.unit_sales"),
     )
-    validate_sales_daily(
+    metrics = validate_sales_daily(
         sales_daily,
         expected_series_count=expected_series_count,
         selected_day_keys=selected_day_keys,
         expected_unit_sales_total=source_metrics.unit_sales_total,
         expected_zero_sales_count=source_metrics.zero_sales_count,
     )
-    return sales_daily
+    return (sales_daily, metrics) if return_metrics else sales_daily
 
 
 def validate_sales_daily(

@@ -133,6 +133,59 @@ def _small_calendar_frame(spark: SparkSession):
     )
 
 
+def _configure_snapshot_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    hdfs: _LocalHdfs,
+    hdfs_config: HDFSConfig,
+    sales,
+    calendar,
+) -> None:
+    from warehouse_bigdata.ingestion import hdfs_raw
+    from warehouse_bigdata.processing import normalization_snapshot
+
+    raw_snapshot = ValidatedHdfsRawSnapshot(
+        status="VALIDATED",
+        source_version=SOURCE_VERSION,
+        raw_path="/data/warehouse/raw/m5/source_version=" + SOURCE_VERSION.replace(":", "-"),
+        manifests=(
+            {"source_file": "calendar.csv"},
+            {"source_file": "sales_train_evaluation.csv"},
+        ),
+        integrity=object(),
+    )
+    monkeypatch.setattr(
+        normalization_snapshot,
+        "validate_hdfs_raw_snapshot",
+        lambda *args, **kwargs: raw_snapshot,
+    )
+    monkeypatch.setattr(
+        normalization_snapshot,
+        "_read_validated_sources",
+        lambda *args, **kwargs: (sales, calendar),
+    )
+    monkeypatch.setattr(
+        normalization_snapshot,
+        "_hdfs_uri",
+        lambda _uri, path: str(hdfs.root / path.lstrip("/")),
+    )
+    monkeypatch.setattr(
+        hdfs_raw,
+        "publish_run_manifest",
+        lambda manifest, **kwargs: _publish_test_manifest(hdfs, hdfs_config, manifest),
+    )
+
+
+def _publish_test_manifest(
+    hdfs: _LocalHdfs,
+    hdfs_config: HDFSConfig,
+    manifest: dict[str, object],
+) -> str:
+    path = render_run_manifest_path(hdfs_config.base_path, str(manifest["pipeline_run_id"]))
+    hdfs.mkdir_parents(str(Path(path).parent))
+    hdfs.upload_bytes(json.dumps(manifest).encode("utf-8"), path)
+    return path
+
+
 def test_snapshot_paths_keep_contract_identities_and_are_immutable() -> None:
     staging = render_staging_path(BASE_PATH, "normalize-20261022")
 
@@ -239,44 +292,14 @@ def test_snapshot_persists_revalidates_promotes_and_reuses_without_duplicate_dat
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from warehouse_bigdata.ingestion import hdfs_raw
-    from warehouse_bigdata.processing import normalization_snapshot
-
     hdfs_root = tmp_path / "hdfs"
     hdfs_root.mkdir()
     hdfs = _LocalHdfs(hdfs_root)
     hdfs_config = HDFSConfig("hdfs://test-namenode:8020", "/data/warehouse")
     sales = _small_sales_frame(spark)
     calendar = _small_calendar_frame(spark)
-    raw_snapshot = ValidatedHdfsRawSnapshot(
-        status="VALIDATED",
-        source_version=SOURCE_VERSION,
-        raw_path="/data/warehouse/raw/m5/source_version=" + SOURCE_VERSION.replace(":", "-"),
-        manifests=(
-            {"source_file": "calendar.csv"},
-            {"source_file": "sales_train_evaluation.csv"},
-        ),
-        integrity=object(),
-    )
-    monkeypatch.setattr(normalization_snapshot, "validate_hdfs_raw_snapshot", lambda *args, **kwargs: raw_snapshot)
-    monkeypatch.setattr(
-        normalization_snapshot,
-        "_read_validated_sources",
-        lambda *args, **kwargs: (sales, calendar),
-    )
-    monkeypatch.setattr(
-        normalization_snapshot,
-        "_hdfs_uri",
-        lambda _uri, path: str(hdfs_root / path.lstrip("/")),
-    )
-    monkeypatch.setattr(
-        hdfs_raw,
-        "publish_run_manifest",
-        lambda manifest, **kwargs: render_run_manifest_path(
-            hdfs_config.base_path,
-            str(manifest["pipeline_run_id"]),
-        ),
-    )
+    _configure_snapshot_inputs(monkeypatch, hdfs, hdfs_config, sales, calendar)
+    monkeypatch.setenv("WAREHOUSE_CODE_REVISION", "sha256:" + "b" * 64)
     config = NormalizationSnapshotConfig(
         days_per_chunk=1,
         expected_series_count=2,
@@ -318,6 +341,28 @@ def test_snapshot_persists_revalidates_promotes_and_reuses_without_duplicate_dat
         "unit_sales",
     ]
     assert "source_snapshot_id" not in persisted.columns
+    parquet_files = tuple(curated_local.rglob("*.parquet"))
+    assert parquet_files
+    assert all(path.parent == curated_local for path in parquet_files)
+    assert len(parquet_files) <= 16
+    snapshot_manifest = json.loads(
+        (curated_local / "_snapshot_manifest.json").read_text(encoding="utf-8")
+    )
+    assert snapshot_manifest["code_revision"] == "sha256:" + "b" * 64
+    assert snapshot_manifest["parquet_layout"] == {
+        "compression": "snappy",
+        "max_records_per_file": 1_000_000,
+        "coarse_partition": "day_index",
+        "coarse_partition_bucket_days": 128,
+        "coarse_partition_count": 16,
+    }
+    assert json.loads(
+        hdfs.read_remote(first.chunks[0].manifest_path).decode("utf-8")
+    )["code_revision"] == "sha256:" + "b" * 64
+    run_manifest = json.loads(
+        hdfs.read_remote(first.run_manifest_path).decode("utf-8")
+    )
+    assert run_manifest["code_revision"] == "sha256:" + "b" * 64
     curated_files_before = sorted(
         path.relative_to(curated_local).as_posix() for path in curated_local.rglob("*")
     )
@@ -339,6 +384,122 @@ def test_snapshot_persists_revalidates_promotes_and_reuses_without_duplicate_dat
     assert curated_files_before == sorted(
         path.relative_to(curated_local).as_posix() for path in curated_local.rglob("*")
     )
+
+
+def test_retry_quarantines_interrupted_and_orphaned_staging_artifacts(
+    spark: SparkSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hdfs_root = tmp_path / "hdfs"
+    hdfs_root.mkdir()
+    hdfs = _LocalHdfs(hdfs_root)
+    hdfs_config = HDFSConfig("hdfs://test-namenode:8020", "/data/warehouse")
+    _configure_snapshot_inputs(
+        monkeypatch,
+        hdfs,
+        hdfs_config,
+        _small_sales_frame(spark),
+        _small_calendar_frame(spark),
+    )
+    staging_local = hdfs_root / render_staging_path(BASE_PATH, "normalize-interrupted").lstrip("/")
+    (staging_local / "chunks" / "chunk_0001_0001").mkdir(parents=True)
+    (staging_local / "chunks" / "chunk_0001_0001" / "partial.parquet").write_bytes(b"partial")
+    (staging_local / "_tmp" / "candidate-orphan.part").mkdir(parents=True)
+    (staging_local / "chunks" / "orphan-chunk").mkdir(parents=True)
+    (staging_local / "chunk_manifests" / "orphan.json").parent.mkdir(parents=True, exist_ok=True)
+    (staging_local / "chunk_manifests" / "orphan.json").write_text("{}", encoding="utf-8")
+
+    result = run_normalization_snapshot(
+        spark,
+        source_version=SOURCE_VERSION,
+        source_snapshot_id="snapshot-interrupted",
+        pipeline_run_id="normalize-interrupted",
+        hdfs_config=hdfs_config,
+        client=hdfs,
+        config=NormalizationSnapshotConfig(
+            days_per_chunk=1,
+            expected_series_count=2,
+            expected_day_count=2,
+        ),
+        now=lambda: "2026-10-22T00:00:00Z",
+    )
+
+    assert result.status == "VALIDATED"
+    quarantine = staging_local / "quarantine"
+    quarantined = {path.name for path in quarantine.iterdir()}
+    assert any("chunk_0001_0001" in name for name in quarantined)
+    assert any("candidate-orphan" in name for name in quarantined)
+    assert any("orphan-chunk" in name for name in quarantined)
+    assert any("orphan.json" in name for name in quarantined)
+    assert not (staging_local / "_tmp").exists() or not tuple(
+        (staging_local / "_tmp").iterdir()
+    )
+
+
+def test_conflicting_candidate_lineage_is_preserved_and_not_promoted(
+    spark: SparkSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hdfs_root = tmp_path / "hdfs"
+    hdfs_root.mkdir()
+    hdfs = _LocalHdfs(hdfs_root)
+    hdfs_config = HDFSConfig("hdfs://test-namenode:8020", "/data/warehouse")
+    _configure_snapshot_inputs(
+        monkeypatch,
+        hdfs,
+        hdfs_config,
+        _small_sales_frame(spark),
+        _small_calendar_frame(spark),
+    )
+    staging_local = hdfs_root / render_staging_path(BASE_PATH, "normalize-conflict").lstrip("/")
+    candidate_local = staging_local / "candidate"
+    candidate_local.mkdir(parents=True)
+    marker = candidate_local / "_snapshot_manifest.json"
+    marker.write_text(
+        json.dumps({"source_snapshot_id": "snapshot-owned-by-another-run"}),
+        encoding="utf-8",
+    )
+
+    result = run_normalization_snapshot(
+        spark,
+        source_version=SOURCE_VERSION,
+        source_snapshot_id="snapshot-conflict",
+        pipeline_run_id="normalize-conflict",
+        hdfs_config=hdfs_config,
+        client=hdfs,
+        config=NormalizationSnapshotConfig(
+            days_per_chunk=1,
+            expected_series_count=2,
+            expected_day_count=2,
+        ),
+        now=lambda: "2026-10-22T00:00:00Z",
+    )
+
+    assert result.status == "FAILED"
+    assert marker.read_text(encoding="utf-8") == json.dumps(
+        {"source_snapshot_id": "snapshot-owned-by-another-run"}
+    )
+    assert not hdfs.exists(result.curated_path)
+
+
+def test_code_revision_is_reproducible_without_repository_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from warehouse_bigdata.common import revision
+
+    monkeypatch.delenv("WAREHOUSE_CODE_REVISION", raising=False)
+    monkeypatch.chdir(tmp_path)
+    revision._package_revision.cache_clear()
+
+    first = revision.get_code_revision()
+    second = revision.get_code_revision()
+
+    assert first == second
+    assert first.startswith("sha256:")
+    assert len(first) == len("sha256:") + 64
 
 
 def test_failed_raw_validation_publishes_failed_evidence_without_promotion(
