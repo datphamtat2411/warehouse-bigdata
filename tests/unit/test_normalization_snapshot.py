@@ -223,6 +223,17 @@ def test_snapshot_config_rejects_inconsistent_reference_cardinality() -> None:
         )
 
 
+def test_snapshot_config_supports_bounded_calibration_scope() -> None:
+    config = NormalizationSnapshotConfig(
+        days_per_chunk=64,
+        expected_series_count=30_490,
+        expected_day_count=128,
+    )
+
+    assert config.row_count == 30_490 * 128
+    assert build_chunk_plan(config, "/data/warehouse/staging/pipeline_run_id=run-1")[-1].day_end == 128
+
+
 def test_snapshot_persists_revalidates_promotes_and_reuses_without_duplicate_data(
     spark: SparkSession,
     tmp_path: Path,
@@ -288,6 +299,8 @@ def test_snapshot_persists_revalidates_promotes_and_reuses_without_duplicate_dat
     assert first.metrics.row_count == 4
     assert first.metrics.unit_sales_total == 3
     assert first.metrics.zero_sales_count == 2
+    assert first.timings["total_seconds"] >= 0
+    assert any(key.startswith("chunk_") for key in first.timings)
     assert set(first.chunks) == set(build_chunk_plan(config, first.staging_path))
     curated_local = hdfs_root / first.curated_path.lstrip("/")
     persisted = spark.read.option("pathGlobFilter", "*.parquet").parquet(str(curated_local))
@@ -321,6 +334,7 @@ def test_snapshot_persists_revalidates_promotes_and_reuses_without_duplicate_dat
     )
 
     assert second.status == "REUSED"
+    assert second.timings["total_seconds"] >= 0
     assert second.curated_path == first.curated_path
     assert curated_files_before == sorted(
         path.relative_to(curated_local).as_posix() for path in curated_local.rglob("*")

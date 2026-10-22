@@ -130,11 +130,12 @@ def _task_configuration(conf: Sequence[str]) -> list[str]:
             raise ConfigurationError("Each --conf must be a non-empty KEY=VALUE setting.")
         if key in seen:
             raise ConfigurationError(f"Duplicate --conf key: {key}.")
-        if (
-            not (key.startswith("spark.sql.") or key == "spark.default.parallelism")
-            or key in _RESERVED_SQL_KEYS
-            or key.startswith(_RESERVED_SQL_PREFIXES)
-        ):
+        allowed = key.startswith("spark.sql.") or key == "spark.default.parallelism"
+        if key == "spark.cores.max":
+            if value not in {"1", "2"}:
+                raise ConfigurationError("spark.cores.max must be exactly 1 or 2.")
+            allowed = True
+        if not allowed or key in _RESERVED_SQL_KEYS or key.startswith(_RESERVED_SQL_PREFIXES):
             raise ConfigurationError(f"Unsupported or runtime-owned --conf key: {key}.")
         if key == "spark.default.parallelism" and (not value.isdecimal() or int(value) < 1):
             raise ConfigurationError("spark.default.parallelism must be a positive integer.")

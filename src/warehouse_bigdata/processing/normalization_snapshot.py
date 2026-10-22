@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -134,6 +135,7 @@ class NormalizationSnapshotResult:
     run_manifest_path: str | None
     metrics: NormalizationMetrics | None
     chunks: tuple[NormalizationChunk, ...]
+    timings: Mapping[str, float]
     failure_details: tuple[str, ...]
 
 
@@ -231,6 +233,8 @@ def run_normalization_snapshot(
             )
     selected_config = config or NormalizationSnapshotConfig()
     timestamp = _utc_now if now is None else now
+    started_at = time.perf_counter()
+    timings: dict[str, float] = {}
     staging_path = render_staging_path(hdfs_config.base_path, pipeline_run_id)
     curated_path = render_curated_sales_daily_path(
         hdfs_config.base_path,
@@ -243,6 +247,7 @@ def run_normalization_snapshot(
 
     try:
         hdfs = create_hdfs_cli_client(hdfs_config) if hdfs is None else hdfs
+        phase_started = time.perf_counter()
         raw_snapshot = validate_hdfs_raw_snapshot(
             source_version,
             client=hdfs,
@@ -250,33 +255,42 @@ def run_normalization_snapshot(
         )
         raw_path = raw_snapshot.raw_path
         _validate_raw_inputs(raw_snapshot)
+        timings["raw_validation_seconds"] = time.perf_counter() - phase_started
         _ensure_staging_root(hdfs, staging_path)
         hdfs.mkdir_parents(render_normalization_chunks_path(staging_path))
         hdfs.mkdir_parents(str(PurePosixPath(staging_path) / "chunk_manifests"))
 
+        phase_started = time.perf_counter()
         sales_wide, calendar = _read_validated_sources(spark, hdfs_config, raw_snapshot)
         measured_series_count = sales_wide.count()
+        timings["source_read_seconds"] = time.perf_counter() - phase_started
         if measured_series_count != selected_config.expected_series_count:
             raise NormalizationSnapshotError(
                 "series coverage mismatch: "
                 f"expected {selected_config.expected_series_count}, received {measured_series_count}"
             )
 
-        chunk_metrics = tuple(
-            _stage_or_verify_chunk(
-                spark,
-                hdfs,
-                hdfs_config,
-                sales_wide,
-                calendar,
-                chunk,
-                expected_series_count=measured_series_count,
-                source_version=source_version,
-                source_snapshot_id=source_snapshot_id,
-                pipeline_run_id=pipeline_run_id,
+        chunk_metrics_list: list[NormalizationMetrics] = []
+        for chunk in chunks:
+            phase_started = time.perf_counter()
+            chunk_metrics_list.append(
+                _stage_or_verify_chunk(
+                    spark,
+                    hdfs,
+                    hdfs_config,
+                    sales_wide,
+                    calendar,
+                    chunk,
+                    expected_series_count=measured_series_count,
+                    source_version=source_version,
+                    source_snapshot_id=source_snapshot_id,
+                    pipeline_run_id=pipeline_run_id,
+                )
             )
-            for chunk in chunks
-        )
+            timings[
+                f"chunk_{chunk.day_start:04d}_{chunk.day_end:04d}_seconds"
+            ] = time.perf_counter() - phase_started
+        chunk_metrics = tuple(chunk_metrics_list)
         _validate_staged_chunk_listing(hdfs, staging_path, chunks)
         validate_chunk_coverage(
             chunks,
@@ -290,6 +304,7 @@ def run_normalization_snapshot(
             expected_row_count=selected_config.row_count,
         )
 
+        compaction_started = time.perf_counter()
         candidate_uri = _hdfs_uri(
             hdfs_config.uri,
             render_normalization_candidate_path(staging_path),
@@ -413,6 +428,7 @@ def run_normalization_snapshot(
                 )
                 status = "REUSED"
 
+        timings["compaction_seconds"] = time.perf_counter() - compaction_started
         _write_quality_report(
             hdfs,
             quality_path,
@@ -450,6 +466,7 @@ def run_normalization_snapshot(
             manifest,
             integrity=raw_snapshot.integrity,
         )
+        timings["total_seconds"] = time.perf_counter() - started_at
         return NormalizationSnapshotResult(
             status=status,
             pipeline_run_id=pipeline_run_id,
@@ -462,9 +479,11 @@ def run_normalization_snapshot(
             run_manifest_path=manifest_path,
             metrics=metrics,
             chunks=chunks,
+            timings=dict(timings),
             failure_details=(),
         )
     except Exception as error:
+        timings["total_seconds"] = time.perf_counter() - started_at
         detail = _failure_detail(error)
         failure_path = None
         if hdfs is not None:
@@ -503,6 +522,7 @@ def run_normalization_snapshot(
             run_manifest_path=None,
             metrics=None,
             chunks=chunks,
+            timings=dict(timings),
             failure_details=(detail,),
         )
 

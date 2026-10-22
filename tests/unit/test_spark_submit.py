@@ -141,6 +141,22 @@ def test_standalone_client_argv_endpoints_python_and_resource_bounds(
     assert argv[argv.index(str(app)) :] == [str(app), *args]
 
 
+@pytest.mark.parametrize("cores", ["1", "2"])
+def test_bounded_cores_max_is_forwarded(
+    prepared: tuple[submission.SparkSubmitConfig, str], cores: str
+) -> None:
+    config, application = prepared
+
+    argv = submission.build_spark_submit_argv(
+        config,
+        submission.preflight_spark_submit(config, application),
+        conf=[f"spark.cores.max={cores}"],
+    )
+
+    assert "--conf" in argv
+    assert f"spark.cores.max={cores}" in argv
+
+
 @pytest.mark.parametrize(
     "conf",
     [
@@ -152,6 +168,9 @@ def test_standalone_client_argv_endpoints_python_and_resource_bounds(
         ["spark.sql.shuffle.partitions=4\n--master local[*]"],
         ["spark.sql.shuffle.partitions=4", "spark.sql.shuffle.partitions=2"],
         ["spark.default.parallelism=0"],
+        ["spark.cores.max=0"],
+        ["spark.cores.max=3"],
+        ["spark.cores.max=1.0"],
         ["spark.master=local[*]"],
         ["spark.submit.deployMode=cluster"],
         ["spark.driver.host=other"],

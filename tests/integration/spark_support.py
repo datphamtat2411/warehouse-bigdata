@@ -554,6 +554,201 @@ def summarize_event_log(
     }
 
 
+def summarize_m04_event_log(
+    payload: bytes,
+    *,
+    run_id: str,
+    application_name: str,
+    require_both_workers: bool = True,
+) -> dict:
+    """Summarize real M04 task placement and resource metrics independently."""
+    events = parse_events(payload)
+    application = next(
+        event for event in events if event["Event"] == "SparkListenerApplicationStart"
+    )
+    require(application.get("App Name") == application_name, "M04 application name mismatch.")
+    application_id = application.get("App ID")
+    require(isinstance(application_id, str) and application_id, "M04 application ID is missing.")
+    environments = [event for event in events if event["Event"] == "SparkListenerEnvironmentUpdate"]
+    require(len(environments) == 1, "M04 event log lacks one effective environment record.")
+    properties = environments[0].get("Spark Properties", {})
+    require(
+        properties.get("spark.master", "").startswith("spark://")
+        and properties.get("spark.ui.enabled") == "false",
+        "M04 event log did not prove Standalone/no-UI execution.",
+    )
+
+    executors = {}
+    jobs, job_ends = {}, {}
+    submitted, completed, tasks = {}, {}, {}
+    for event in events:
+        kind = event["Event"]
+        if kind == "SparkListenerExecutorAdded":
+            identifier = event.get("Executor ID")
+            info = event.get("Executor Info", {})
+            require(
+                isinstance(identifier, str)
+                and identifier not in executors
+                and info.get("Host") in WORKERS,
+                "Invalid or duplicate M04 executor placement.",
+            )
+            executors[identifier] = info
+        elif kind == "SparkListenerJobStart":
+            identifier = event.get("Job ID")
+            require(identifier not in jobs, "Duplicate M04 job start.")
+            jobs[identifier] = event
+        elif kind == "SparkListenerJobEnd":
+            identifier = event.get("Job ID")
+            require(identifier not in job_ends, "Duplicate M04 job end.")
+            job_ends[identifier] = event
+        elif kind == "SparkListenerStageSubmitted":
+            info = event.get("Stage Info", {})
+            key = info.get("Stage ID"), info.get("Stage Attempt ID")
+            require(key not in submitted, "Duplicate M04 stage submission.")
+            submitted[key] = event
+        elif kind == "SparkListenerStageCompleted":
+            info = event.get("Stage Info", {})
+            key = info.get("Stage ID"), info.get("Stage Attempt ID")
+            require(key not in completed, "Duplicate M04 stage completion.")
+            completed[key] = event
+        elif kind == "SparkListenerTaskEnd":
+            info = event.get("Task Info", {})
+            identifier = info.get("Task ID")
+            require(identifier not in tasks, "Duplicate M04 task completion.")
+            tasks[identifier] = event
+
+    require(jobs and jobs.keys() == job_ends.keys(), "M04 jobs are not all completed.")
+    job_groups = {
+        job.get("Properties", {}).get("spark.jobGroup.id") for job in jobs.values()
+    }
+    require(
+        job_groups and all(
+            isinstance(group, str) and group.startswith(f"{run_id}:") for group in job_groups
+        ),
+        "M04 jobs are not attributable to the run-scoped job group.",
+    )
+    successful_stages = {
+        key
+        for key, event in completed.items()
+        if not event.get("Stage Info", {}).get("Failure Reason")
+        and type(event.get("Stage Info", {}).get("Completion Time")) is int
+    }
+    for identifier, job in jobs.items():
+        require(
+            job_ends[identifier].get("Job Result", {}).get("Result") == "JobSucceeded",
+            f"M04 Spark job did not succeed: {identifier}",
+        )
+        stage_ids = job.get("Stage IDs", [])
+        require(
+            stage_ids
+            and all(any(stage_key[0] == stage_id for stage_key in successful_stages) for stage_id in stage_ids),
+            "M04 job does not have successful completed stages.",
+        )
+
+    successes = []
+    failures = []
+    for event in tasks.values():
+        info = event.get("Task Info", {})
+        stage = event.get("Stage ID"), event.get("Stage Attempt ID")
+        success = (
+            event.get("Task End Reason", {}).get("Reason") == "Success"
+            and not info.get("Failed")
+            and not info.get("Killed")
+        )
+        record = {
+            "stage_id": stage[0],
+            "stage_attempt": stage[1],
+            "executor_id": info.get("Executor ID"),
+            "host": info.get("Host"),
+            "partition_id": info.get("Partition ID"),
+            "launch_time": info.get("Launch Time"),
+            "finish_time": info.get("Finish Time"),
+            "metrics": event.get("Task Metrics", {}),
+        }
+        if not success or stage not in successful_stages:
+            failures.append(record)
+            continue
+        executor_id = info.get("Executor ID")
+        require(
+            executor_id in executors and executors[executor_id].get("Host") == info.get("Host"),
+            "M04 task has no matching executor placement.",
+        )
+        metrics = record["metrics"]
+        required_metrics = [
+            metrics.get(key)
+            for key in (
+                "Executor Run Time",
+                "JVM GC Time",
+                "Memory Bytes Spilled",
+                "Disk Bytes Spilled",
+            )
+        ] + [
+            metrics.get(section, {}).get(key)
+            for section, key in (
+                ("Input Metrics", "Bytes Read"),
+                ("Shuffle Read Metrics", "Remote Bytes Read"),
+                ("Shuffle Read Metrics", "Local Bytes Read"),
+                ("Shuffle Write Metrics", "Shuffle Bytes Written"),
+            )
+        ]
+        require(
+            all(type(value) is int and value >= 0 for value in required_metrics),
+            "M04 successful task metrics are incomplete or invalid.",
+        )
+        successes.append(record)
+
+    hosts = {record["host"] for record in successes}
+    if require_both_workers:
+        require(hosts == set(WORKERS), "M04 successful tasks did not execute on both Workers.")
+    require(successes, "M04 event log has no successful task evidence.")
+
+    executor_metrics = {}
+    for identifier, executor in executors.items():
+        totals = Counter()
+        for task in successes:
+            if task["executor_id"] != identifier:
+                continue
+            values = task["metrics"]
+            totals.update(
+                {
+                    "successful_tasks": 1,
+                    "input_bytes": values.get("Input Metrics", {}).get("Bytes Read", 0),
+                    "shuffle_read_bytes": sum(
+                        values.get("Shuffle Read Metrics", {}).get(key, 0)
+                        for key in ("Remote Bytes Read", "Local Bytes Read")
+                    ),
+                    "shuffle_write_bytes": values.get("Shuffle Write Metrics", {}).get(
+                        "Shuffle Bytes Written", 0
+                    ),
+                    "executor_run_ms": values.get("Executor Run Time", 0),
+                    "gc_ms": values.get("JVM GC Time", 0),
+                    "memory_spill_bytes": values.get("Memory Bytes Spilled", 0),
+                    "disk_spill_bytes": values.get("Disk Bytes Spilled", 0),
+                    "elapsed_ms": task["finish_time"] - task["launch_time"],
+                }
+            )
+        executor_metrics[identifier] = {"host": executor["Host"], **dict(totals)}
+    worker_metrics = {}
+    for host in WORKERS:
+        totals = Counter()
+        for values in executor_metrics.values():
+            if values["host"] == host:
+                totals.update({key: value for key, value in values.items() if key != "host"})
+        worker_metrics[host] = dict(totals)
+    return {
+        "application_id": application_id,
+        "application_name": application_name,
+        "run_id": run_id,
+        "successful_tasks": len(successes),
+        "failed_attempts": failures,
+        "executors": executor_metrics,
+        "workers": worker_metrics,
+        "effective_configuration": properties,
+        "stage_count": len(successful_stages),
+        "job_count": len(jobs),
+    }
+
+
 def submit_verification(hdfs: HDFSVerification, application_args: list[str]):
     argv = [
         "timeout",

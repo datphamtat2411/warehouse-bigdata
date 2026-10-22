@@ -667,8 +667,8 @@ def _scan_calendar_rows(
         "observed_day_count": len(seen_days),
         "missing_day_count": len(missing),
         "unexpected_day_count": len(unexpected),
-        "first_day": min(seen_days) if seen_days else None,
-        "last_day": max(seen_days) if seen_days else None,
+        "first_day": min(seen_days, key=_calendar_day_order) if seen_days else None,
+        "last_day": max(seen_days, key=_calendar_day_order) if seen_days else None,
     }
     if missing or unexpected:
         _invalid(
@@ -857,6 +857,13 @@ def _check_record_width(
 
 def _positions(header: list[str]) -> dict[str, int]:
     return {name: index for index, name in enumerate(header) if name not in set(header[:index])}
+
+
+def _calendar_day_order(value: str) -> tuple[int, int | str]:
+    suffix = value.removeprefix("d_")
+    if suffix.isascii() and suffix.isdecimal():
+        return (0, int(suffix))
+    return (1, value)
 
 
 def _increment_row_count(profile: dict[str, object]) -> None:

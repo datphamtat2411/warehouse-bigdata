@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 from warehouse_bigdata.common.config import load_hdfs_config, load_spark_config
 from warehouse_bigdata.common.hdfs_client import HdfsCliClient
@@ -19,6 +20,7 @@ def run_enrich_analytics(
     pipeline_run_id: str,
     hdfs_uri: str,
     spark_master: str,
+    event_log_dir: str | None = None,
 ) -> EnrichmentAnalyticsSnapshotResult:
     """Run one explicitly identified J03 attempt on HDFS/Spark."""
     hdfs_config = load_hdfs_config({"WAREHOUSE_HDFS_URI": hdfs_uri})
@@ -26,13 +28,27 @@ def run_enrich_analytics(
 
     from pyspark.sql import SparkSession
 
-    spark = (
+    builder = (
         SparkSession.builder.master(spark_config.master_url)
         .appName(f"warehouse-enrich-analytics-{pipeline_run_id}")
         .config("spark.ui.enabled", "false")
-        .getOrCreate()
     )
+    if event_log_dir is not None:
+        if not event_log_dir.startswith("hdfs://") or any(
+            character in event_log_dir for character in "\0\r\n"
+        ):
+            raise ValueError("event_log_dir must be an absolute HDFS URI")
+        builder = (
+            builder.config("spark.eventLog.enabled", "true")
+            .config("spark.eventLog.dir", event_log_dir)
+            .config("spark.eventLog.compress", "false")
+            .config("spark.eventLog.rolling.enabled", "false")
+        )
+    spark = builder.getOrCreate()
     try:
+        spark.sparkContext.setJobGroup(
+            f"{pipeline_run_id}:enrichment", "M04 J03 enrichment and analytics write", True
+        )
         return run_enrichment_analytics_snapshot(
             spark,
             source_version=source_version,
@@ -53,6 +69,7 @@ def main() -> None:
     parser.add_argument("--pipeline-run-id", required=True, metavar="ID")
     parser.add_argument("--hdfs-uri", required=True, metavar="HDFS_URI")
     parser.add_argument("--spark-master", required=True, metavar="SPARK_URI")
+    parser.add_argument("--event-log-dir", metavar="HDFS_URI")
     args = parser.parse_args()
     result = run_enrich_analytics(
         source_version=args.source_version,
@@ -60,6 +77,7 @@ def main() -> None:
         pipeline_run_id=args.pipeline_run_id,
         hdfs_uri=args.hdfs_uri,
         spark_master=args.spark_master,
+        event_log_dir=args.event_log_dir,
     )
     print(f"status={result.status}")
     print(f"source_version={result.source_version}")
@@ -75,6 +93,7 @@ def main() -> None:
         print(f"failure_report_path={result.failure_report_path}")
     if result.run_manifest_path is not None:
         print(f"run_manifest_path={result.run_manifest_path}")
+    print(f"timings={json.dumps(dict(result.timings), sort_keys=True, separators=(',', ':'))}")
     for detail in result.failure_details:
         print(f"failure={detail}")
     raise SystemExit(0 if result.status in {"VALIDATED", "REUSED"} else 1)

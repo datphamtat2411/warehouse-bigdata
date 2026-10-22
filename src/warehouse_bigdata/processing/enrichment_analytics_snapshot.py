@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -112,6 +113,7 @@ class EnrichmentAnalyticsSnapshotResult:
     failure_report_path: str | None
     run_manifest_path: str | None
     metrics: EnrichmentAnalyticsMetrics | None
+    timings: Mapping[str, float]
     failure_details: tuple[str, ...]
 
 
@@ -176,6 +178,8 @@ def run_enrichment_analytics_snapshot(
     quality_path = render_enrichment_quality_path(staging_path)
     failure_path = render_enrichment_failure_path(staging_path)
     timestamp = _utc_now if now is None else now
+    started_at = time.perf_counter()
+    timings: dict[str, float] = {}
     hdfs = client
     raw_path: str | None = None
     result_status = "VALIDATED"
@@ -210,6 +214,7 @@ def run_enrichment_analytics_snapshot(
         _validate_raw_snapshot_binding(raw_snapshot, source_version, hdfs_config)
         raw_path = raw_snapshot.raw_path
 
+        phase_started = time.perf_counter()
         sales_daily, input_manifest, input_metrics = _read_validated_sales_daily(
             spark,
             hdfs,
@@ -223,13 +228,20 @@ def run_enrichment_analytics_snapshot(
             raw_snapshot,
             source_version=source_version,
         )
+        timings["input_read_seconds"] = time.perf_counter() - phase_started
 
+        phase_started = time.perf_counter()
         enriched = enrich_sales_daily(sales_daily, calendar, sell_prices)
+        timings["enrichment_seconds"] = time.perf_counter() - phase_started
+
+        phase_started = time.perf_counter()
         aggregation = aggregate_sales(
             sales_daily,
             source_snapshot_id=source_snapshot_id,
         )
+        timings["aggregation_seconds"] = time.perf_counter() - phase_started
 
+        phase_started = time.perf_counter()
         enriched_metrics = _materialize_sales_enriched(
             spark,
             hdfs,
@@ -245,6 +257,9 @@ def run_enrichment_analytics_snapshot(
             created_at=timestamp(),
             promote=False,
         )
+        timings["sales_enriched_materialization_seconds"] = time.perf_counter() - phase_started
+
+        phase_started = time.perf_counter()
         store_daily = _materialize_aggregate_candidate(
             spark,
             hdfs,
@@ -257,6 +272,9 @@ def run_enrichment_analytics_snapshot(
                 source_snapshot_id=source_snapshot_id,
             ),
         )
+        timings["store_aggregation_seconds"] = time.perf_counter() - phase_started
+
+        phase_started = time.perf_counter()
         category_monthly = _materialize_aggregate_candidate(
             spark,
             hdfs,
@@ -269,6 +287,9 @@ def run_enrichment_analytics_snapshot(
                 source_snapshot_id=source_snapshot_id,
             ),
         )
+        timings["category_aggregation_seconds"] = time.perf_counter() - phase_started
+
+        phase_started = time.perf_counter()
         enriched_metrics = _materialize_sales_enriched(
             spark,
             hdfs,
@@ -284,6 +305,7 @@ def run_enrichment_analytics_snapshot(
             created_at=timestamp(),
             promote=True,
         )
+        timings["sales_enriched_promotion_seconds"] = time.perf_counter() - phase_started
 
         persisted_enriched = _read_parquet(
             spark,
@@ -384,6 +406,7 @@ def run_enrichment_analytics_snapshot(
             manifest,
             integrity=raw_snapshot.integrity,
         )
+        timings["total_seconds"] = time.perf_counter() - started_at
         return EnrichmentAnalyticsSnapshotResult(
             status=result_status,
             pipeline_run_id=pipeline_run_id,
@@ -399,9 +422,11 @@ def run_enrichment_analytics_snapshot(
             failure_report_path=None,
             run_manifest_path=manifest_path,
             metrics=metrics,
+            timings=dict(timings),
             failure_details=(),
         )
     except Exception as error:
+        timings["total_seconds"] = time.perf_counter() - started_at
         detail = _failure_detail(error)
         stored_failure_path: str | None = None
         if hdfs is not None:
@@ -442,6 +467,7 @@ def run_enrichment_analytics_snapshot(
             failure_report_path=stored_failure_path,
             run_manifest_path=None,
             metrics=None,
+            timings=dict(timings),
             failure_details=(detail,),
         )
 

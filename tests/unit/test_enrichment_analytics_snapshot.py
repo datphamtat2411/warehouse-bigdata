@@ -418,6 +418,10 @@ def test_snapshot_persists_revalidates_promotes_and_keeps_category_candidate_onl
     assert result.metrics.row_count == 4
     assert result.metrics.unit_sales_total == 6
     assert result.metrics.zero_sales_count == 2
+    assert result.timings["total_seconds"] >= 0
+    assert result.timings["enrichment_seconds"] >= 0
+    assert result.timings["store_aggregation_seconds"] >= 0
+    assert result.timings["category_aggregation_seconds"] >= 0
     assert result.run_manifest_path == render_run_manifest_path(BASE_PATH, PIPELINE_RUN_ID)
     assert hdfs.exists(result.curated_path)
     assert hdfs.exists(result.output_paths["store_daily_sales"])

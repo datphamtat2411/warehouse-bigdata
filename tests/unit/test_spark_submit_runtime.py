@@ -131,6 +131,8 @@ def test_external_cwd_attached_ephemeral_run_and_exact_forwarding(sandbox: dict)
         "spark.sql.shuffle.partitions=4",
         "--",
         "warehouse_bigdata/jobs/future.py",
+        "--event-log-dir",
+        "hdfs://hdfs-namenode:8020/data/warehouse/staging/events/run-1",
         "two words",
         "Tiếng Việt",
         "--help",
