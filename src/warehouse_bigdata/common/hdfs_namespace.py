@@ -21,8 +21,11 @@ class HdfsNamespaceError(RuntimeError):
 def publication_parents(config: HDFSConfig) -> tuple[str, ...]:
     """Contract v1 curated, run-manifest, and feature publication parents."""
     base = config.base_path
-    return (*(f"{base}/curated/{name}" for name in DATASET_NAMES), f"{base}/manifests/runs",
-            f"{base}/features/demand_forecasting")
+    return (
+        *(f"{base}/curated/{name}" for name in DATASET_NAMES),
+        f"{base}/manifests/runs",
+        f"{base}/features/demand_forecasting",
+    )
 
 
 def require_owner(client) -> None:

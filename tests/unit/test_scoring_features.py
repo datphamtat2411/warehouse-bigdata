@@ -36,22 +36,41 @@ from pyspark.sql.types import (  # noqa: E402
 
 ORIGIN = date(2011, 1, 29)
 ISSUE = ORIGIN + timedelta(days=33)
-INPUT_SCHEMA = StructType([
-    StructField(name, kind, True)
-    for name, kind in zip(SALES_ENRICHED.field_names, (
-        *([StringType()] * 7), IntegerType(), DateType(), IntegerType(), LongType(),
-        DoubleType(), BooleanType(), IntegerType(), IntegerType(), IntegerType(),
-        BooleanType(), BooleanType(), *([StringType()] * 4),
-    ), strict=True)
-])
+INPUT_SCHEMA = StructType(
+    [
+        StructField(name, kind, True)
+        for name, kind in zip(
+            SALES_ENRICHED.field_names,
+            (
+                *([StringType()] * 7),
+                IntegerType(),
+                DateType(),
+                IntegerType(),
+                LongType(),
+                DoubleType(),
+                BooleanType(),
+                IntegerType(),
+                IntegerType(),
+                IntegerType(),
+                BooleanType(),
+                BooleanType(),
+                *([StringType()] * 4),
+            ),
+            strict=True,
+        )
+    ]
+)
 
 
 @pytest.fixture(scope="module")
 def spark():
-    session = (SparkSession.builder.master("local[2]")
-               .appName("warehouse-bigdata-scoring-feature-tests")
-               .config("spark.ui.enabled", "false")
-               .config("spark.sql.shuffle.partitions", "2").getOrCreate())
+    session = (
+        SparkSession.builder.master("local[2]")
+        .appName("warehouse-bigdata-scoring-feature-tests")
+        .config("spark.ui.enabled", "false")
+        .config("spark.sql.shuffle.partitions", "2")
+        .getOrCreate()
+    )
     yield session
     session.stop()
 
@@ -61,13 +80,38 @@ def _rows(days=range(1, 42), *, item="item_1", store="CA_1", prices=None, zero=F
     for day in days:
         target = ORIGIN + timedelta(days=day - 1)
         price = 2.5 if prices is None else prices.get(day)
-        result.append(dict(zip(SALES_ENRICHED.field_names, (
-            item, "dept_1", "cat_1", store, store[:2], f"{item}_{store}",
-            f"d_{day}", day, target, 11101 + (day - 1) // 7,
-            0 if zero else day, price, price is None,
-            (target.weekday() + 2) % 7 + 1, target.month, target.year,
-            False, zero, "Unverified recorded event", "Cultural", None, None,
-        ), strict=True)))
+        result.append(
+            dict(
+                zip(
+                    SALES_ENRICHED.field_names,
+                    (
+                        item,
+                        "dept_1",
+                        "cat_1",
+                        store,
+                        store[:2],
+                        f"{item}_{store}",
+                        f"d_{day}",
+                        day,
+                        target,
+                        11101 + (day - 1) // 7,
+                        0 if zero else day,
+                        price,
+                        price is None,
+                        (target.weekday() + 2) % 7 + 1,
+                        target.month,
+                        target.year,
+                        False,
+                        zero,
+                        "Unverified recorded event",
+                        "Cultural",
+                        None,
+                        None,
+                    ),
+                    strict=True,
+                )
+            )
+        )
     return result
 
 
@@ -77,8 +121,10 @@ def _frame(spark, rows):
 
 def _prepare(spark, rows=None, scope=None, issue=ISSUE):
     return prepare_as_of_history(
-        _frame(spark, _rows() if rows is None else rows), issue_date=issue,
-        source_snapshot_id="snapshot_1", feature_version="features_v1",
+        _frame(spark, _rows() if rows is None else rows),
+        issue_date=issue,
+        source_snapshot_id="snapshot_1",
+        feature_version="features_v1",
         series_scope=spark.createDataFrame(
             [("item_1", "CA_1")] if scope is None else scope,
             "item_id string, store_id string",
@@ -89,9 +135,12 @@ def _prepare(spark, rows=None, scope=None, issue=ISSUE):
 def _score(spark, state, horizon=1, issue=ISSUE, calendar=None):
     target = issue + timedelta(days=horizon)
     return build_scoring_features(
-        state, issue_date=issue, target_date=target,
-        known_calendar=(spark.createDataFrame([(target,)], "date date")
-                        if calendar is None else calendar),
+        state,
+        issue_date=issue,
+        target_date=target,
+        known_calendar=(
+            spark.createDataFrame([(target,)], "date date") if calendar is None else calendar
+        ),
     )
 
 
@@ -104,10 +153,14 @@ def _advance(record, predictions):
     record = copy.deepcopy(record)
     issue = record["as_of_date"]
     for horizon, value in enumerate(predictions, start=1):
-        record["history"] = record["history"][1:] + [{
-            "date": issue + timedelta(days=horizon), "value": value,
-            "origin": "predicted_unit_sales", "prediction_issue_date": issue,
-        }]
+        record["history"] = record["history"][1:] + [
+            {
+                "date": issue + timedelta(days=horizon),
+                "value": value,
+                "origin": "predicted_unit_sales",
+                "prediction_issue_date": issue,
+            }
+        ]
     return record
 
 
@@ -131,20 +184,29 @@ def prepared(spark):
 def test_first_horizon_matches_every_t01_predictor_and_contract(spark, prepared):
     result = _score(spark, prepared.state)
     scoring = result.features.first().asDict()
-    historical = build_historical_features(
-        _frame(spark, _rows(range(1, 36))), source_snapshot_id="snapshot_1",
-        feature_version="features_v1",
-    ).features.where(F.col("target_date") == ISSUE + timedelta(days=1)).first().asDict()
+    historical = (
+        build_historical_features(
+            _frame(spark, _rows(range(1, 36))),
+            source_snapshot_id="snapshot_1",
+            feature_version="features_v1",
+        )
+        .features.where(F.col("target_date") == ISSUE + timedelta(days=1))
+        .first()
+        .asDict()
+    )
     assert historical.pop("label") == 35
     assert historical.pop("feature_role") == "train"
     assert scoring.pop("feature_role") == "scoring"
     assert scoring == historical
     assert result.features.schema.simpleString() == SCORING_FEATURE_SCHEMA_V1.simpleString()
-    assert tuple(result.features.columns) == tuple(n for n in FORECAST_FEATURES.field_names
-                                                  if n != "label")
+    assert tuple(result.features.columns) == tuple(
+        n for n in FORECAST_FEATURES.field_names if n != "label"
+    )
     assert FORECAST_FEATURES.version == "1.0"
     assert [f.logical_type for f in FORECAST_FEATURES.fields if f.name.startswith("lag_")] == [
-        "NonNegativeInt", "NonNegativeInt", "NonNegativeInt",
+        "NonNegativeInt",
+        "NonNegativeInt",
+        "NonNegativeInt",
     ]
     assert all(result.features.schema[f"lag_{n}"].dataType == DoubleType() for n in (1, 7, 28))
     assert result.eligibility.first().reason_codes == []
@@ -158,7 +220,7 @@ def test_all_horizons_preserve_fractional_history_and_frozen_context(spark, prep
     original = prepared.state.first().asDict(recursive=True)
     predictions = [40.5, 3.125, 0.0, 18.25, 7.75, 2.625]
     for horizon in range(1, 8):
-        record = _advance(original, predictions[:horizon - 1])
+        record = _advance(original, predictions[: horizon - 1])
         result = _score(spark, _state_frame(spark, [record]), horizon)
         row = result.features.first()
         values = [entry["value"] for entry in record["history"]]
@@ -168,7 +230,9 @@ def test_all_horizons_preserve_fractional_history_and_frozen_context(spark, prep
         assert all(math.isfinite(value) for value in values)
         assert (row.as_of_date, row.last_known_price, row.price_missing) == (ISSUE, 2.5, False)
         assert (row.source_snapshot_id, row.feature_version, row.dept_id) == (
-            "snapshot_1", "features_v1", "dept_1",
+            "snapshot_1",
+            "features_v1",
+            "dept_1",
         )
         assert result.eligibility.first().prediction_count == horizon - 1
         if horizon == 2:
@@ -184,25 +248,44 @@ def test_future_poisoning_and_removal_cannot_affect_state_or_scoring(spark, prep
     rows = _rows()
     for row in rows:
         if row["date"] > ISSUE:
-            row.update(unit_sales=-999, sell_price=float("nan"), price_missing=None,
-                       dept_id="future identity", series_id="future series", event_name_1="Future")
+            row.update(
+                unit_sales=-999,
+                sell_price=float("nan"),
+                price_missing=None,
+                dept_id="future identity",
+                series_id="future series",
+                event_name_1="Future",
+            )
     expected = prepared.state.collect()
     for source in (rows, [row for row in rows if row["date"] <= ISSUE]):
         changed = _prepare(spark, source)
         assert changed.state.collect() == expected
-        assert _score(spark, changed.state).features.collect() == _score(
-            spark, prepared.state,
-        ).features.collect()
+        assert (
+            _score(spark, changed.state).features.collect()
+            == _score(
+                spark,
+                prepared.state,
+            ).features.collect()
+        )
 
 
 def test_price_reduction_zeros_shuffled_input_and_series_isolation(spark):
-    rows = (_rows(item="on_issue", prices={1: 1.0, 34: 7.0, 35: 999.0})
-            + _rows(item="old", prices={1: 1.25})
-            + _rows(item="unknown", prices={})
-            + _rows(item="old", store="TX_1", prices={2: 4.0}, zero=True))
-    result = _prepare(spark, list(reversed(rows)), [
-        ("on_issue", "CA_1"), ("old", "CA_1"), ("unknown", "CA_1"), ("old", "TX_1"),
-    ])
+    rows = (
+        _rows(item="on_issue", prices={1: 1.0, 34: 7.0, 35: 999.0})
+        + _rows(item="old", prices={1: 1.25})
+        + _rows(item="unknown", prices={})
+        + _rows(item="old", store="TX_1", prices={2: 4.0}, zero=True)
+    )
+    result = _prepare(
+        spark,
+        list(reversed(rows)),
+        [
+            ("on_issue", "CA_1"),
+            ("old", "CA_1"),
+            ("unknown", "CA_1"),
+            ("old", "TX_1"),
+        ],
+    )
     found = {(r.item_id, r.store_id): r for r in result.state.collect()}
     assert found["on_issue", "CA_1"].last_known_price == 7.0
     assert found["old", "CA_1"].last_known_price == 1.25
@@ -244,11 +327,17 @@ def test_preparation_defects_keep_candidates_and_all_reasons(spark):
     assert len(found) == len(cases) + 1
     assert found["healthy"].reason_codes == []
     for item, reason in {
-        "absent": "MISSING_HISTORY", "short": "INSUFFICIENT_HISTORY",
-        "gap": "DISCONTINUOUS_HISTORY", "duplicate": "DUPLICATE_DATE",
-        "unstable": "INVALID_SERIES", "negative": "INVALID_VALUE", "null": "INVALID_VALUE",
-        "nan_price": "INVALID_VALUE", "inf_price": "INVALID_VALUE",
-        "bad_mapping": "INVALID_SERIES", "null_date": "INVALID_SERIES",
+        "absent": "MISSING_HISTORY",
+        "short": "INSUFFICIENT_HISTORY",
+        "gap": "DISCONTINUOUS_HISTORY",
+        "duplicate": "DUPLICATE_DATE",
+        "unstable": "INVALID_SERIES",
+        "negative": "INVALID_VALUE",
+        "null": "INVALID_VALUE",
+        "nan_price": "INVALID_VALUE",
+        "inf_price": "INVALID_VALUE",
+        "bad_mapping": "INVALID_SERIES",
+        "null_date": "INVALID_SERIES",
     }.items():
         assert reason in found[item].reason_codes
         assert found[item].status == "EXCLUDED"
@@ -273,22 +362,53 @@ def test_ambiguous_audit_identity_is_excluded_without_affecting_healthy_series(s
 
 def test_scoring_defects_are_per_series_and_do_not_sort_or_fill(spark, prepared):
     original = _advance(prepared.state.first().asDict(recursive=True), [40.5])
-    cases = {key: copy.deepcopy(original) for key in (
-        "healthy", "negative", "null", "nan", "inf", "minus_inf", "observed_future",
-        "wrong_prediction_issue", "predicted_past", "reordered", "duplicate", "skipped",
-        "premature", "wrong_issue", "blank_lineage", "bad_price", "missing_flag",
-        "overflow", "missing", "oversized", "invalid_identity", "duplicate_state",
-    )}
+    cases = {
+        key: copy.deepcopy(original)
+        for key in (
+            "healthy",
+            "negative",
+            "null",
+            "nan",
+            "inf",
+            "minus_inf",
+            "observed_future",
+            "wrong_prediction_issue",
+            "predicted_past",
+            "reordered",
+            "duplicate",
+            "skipped",
+            "premature",
+            "wrong_issue",
+            "blank_lineage",
+            "bad_price",
+            "missing_flag",
+            "overflow",
+            "missing",
+            "oversized",
+            "invalid_identity",
+            "duplicate_state",
+        )
+    }
     for key, record in cases.items():
         record.update(item_id=key, series_id=key)
-    for key, value in (("negative", -1.0), ("null", None), ("nan", float("nan")),
-                       ("inf", float("inf")), ("minus_inf", float("-inf"))):
+    for key, value in (
+        ("negative", -1.0),
+        ("null", None),
+        ("nan", float("nan")),
+        ("inf", float("inf")),
+        ("minus_inf", float("-inf")),
+    ):
         cases[key]["history"][-1]["value"] = value
     cases["observed_future"]["history"][-1].update(
-        origin="observed_m5_unit_sales", prediction_issue_date=None,
+        origin="observed_m5_unit_sales",
+        prediction_issue_date=None,
     )
-    cases["wrong_prediction_issue"]["history"][-1]["prediction_issue_date"] = ISSUE - timedelta(days=1)
-    cases["predicted_past"]["history"][0].update(origin="predicted_unit_sales", prediction_issue_date=ISSUE)
+    cases["wrong_prediction_issue"]["history"][-1]["prediction_issue_date"] = ISSUE - timedelta(
+        days=1
+    )
+    cases["predicted_past"]["history"][0].update(
+        origin="predicted_unit_sales", prediction_issue_date=ISSUE
+    )
     cases["reordered"]["history"].reverse()
     cases["duplicate"]["history"][-2] = cases["duplicate"]["history"][-1].copy()
     cases["skipped"]["history"].pop(10)
@@ -306,14 +426,29 @@ def test_scoring_defects_are_per_series_and_do_not_sort_or_fill(spark, prepared)
     found = {r.item_id: r for r in result.eligibility.collect()}
     assert len(found) == len(cases)
     expected = {
-        **dict.fromkeys(("negative", "null", "nan", "inf", "minus_inf", "bad_price",
-                         "missing_flag", "overflow"), "INVALID_VALUE"),
-        **dict.fromkeys(("observed_future", "wrong_prediction_issue", "predicted_past"),
-                        "INVALID_PROVENANCE"),
+        **dict.fromkeys(
+            (
+                "negative",
+                "null",
+                "nan",
+                "inf",
+                "minus_inf",
+                "bad_price",
+                "missing_flag",
+                "overflow",
+            ),
+            "INVALID_VALUE",
+        ),
+        **dict.fromkeys(
+            ("observed_future", "wrong_prediction_issue", "predicted_past"), "INVALID_PROVENANCE"
+        ),
         **dict.fromkeys(("reordered", "premature", "oversized"), "NON_SEQUENTIAL_HISTORY"),
-        "duplicate": "DUPLICATE_DATE", "skipped": "DISCONTINUOUS_HISTORY",
-        "wrong_issue": "LINEAGE_MISMATCH", "blank_lineage": "LINEAGE_MISMATCH",
-        "missing": "MISSING_HISTORY", "invalid_identity": "INVALID_SERIES",
+        "duplicate": "DUPLICATE_DATE",
+        "skipped": "DISCONTINUOUS_HISTORY",
+        "wrong_issue": "LINEAGE_MISMATCH",
+        "blank_lineage": "LINEAGE_MISMATCH",
+        "missing": "MISSING_HISTORY",
+        "invalid_identity": "INVALID_SERIES",
         "duplicate_state": "INVALID_SERIES",
     }
     for item, reason in expected.items():
@@ -329,8 +464,9 @@ def test_calendar_boundaries_final_demo_and_no_labels(spark):
     record = prepared.state.first().asDict(recursive=True)
     assert len(record["history"]) == 28
     for horizon in range(1, 8):
-        row = _score(spark, _state_frame(spark, [_advance(record, [0.25] * (horizon - 1))]),
-                     horizon, issue).features.first()
+        row = _score(
+            spark, _state_frame(spark, [_advance(record, [0.25] * (horizon - 1))]), horizon, issue
+        ).features.first()
         assert row.day_of_week == row.target_date.isoweekday()
         assert row.month == row.target_date.month
         assert row.is_weekend == (row.day_of_week >= 6)
@@ -362,13 +498,21 @@ def test_empty_schemas_and_missing_candidates(spark):
 def test_invalid_arguments_and_incompatible_schemas_raise(spark, prepared):
     sales = _frame(spark, _rows(range(1, 2)))
     scope = spark.createDataFrame([("item_1", "CA_1")], "item_id string, store_id string")
-    options = dict(issue_date=ISSUE, source_snapshot_id="snapshot_1", feature_version="v1",
-                   series_scope=scope)
-    for key, value in (("issue_date", "2011-03-03"), ("issue_date", datetime(2011, 3, 3)),
-                       ("source_snapshot_id", " "), ("feature_version", None)):
+    options = dict(
+        issue_date=ISSUE, source_snapshot_id="snapshot_1", feature_version="v1", series_scope=scope
+    )
+    for key, value in (
+        ("issue_date", "2011-03-03"),
+        ("issue_date", datetime(2011, 3, 3)),
+        ("source_snapshot_id", " "),
+        ("feature_version", None),
+    ):
         with pytest.raises(ScoringFeatureError):
             prepare_as_of_history(sales, **{**options, key: value})
-    for changed in (sales.drop("unit_sales"), sales.withColumn("unit_sales", F.col("unit_sales").cast("double"))):
+    for changed in (
+        sales.drop("unit_sales"),
+        sales.withColumn("unit_sales", F.col("unit_sales").cast("double")),
+    ):
         with pytest.raises(ScoringFeatureError):
             prepare_as_of_history(changed, **options)
     with pytest.raises(ScoringFeatureError):

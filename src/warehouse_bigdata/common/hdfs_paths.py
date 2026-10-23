@@ -137,13 +137,17 @@ def validate_feature_version(feature_version: str) -> str:
 
 
 def render_forecast_features_path(
-    base_path: str, source_snapshot_id: str, feature_version: str,
+    base_path: str,
+    source_snapshot_id: str,
+    feature_version: str,
 ) -> str:
     """Render the frozen v1 feature artifact without creating publication ancestors."""
     validate_source_snapshot_id(source_snapshot_id)
     validate_feature_version(feature_version)
     return render_hdfs_artifact_path(
-        base_path, "forecast_features", source_snapshot_id=source_snapshot_id,
+        base_path,
+        "forecast_features",
+        source_snapshot_id=source_snapshot_id,
         feature_version=feature_version,
     )
 

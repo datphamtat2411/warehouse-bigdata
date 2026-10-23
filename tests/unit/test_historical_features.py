@@ -32,14 +32,25 @@ from pyspark.sql.types import (  # noqa: E402
 ORIGIN = date(2011, 1, 29)
 INPUT_TYPES = (
     *([StringType()] * 7),
-    IntegerType(), DateType(), IntegerType(), LongType(), DoubleType(), BooleanType(),
-    IntegerType(), IntegerType(), IntegerType(), BooleanType(), BooleanType(),
+    IntegerType(),
+    DateType(),
+    IntegerType(),
+    LongType(),
+    DoubleType(),
+    BooleanType(),
+    IntegerType(),
+    IntegerType(),
+    IntegerType(),
+    BooleanType(),
+    BooleanType(),
     *([StringType()] * 4),
 )
-INPUT_SCHEMA = StructType([
-    StructField(name, kind, True)
-    for name, kind in zip(SALES_ENRICHED.field_names, INPUT_TYPES, strict=True)
-])
+INPUT_SCHEMA = StructType(
+    [
+        StructField(name, kind, True)
+        for name, kind in zip(SALES_ENRICHED.field_names, INPUT_TYPES, strict=True)
+    ]
+)
 
 
 @pytest.fixture(scope="module")
@@ -60,13 +71,38 @@ def _rows(days=range(1, 36), *, item="item_1", store="CA_1", zero=False, prices=
     for day in days:
         target = ORIGIN + timedelta(days=day - 1)
         price = 2.5 if prices is None else prices.get(day)
-        rows.append(dict(zip(SALES_ENRICHED.field_names, (
-            item, "dept_1", "cat_1", store, store[:2], f"{item}_{store}",
-            f"d_{day}", day, target, 11101 + (day - 1) // 7,
-            0 if zero else day, price, price is None,
-            (target.weekday() + 2) % 7 + 1, target.month, target.year,
-            False, zero, "Recorded event", "Cultural", None, None,
-        ), strict=True)))
+        rows.append(
+            dict(
+                zip(
+                    SALES_ENRICHED.field_names,
+                    (
+                        item,
+                        "dept_1",
+                        "cat_1",
+                        store,
+                        store[:2],
+                        f"{item}_{store}",
+                        f"d_{day}",
+                        day,
+                        target,
+                        11101 + (day - 1) // 7,
+                        0 if zero else day,
+                        price,
+                        price is None,
+                        (target.weekday() + 2) % 7 + 1,
+                        target.month,
+                        target.year,
+                        False,
+                        zero,
+                        "Recorded event",
+                        "Cultural",
+                        None,
+                        None,
+                    ),
+                    strict=True,
+                )
+            )
+        )
     return rows
 
 
@@ -83,11 +119,16 @@ def _build(frame, **kwargs):
 def _validate_catalog_records(records):
     # The bounded catalog validator accepts serialized ISO dates, while Spark
     # DateType correctly collects as Python dates. Adapt only at this test boundary.
-    validate_dataset(FORECAST_FEATURES, [
-        {name: value.isoformat() if isinstance(value, date) else value
-         for name, value in record.items()}
-        for record in records
-    ])
+    validate_dataset(
+        FORECAST_FEATURES,
+        [
+            {
+                name: value.isoformat() if isinstance(value, date) else value
+                for name, value in record.items()
+            }
+            for record in records
+        ],
+    )
 
 
 @pytest.fixture(scope="module")
@@ -99,10 +140,21 @@ def test_hand_calculation_and_frozen_contract(ordinary):
     features = ordinary.features
     assert tuple(features.columns) == FORECAST_FEATURES.field_names
     assert [field.dataType for field in features.schema] == [
-        *([StringType()] * 6), DateType(), DateType(),
-        LongType(), LongType(), LongType(), DoubleType(), DoubleType(),
-        IntegerType(), IntegerType(), BooleanType(), BooleanType(), BooleanType(),
-        DoubleType(), LongType(),
+        *([StringType()] * 6),
+        DateType(),
+        DateType(),
+        LongType(),
+        LongType(),
+        LongType(),
+        DoubleType(),
+        DoubleType(),
+        IntegerType(),
+        IntegerType(),
+        BooleanType(),
+        BooleanType(),
+        BooleanType(),
+        DoubleType(),
+        LongType(),
     ]
     rows = [row.asDict() for row in features.collect()]
     assert len(rows) == 7
@@ -113,7 +165,9 @@ def test_hand_calculation_and_frozen_contract(ordinary):
     assert row["label"] == 35
     assert row["as_of_date"] == row["target_date"] - timedelta(days=1)
     assert (row["source_snapshot_id"], row["feature_version"], row["feature_role"]) == (
-        "snapshot_1", "historical_v1", "train"
+        "snapshot_1",
+        "historical_v1",
+        "train",
     )
     assert all(row["label"] is not None for row in rows)
     assert len({(row["item_id"], row["store_id"], row["target_date"]) for row in rows}) == 7
@@ -139,14 +193,24 @@ def test_target_and_future_sales_prices_and_events_cannot_change_predictors(spar
     rows = _rows()
     for row in rows:
         if row["day_index"] >= 34:
-            row.update(unit_sales=0, is_zero_sale=True, sell_price=999.0,
-                       price_missing=False, event_name_1="Changed event")
-    changed = _build(_frame(spark, rows)).features.where(
-        F.col("target_date") == F.lit(ORIGIN + timedelta(days=33))
-    ).first().asDict()
-    original = ordinary.features.where(
-        F.col("target_date") == F.lit(ORIGIN + timedelta(days=33))
-    ).first().asDict()
+            row.update(
+                unit_sales=0,
+                is_zero_sale=True,
+                sell_price=999.0,
+                price_missing=False,
+                event_name_1="Changed event",
+            )
+    changed = (
+        _build(_frame(spark, rows))
+        .features.where(F.col("target_date") == F.lit(ORIGIN + timedelta(days=33)))
+        .first()
+        .asDict()
+    )
+    original = (
+        ordinary.features.where(F.col("target_date") == F.lit(ORIGIN + timedelta(days=33)))
+        .first()
+        .asDict()
+    )
     assert original.pop("label") == 34
     assert changed.pop("label") == 0
     assert changed == original
@@ -161,8 +225,10 @@ def test_as_of_prices_carry_across_nulls_weeks_and_demand_window_with_series_iso
     )
     # Deliberately shuffled source: neither row order nor another store may supply history.
     result = _build(_frame(spark, rows).orderBy(F.desc("day_index"), "store_id"))
-    found = {(r.item_id, r.store_id, (r.target_date - ORIGIN).days + 1): r
-             for r in result.features.collect()}
+    found = {
+        (r.item_id, r.store_id, (r.target_date - ORIGIN).days + 1): r
+        for r in result.features.collect()
+    }
     assert found["carried", "CA_1", 29].last_known_price == 1.5
     assert found["carried", "CA_1", 30].last_known_price == 2.0
     assert found["carried", "CA_1", 35].last_known_price == 2.0
@@ -210,8 +276,10 @@ def test_eligibility_uses_calendar_days_reports_gaps_and_recovers(spark):
     assert found["late", 52].status == "INSUFFICIENT_HISTORY"
     assert found["late", 53].status == "ELIGIBLE"
     assert found["zero", 29].status == "ELIGIBLE"
-    assert all(r.source_snapshot_id == "snapshot_1" and r.feature_version == "historical_v1"
-               for r in diagnostics)
+    assert all(
+        r.source_snapshot_id == "snapshot_1" and r.feature_version == "historical_v1"
+        for r in diagnostics
+    )
     emitted = {(r.item_id, r.target_date) for r in result.features.collect()}
     assert emitted == {(r.item_id, r.target_date) for r in diagnostics if r.status == "ELIGIBLE"}
     coverage = result.coverage.collect()
@@ -223,8 +291,11 @@ def test_eligibility_uses_calendar_days_reports_gaps_and_recovers(spark):
     )
     assert sum(r.price_missing_count for r in coverage) == len(rows)
     for group in coverage:
-        expected = [r for r in diagnostics
-                    if (r.feature_role, r.status) == (group.feature_role, group.status)]
+        expected = [
+            r
+            for r in diagnostics
+            if (r.feature_role, r.status) == (group.feature_role, group.status)
+        ]
         assert group.observed_count == len(expected)
         assert group.candidate_count == group.eligible_count + group.excluded_count
         assert group.source_snapshot_id == "snapshot_1"
@@ -238,8 +309,12 @@ def test_role_boundaries_include_context_and_final_labeled_day(spark):
     roles = {day: row.feature_role for day, row in features.items()}
     assert 28 not in roles
     assert {day: roles[day] for day in (29, 1885, 1886, 1913, 1914, 1941)} == {
-        29: "train", 1885: "train", 1886: "validation", 1913: "validation",
-        1914: "test", 1941: "test",
+        29: "train",
+        1885: "train",
+        1886: "validation",
+        1913: "validation",
+        1914: "test",
+        1941: "test",
     }
     # Warmup for a supplied late segment is excluded rather than filled from older rows.
     assert 1857 not in roles and 1884 not in roles
@@ -249,8 +324,9 @@ def test_role_boundaries_include_context_and_final_labeled_day(spark):
         assert features[day].label == day
 
 
-@pytest.mark.parametrize("days", [range(1, 29), range(100, 110), []],
-                         ids=["lookback-only", "truncated", "empty"])
+@pytest.mark.parametrize(
+    "days", [range(1, 29), range(100, 110), []], ids=["lookback-only", "truncated", "empty"]
+)
 def test_zero_eligible_outputs_keep_contract_schema(spark, days):
     result = _build(_frame(spark, _rows(days)))
     assert tuple(result.features.columns) == FORECAST_FEATURES.field_names
@@ -259,17 +335,37 @@ def test_zero_eligible_outputs_keep_contract_schema(spark, days):
     assert sum(r.observed_count for r in result.coverage.collect()) == len(days)
 
 
-@pytest.mark.parametrize("field,value", [
-    ("unit_sales", -1), ("unit_sales", None), ("date", None),
-    ("day_key", "d_01"), ("day_key", "d_bad"), ("day_key", "d_" + "9" * 40),
-    ("day_index", 0), ("day_index", 1942), ("day_key", "d_2"),
-    ("sell_price", float("nan")), ("sell_price", float("inf")),
-    ("sell_price", float("-inf")), ("sell_price", 0.0), ("sell_price", -1.0),
-    ("price_missing", True), ("price_missing", None), ("is_zero_sale", True),
-    ("item_id", " "), ("store_id", None), ("state_id", "NY"),
-    ("event_name_1", " "), ("wm_yr_wk", -1), ("wday", 0),
-    ("month", 13), ("year", 0), ("snap_applicable", None),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("unit_sales", -1),
+        ("unit_sales", None),
+        ("date", None),
+        ("day_key", "d_01"),
+        ("day_key", "d_bad"),
+        ("day_key", "d_" + "9" * 40),
+        ("day_index", 0),
+        ("day_index", 1942),
+        ("day_key", "d_2"),
+        ("sell_price", float("nan")),
+        ("sell_price", float("inf")),
+        ("sell_price", float("-inf")),
+        ("sell_price", 0.0),
+        ("sell_price", -1.0),
+        ("price_missing", True),
+        ("price_missing", None),
+        ("is_zero_sale", True),
+        ("item_id", " "),
+        ("store_id", None),
+        ("state_id", "NY"),
+        ("event_name_1", " "),
+        ("wm_yr_wk", -1),
+        ("wday", 0),
+        ("month", 13),
+        ("year", 0),
+        ("snap_applicable", None),
+    ],
+)
 def test_corrupt_observations_are_rejected_eagerly(spark, field, value):
     rows = _rows(range(1, 3))
     rows[0][field] = value
@@ -277,10 +373,20 @@ def test_corrupt_observations_are_rejected_eagerly(spark, field, value):
         _build(_frame(spark, rows))
 
 
-@pytest.mark.parametrize("kind", [
-    "duplicate", "duplicate-date", "mapping-across-series", "wrong-spacing",
-    "dept", "category", "state", "series", "ambiguous-series",
-])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "duplicate",
+        "duplicate-date",
+        "mapping-across-series",
+        "wrong-spacing",
+        "dept",
+        "category",
+        "state",
+        "series",
+        "ambiguous-series",
+    ],
+)
 def test_duplicate_mapping_and_metadata_corruption_are_rejected(spark, kind):
     rows = _rows(range(1, 4))
     if kind == "duplicate":
@@ -298,15 +404,18 @@ def test_duplicate_mapping_and_metadata_corruption_are_rejected(spark, kind):
         extra[0]["series_id"] = rows[0]["series_id"]
         rows += extra
     else:
-        field = {"dept": "dept_id", "category": "cat_id", "state": "state_id",
-                 "series": "series_id"}[kind]
+        field = {
+            "dept": "dept_id",
+            "category": "cat_id",
+            "state": "state_id",
+            "series": "series_id",
+        }[kind]
         rows[1][field] = "TX" if kind == "state" else "changed"
     # Keep recorded calendar fields valid so these checks exercise mapping and
     # grain integrity rather than an unrelated source-calendar-field failure.
     for row in rows:
         target = row["date"]
-        row.update(wday=(target.weekday() + 2) % 7 + 1,
-                   month=target.month, year=target.year)
+        row.update(wday=(target.weekday() + 2) % 7 + 1, month=target.month, year=target.year)
     with pytest.raises(HistoricalFeatureError):
         _build(_frame(spark, rows))
 
@@ -316,22 +425,31 @@ def test_future_canonical_day_is_rejected_even_with_consistent_calendar_and_key(
         _build(_frame(spark, _rows(range(1941, 1943))))
 
 
-@pytest.mark.parametrize("mutation", [
-    lambda frame: frame.drop("event_type_2"),
-    lambda frame: frame.withColumn("extra", F.lit(1)),
-    lambda frame: frame.withColumn("unit_sales", F.col("unit_sales").cast("int")),
-    lambda frame: frame.select(*reversed(frame.columns)),
-    lambda frame: frame.select("*", F.col("item_id")),
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda frame: frame.drop("event_type_2"),
+        lambda frame: frame.withColumn("extra", F.lit(1)),
+        lambda frame: frame.withColumn("unit_sales", F.col("unit_sales").cast("int")),
+        lambda frame: frame.select(*reversed(frame.columns)),
+        lambda frame: frame.select("*", F.col("item_id")),
+    ],
+)
 def test_exact_input_schema_is_required(spark, mutation):
     with pytest.raises(HistoricalFeatureError):
         _build(mutation(_frame(spark, _rows(range(1, 2)))))
 
 
-@pytest.mark.parametrize("name,value", [
-    ("source_snapshot_id", ""), ("source_snapshot_id", "  "),
-    ("source_snapshot_id", None), ("feature_version", "\t"), ("feature_version", 1),
-])
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("source_snapshot_id", ""),
+        ("source_snapshot_id", "  "),
+        ("source_snapshot_id", None),
+        ("feature_version", "\t"),
+        ("feature_version", 1),
+    ],
+)
 def test_explicit_nonblank_lineage_is_required(spark, name, value):
     kwargs = {"source_snapshot_id": "snapshot_1", "feature_version": "historical_v1"}
     kwargs[name] = value

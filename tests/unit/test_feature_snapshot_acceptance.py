@@ -19,9 +19,13 @@ def spark():
     os.environ.setdefault("SPARK_LOCAL_IP", "127.0.0.1")
     from pyspark.sql import SparkSession
 
-    session = (SparkSession.builder.master("local[2]").appName("j04-acceptance-local")
-               .config("spark.ui.enabled", "false")
-               .config("spark.sql.shuffle.partitions", "2").getOrCreate())
+    session = (
+        SparkSession.builder.master("local[2]")
+        .appName("j04-acceptance-local")
+        .config("spark.ui.enabled", "false")
+        .config("spark.sql.shuffle.partitions", "2")
+        .getOrCreate()
+    )
     yield session
     session.stop()
 
@@ -30,14 +34,23 @@ def source_fixture(spark):
     rows = []
     for item in ("ordinary", "late-price", "zero"):
         for day in range(1, 31):
-            price = (float(day) if day in (2, 20, 29, 30) else None)
+            price = float(day) if day in (2, 20, 29, 30) else None
             if item == "late-price":
                 price = 999.0 if day >= 29 else None
-            rows.append((item, "CA_1", "dept", day,
-                         support.FIRST_DATE + timedelta(days=day - 1),
-                         0 if item == "zero" else day * day, price))
+            rows.append(
+                (
+                    item,
+                    "CA_1",
+                    "dept",
+                    day,
+                    support.FIRST_DATE + timedelta(days=day - 1),
+                    0 if item == "zero" else day * day,
+                    price,
+                )
+            )
     return spark.createDataFrame(
-        rows, "item_id string, store_id string, dept_id string, day_index int, "
+        rows,
+        "item_id string, store_id string, dept_id string, day_index int, "
         "date date, unit_sales long, sell_price double",
     )
 
@@ -58,20 +71,37 @@ def test_oracle_hand_calculation_and_point_in_time(spark):
     assert rows["late-price", d29].price_missing is True
     assert rows["late-price", d30].last_known_price == 999.0
     assert rows["zero", d29].rolling_mean_28 == 0
-    assert (row.feature_role, row.as_of_date, row.day_of_week, row.month,
-            row.is_weekend, row.event_flag) == ("train", d29 - timedelta(days=1), 6, 2, True, False)
+    assert (
+        row.feature_role,
+        row.as_of_date,
+        row.day_of_week,
+        row.month,
+        row.is_weekend,
+        row.event_flag,
+    ) == ("train", d29 - timedelta(days=1), 6, 2, True, False)
     assert verify_oracle(source, expected, "snapshot", "version")["compared_rows"] == 6
 
 
-@pytest.mark.parametrize("field,value", [
-    ("lag_1", "0L"), ("lag_7", "0L"), ("lag_28", "0L"),
-    ("rolling_mean_7", "0D"), ("rolling_mean_28", "0D"),
-    ("label", "NULL"), ("last_known_price", "NULL"),
-    ("feature_role", "'test'"), ("event_flag", "true"),
-    ("price_missing", "true"), ("as_of_date", "target_date"),
-    ("day_of_week", "0"), ("month", "1"), ("is_weekend", "false"),
-    ("rolling_mean_28", "CAST('Infinity' AS DOUBLE)"),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("lag_1", "0L"),
+        ("lag_7", "0L"),
+        ("lag_28", "0L"),
+        ("rolling_mean_7", "0D"),
+        ("rolling_mean_28", "0D"),
+        ("label", "NULL"),
+        ("last_known_price", "NULL"),
+        ("feature_role", "'test'"),
+        ("event_flag", "true"),
+        ("price_missing", "true"),
+        ("as_of_date", "target_date"),
+        ("day_of_week", "0"),
+        ("month", "1"),
+        ("is_weekend", "false"),
+        ("rolling_mean_28", "CAST('Infinity' AS DOUBLE)"),
+    ],
+)
 def test_oracle_rejects_semantic_corruption(spark, field, value):
     from pyspark.sql import functions as F
 
@@ -85,22 +115,32 @@ def test_oracle_rejects_semantic_corruption(spark, field, value):
 def test_oracle_covers_keys_beyond_ten_thousand(spark):
     from pyspark.sql import functions as F
 
-    source = (spark.range(5002).crossJoin(spark.range(1, 31).toDF("day_index"))
-              .select(F.col("id").cast("string").alias("item_id"),
-                      F.lit("CA_1").alias("store_id"), F.lit("dept").alias("dept_id"),
-                      F.col("day_index").cast("int"),
-                      F.date_add(F.lit(support.FIRST_DATE), (F.col("day_index") - 1).cast("int"))
-                      .alias("date"), F.col("day_index").alias("unit_sales"),
-                      F.lit(2.0).alias("sell_price")))
+    source = (
+        spark.range(5002)
+        .crossJoin(spark.range(1, 31).toDF("day_index"))
+        .select(
+            F.col("id").cast("string").alias("item_id"),
+            F.lit("CA_1").alias("store_id"),
+            F.lit("dept").alias("dept_id"),
+            F.col("day_index").cast("int"),
+            F.date_add(F.lit(support.FIRST_DATE), (F.col("day_index") - 1).cast("int")).alias(
+                "date"
+            ),
+            F.col("day_index").alias("unit_sales"),
+            F.lit(2.0).alias("sell_price"),
+        )
+    )
     features = expected_features(source, "s", "v").cache()
     assert features.count() == 10004
     try:
-        damaged = features.withColumn("lag_28", F.when(F.col("item_id") == "5001", -1)
-                                      .otherwise(F.col("lag_28")))
+        damaged = features.withColumn(
+            "lag_28", F.when(F.col("item_id") == "5001", -1).otherwise(F.col("lag_28"))
+        )
         with pytest.raises(AssertionError, match="Independent oracle"):
             verify_oracle(source, damaged, "s", "v")
-        changed_keys = features.withColumn("item_id", F.when(F.col("item_id") == "5001", "extra")
-                                           .otherwise(F.col("item_id")))
+        changed_keys = features.withColumn(
+            "item_id", F.when(F.col("item_id") == "5001", "extra").otherwise(F.col("item_id"))
+        )
         with pytest.raises(AssertionError, match="Independent oracle"):
             verify_oracle(source, changed_keys, "s", "v")
     finally:
@@ -110,8 +150,12 @@ def test_oracle_covers_keys_beyond_ten_thousand(spark):
 def events():
     yield {"Event": "SparkListenerApplicationStart", "App ID": "app-test"}
     for host in ("spark-worker-1", "spark-worker-2"):
-        yield {"Event": "SparkListenerTaskEnd", "Task End Reason": {"Reason": "Success"},
-               "Task Info": {"Host": host}, "Task Metrics": {"JVM GC Time": 3}}
+        yield {
+            "Event": "SparkListenerTaskEnd",
+            "Task End Reason": {"Reason": "Success"},
+            "Task Info": {"Host": host},
+            "Task Metrics": {"JVM GC Time": 3},
+        }
 
 
 def test_event_evidence_streams_and_requires_both_workers():
@@ -135,7 +179,8 @@ def test_remote_event_evidence_is_streamed_and_missing_files_fail(monkeypatch):
     client = SimpleNamespace(
         list_status=lambda path: [{"path": path + "/app", "type": "FILE"}],
         checksums=lambda paths: dict.fromkeys(paths, "fresh"),
-        command_prefix=(), hdfs_command="hdfs",
+        command_prefix=(),
+        hdfs_command="hdfs",
     )
 
     def stream(args, **kwargs):
@@ -153,25 +198,36 @@ def test_remote_event_evidence_is_streamed_and_missing_files_fail(monkeypatch):
 
 
 def test_command_output_is_bounded_and_timeout_is_diagnostic():
-    result = command([sys.executable, "-c", "print('x' * 500000); print('END')"],
-                     operation="metadata", timeout=5)
+    result = command(
+        [sys.executable, "-c", "print('x' * 500000); print('END')"], operation="metadata", timeout=5
+    )
     assert len(result.stdout.encode()) <= 256 * 1024
     assert result.stdout.endswith("END\n")
     with pytest.raises(CommandError, match="readback.*timed out.*0.1s") as error:
-        command([sys.executable, "-u", "-c", "import time; print('diagnostic'); time.sleep(30)"],
-                operation="readback", timeout=0.1)
+        command(
+            [sys.executable, "-u", "-c", "import time; print('diagnostic'); time.sleep(30)"],
+            operation="readback",
+            timeout=0.1,
+        )
     assert "diagnostic" in str(error.value)
     assert "process group" in str(error.value)
 
 
 def test_command_failure_and_partial_line_are_diagnostic():
     with pytest.raises(CommandError, match="publication exited 7.*") as error:
-        command([sys.executable, "-c", "import sys; print('publisher failed'); sys.exit(7)"],
-                operation="publication", timeout=5)
+        command(
+            [sys.executable, "-c", "import sys; print('publisher failed'); sys.exit(7)"],
+            operation="publication",
+            timeout=5,
+        )
     assert "publisher failed" in str(error.value)
     seen = []
-    command([sys.executable, "-c", "import sys; sys.stdout.write('no newline')"],
-            operation="metadata", timeout=5, on_stdout_line=seen.append)
+    command(
+        [sys.executable, "-c", "import sys; sys.stdout.write('no newline')"],
+        operation="metadata",
+        timeout=5,
+        on_stdout_line=seen.append,
+    )
     assert seen == [b"no newline"]
 
 
@@ -180,10 +236,15 @@ def test_command_cleans_owned_container_on_interrupt(monkeypatch):
 
     cleaned = []
     monkeypatch.setattr(runtime, "cleanup_container", lambda owned: cleaned.append(owned))
-    monkeypatch.setattr(runtime, "_drain", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr(
+        runtime, "_drain", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt())
+    )
     with pytest.raises(KeyboardInterrupt):
-        command([sys.executable, "-c", "import time; time.sleep(30)"],
-                operation="publication", owned=("test-container", "token"))
+        command(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            operation="publication",
+            owned=("test-container", "token"),
+        )
     assert cleaned == [("test-container", "token")]
 
 
@@ -191,12 +252,18 @@ def test_timeout_terminates_spawned_children():
     from pathlib import Path
 
     child_pids = []
-    code = ("import subprocess, sys, time; "
-            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
-            "print(p.pid, flush=True); time.sleep(30)")
+    code = (
+        "import subprocess, sys, time; "
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+        "print(p.pid, flush=True); time.sleep(30)"
+    )
     with pytest.raises(CommandError):
-        command([sys.executable, "-u", "-c", code], operation="initial", timeout=0.3,
-                on_stdout_line=lambda line: child_pids.append(int(line)))
+        command(
+            [sys.executable, "-u", "-c", code],
+            operation="initial",
+            timeout=0.3,
+            on_stdout_line=lambda line: child_pids.append(int(line)),
+        )
     assert len(child_pids) == 1
     # A killed child may briefly be a zombie awaiting the system subreaper.
     status = Path(f"/proc/{child_pids[0]}/stat")
@@ -215,8 +282,11 @@ def test_sigterm_runs_owned_cleanup(monkeypatch):
 
     monkeypatch.setattr(runtime, "_drain", terminate)
     with pytest.raises(KeyboardInterrupt, match="SIGTERM"):
-        command([sys.executable, "-c", "import time; time.sleep(30)"],
-                operation="publication", owned=("owned", "token"))
+        command(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            operation="publication",
+            owned=("owned", "token"),
+        )
     assert cleaned == [("owned", "token")]
     assert signal.getsignal(signal.SIGTERM) == old_handler
 
@@ -267,15 +337,22 @@ def test_recovery_is_owner_only_and_never_falls_through(monkeypatch):
     monkeypatch.setattr(support, "driver", lambda *a, **k: pytest.fail("Unexpected computation"))
     assert support.submit("s", "snap", "up", "v", "run", recovery=True) == "recovered"
     assert len(calls) == 1
-    monkeypatch.setattr(support, "publish", lambda *a, **k: SimpleNamespace(returncode=0, stdout=""))
+    monkeypatch.setattr(
+        support, "publish", lambda *a, **k: SimpleNamespace(returncode=0, stdout="")
+    )
     with pytest.raises(AssertionError, match="frozen"):
         support.submit("s", "snap", "up", "v", "run", recovery=True)
 
 
 def test_incomplete_run_cannot_launch_driver(monkeypatch):
-    monkeypatch.setattr(support, "publish", lambda *a, **k: SimpleNamespace(returncode=0, stdout=""))
-    monkeypatch.setattr(support, "owner", lambda *a, **k: (_ for _ in ()).throw(
-        AssertionError("existing execution evidence")))
+    monkeypatch.setattr(
+        support, "publish", lambda *a, **k: SimpleNamespace(returncode=0, stdout="")
+    )
+    monkeypatch.setattr(
+        support,
+        "owner",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("existing execution evidence")),
+    )
     monkeypatch.setattr(support, "driver", lambda *a, **k: pytest.fail("Unexpected computation"))
     with pytest.raises(AssertionError, match="existing execution evidence"):
         support.submit("s", "snap", "up", "v", "run")
@@ -322,44 +399,89 @@ def test_document_digest_and_frozen_schema():
     import hashlib
 
     assert support.document_digest({"b": 2, "a": 1}) == (
-        "sha256:" + hashlib.sha256(b'{"a":1,"b":2}\n').hexdigest())
+        "sha256:" + hashlib.sha256(b'{"a":1,"b":2}\n').hexdigest()
+    )
     schema = support.logical_schema()
     assert [f["name"] for f in schema if f["nullable"]] == ["last_known_price", "label"]
 
 
 def frozen_documents():
-    binding = {"schema_version": "feature-input-binding-v1", "pipeline_run_id": "run",
-               "source_version": "source", "source_snapshot_id": "snapshot",
-               "feature_version": "v", "upstream_pipeline_run_id": "upstream",
-               "code_revision": "sha256:old-packaged-revision", "effective_configuration": {},
-               "configuration_digest": support.document_digest({}), "artifact_uri": "hdfs://features",
-               "upstream_evidence": {"source_version": "source", "source_snapshot_id": "snapshot",
-                                     "pipeline_run_id": "upstream", "row_count": 914700,
-                                     "upstream_pipeline_run_id": "raw-run"}}
-    metrics = {"row_count": 60980, "observed_count": 914700, "candidate_count": 60980,
-               "eligible_count": 60980, "excluded_count": 0, "lookback_only_count": 853720,
-               "role_counts": {"train": 60980, "validation": 0, "test": 0},
-               "persisted_parquet_validated": True, "required_field_null_counts": {
-                   n: 0 for n, _ in support.FEATURE_SCHEMA if n != "last_known_price"}}
+    binding = {
+        "schema_version": "feature-input-binding-v1",
+        "pipeline_run_id": "run",
+        "source_version": "source",
+        "source_snapshot_id": "snapshot",
+        "feature_version": "v",
+        "upstream_pipeline_run_id": "upstream",
+        "code_revision": "sha256:old-packaged-revision",
+        "effective_configuration": {},
+        "configuration_digest": support.document_digest({}),
+        "artifact_uri": "hdfs://features",
+        "upstream_evidence": {
+            "source_version": "source",
+            "source_snapshot_id": "snapshot",
+            "pipeline_run_id": "upstream",
+            "row_count": 914700,
+            "upstream_pipeline_run_id": "raw-run",
+        },
+    }
+    metrics = {
+        "row_count": 60980,
+        "observed_count": 914700,
+        "candidate_count": 60980,
+        "eligible_count": 60980,
+        "excluded_count": 0,
+        "lookback_only_count": 853720,
+        "role_counts": {"train": 60980, "validation": 0, "test": 0},
+        "persisted_parquet_validated": True,
+        "required_field_null_counts": {
+            n: 0 for n, _ in support.FEATURE_SCHEMA if n != "last_known_price"
+        },
+    }
     inventory = [{"path": "part.parquet", "size_bytes": 123, "checksum": "actual"}]
-    common = {"schema": support.logical_schema(), "schema_fingerprint": support.document_digest(
-        {"schema": support.logical_schema()}), "persisted_parquet_validated": True,
-        "status": "VALIDATED", "file_integrity": inventory, "metrics": metrics}
-    sidecar = {**binding, **common, "schema_version": "feature-dataset-manifest-v1",
-               "input_binding": binding, "row_count": 60980}
-    quality = {**binding, **common, "producing_pipeline_run_id": "run",
-               "spark_application_id": "app-test"}
-    coverage = {"binding_digest": support.document_digest(binding),
-                "quality_digest": support.document_digest(quality),
-                "dataset_manifest_digest": support.document_digest(sidecar),
-                "producing_pipeline_run_id": "run", "publication_complete": True,
-                "persisted_parquet_validated": True, "file_integrity": inventory,
-                "metrics": metrics, "feature_version": "v", "upstream_pipeline_run_id": "upstream",
-                "dataset_manifest_uri": "hdfs://features/_dataset_manifest.json"}
-    marker = {**binding, "schema_fingerprint": common["schema_fingerprint"],
-              "status": "VALIDATED", "producer": "warehouse-bigdata:feature-snapshot",
-              "row_count": 60980, "coverage_and_exclusion_counts": json.dumps(coverage),
-              "required_field_null_counts": json.dumps(metrics["required_field_null_counts"])}
+    common = {
+        "schema": support.logical_schema(),
+        "schema_fingerprint": support.document_digest({"schema": support.logical_schema()}),
+        "persisted_parquet_validated": True,
+        "status": "VALIDATED",
+        "file_integrity": inventory,
+        "metrics": metrics,
+    }
+    sidecar = {
+        **binding,
+        **common,
+        "schema_version": "feature-dataset-manifest-v1",
+        "input_binding": binding,
+        "row_count": 60980,
+    }
+    quality = {
+        **binding,
+        **common,
+        "producing_pipeline_run_id": "run",
+        "spark_application_id": "app-test",
+    }
+    coverage = {
+        "binding_digest": support.document_digest(binding),
+        "quality_digest": support.document_digest(quality),
+        "dataset_manifest_digest": support.document_digest(sidecar),
+        "producing_pipeline_run_id": "run",
+        "publication_complete": True,
+        "persisted_parquet_validated": True,
+        "file_integrity": inventory,
+        "metrics": metrics,
+        "feature_version": "v",
+        "upstream_pipeline_run_id": "upstream",
+        "dataset_manifest_uri": "hdfs://features/_dataset_manifest.json",
+    }
+    marker = {
+        **binding,
+        "schema_fingerprint": common["schema_fingerprint"],
+        "status": "VALIDATED",
+        "producer": "warehouse-bigdata:feature-snapshot",
+        "row_count": 60980,
+        "coverage_and_exclusion_counts": json.dumps(coverage),
+        "required_field_null_counts": json.dumps(metrics["required_field_null_counts"]),
+    }
     return marker, sidecar, binding, quality, {"version": 1, "manifest": marker}, inventory
 
 
@@ -384,15 +506,18 @@ def test_independent_frozen_evidence_rejects_corruption(corruption):
     else:
         request = {"version": 1, "manifest": {}}
     with pytest.raises(AssertionError):
-        support.check_frozen_execution(marker, sidecar, binding, quality, request, inventory,
-                                       run="run", producer="run")
+        support.check_frozen_execution(
+            marker, sidecar, binding, quality, request, inventory, run="run", producer="run"
+        )
 
 
 def test_inventory_checks_actual_files_and_rejects_missing_checksums():
     class Client:
         def list_status(self, root):
-            return [{"path": root + "/part.parquet", "type": "FILE", "length": 123},
-                    {"path": root + "/_dataset_manifest.json", "type": "FILE", "length": 10}]
+            return [
+                {"path": root + "/part.parquet", "type": "FILE", "length": 123},
+                {"path": root + "/_dataset_manifest.json", "type": "FILE", "length": 10},
+            ]
 
         def checksums(self, paths):
             assert paths == ["/artifact/part.parquet"]
@@ -400,8 +525,8 @@ def test_inventory_checks_actual_files_and_rejects_missing_checksums():
 
     client = Client()
     assert support.artifact_inventory(client, "/artifact") == [
-        {"path": "part.parquet", "size_bytes": 123, "checksum": "fresh-hdfs-checksum"}]
+        {"path": "part.parquet", "size_bytes": 123, "checksum": "fresh-hdfs-checksum"}
+    ]
     client.checksums = lambda paths: {}
     with pytest.raises(AssertionError, match="checksums"):
         support.artifact_inventory(client, "/artifact")
-

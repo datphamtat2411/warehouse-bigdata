@@ -29,8 +29,11 @@ from tests.integration.feature_snapshot_support import (
 )
 
 pytestmark = pytest.mark.integration
-SOURCE_KEYS = ("WAREHOUSE_M05_SOURCE_VERSION", "WAREHOUSE_M05_SOURCE_SNAPSHOT_ID",
-               "WAREHOUSE_M05_UPSTREAM_PIPELINE_RUN_ID")
+SOURCE_KEYS = (
+    "WAREHOUSE_M05_SOURCE_VERSION",
+    "WAREHOUSE_M05_SOURCE_SNAPSHOT_ID",
+    "WAREHOUSE_M05_UPSTREAM_PIPELINE_RUN_ID",
+)
 PUBLISHED_VERSION = "m05-t03-c6f64eafc80744e6ae94adb05bb84385"
 PUBLISHED_RUN = "j04-c6f64eafc80744e6ae94adb05bb84385"
 
@@ -51,8 +54,11 @@ def test_published_feature_snapshot(tmp_path):
     assert result["producer"] == producer, "Published selector must identify the original producer"
     if version == PUBLISHED_VERSION:
         assert len(result["file_integrity"]) == 34, "Existing publication inventory changed"
-    evidence = {"publication": result, "live_reuse_exercised": False,
-                "same_run_recovery_exercised": False}
+    evidence = {
+        "publication": result,
+        "live_reuse_exercised": False,
+        "same_run_recovery_exercised": False,
+    }
     path = tmp_path / "j04-published-evidence.json"
     path.write_text(json.dumps(evidence, sort_keys=True, indent=2))
     print(f"J04 published-only evidence: {path}")
@@ -64,10 +70,17 @@ def test_live_feature_snapshot_lifecycle(tmp_path):
     token = uuid4().hex
     version, run, reuse = "m05-fix02-" + token, "j04-" + token, "j04-reuse-" + token
     path = tmp_path / "j04-lifecycle-evidence.json"
-    evidence = {"source_version": source, "source_snapshot_id": snapshot,
-                "upstream_pipeline_run_id": upstream, "feature_version": version,
-                "producing_run": run, "reuse_run": reuse, "phase": "prepared",
-                "live_reuse_exercised": False, "same_run_recovery_exercised": False}
+    evidence = {
+        "source_version": source,
+        "source_snapshot_id": snapshot,
+        "upstream_pipeline_run_id": upstream,
+        "feature_version": version,
+        "producing_run": run,
+        "reuse_run": reuse,
+        "phase": "prepared",
+        "live_reuse_exercised": False,
+        "same_run_recovery_exercised": False,
+    }
 
     def checkpoint(phase):
         evidence["phase"] = phase
@@ -77,7 +90,8 @@ def test_live_feature_snapshot_lifecycle(tmp_path):
     print(f"J04 lifecycle evidence / recovery identities: {path}", flush=True)
     try:
         command(["bash", "scripts/spark-cluster.sh", "check"], operation="metadata")
-        owner("""
+        owner(
+            """
 import json, sys
 from warehouse_bigdata.common.hdfs_client import HdfsCliClient
 from warehouse_bigdata.common.config import load_hdfs_config
@@ -98,30 +112,59 @@ for run in sys.argv[4:]:
     c.mkdir_exclusive(base + '/events')
     prepare_spark_run_permissions(c, config, pipeline_run_id=run,
         event_log_dir=config.uri + base + '/events', verify_effective_access=False)
-""", source, snapshot, upstream, run, reuse)
+""",
+            source,
+            snapshot,
+            upstream,
+            run,
+            reuse,
+        )
         checkpoint("initial_publication")
         evidence["submission"] = submit(source, snapshot, upstream, version, run)
         before = independent_probe(source, snapshot, upstream, version, run)
         assert before["producer"] == run
         evidence["initial"] = before
         checkpoint("live_reuse")
-        evidence["reuse_submission"] = submit(source, snapshot, upstream, version, reuse, reuse=True)
+        evidence["reuse_submission"] = submit(
+            source, snapshot, upstream, version, reuse, reuse=True
+        )
         after = independent_probe(source, snapshot, upstream, version, reuse, full=False)
         assert after["execution_run"] == reuse
         assert after["execution_runtime"]["application_id"] != before["runtime"]["application_id"]
-        for key in ("file_integrity", "sidecar_sha256", "producer_completion_sha256", "producer",
-                    "code_revision", "runtime"):
+        for key in (
+            "file_integrity",
+            "sidecar_sha256",
+            "producer_completion_sha256",
+            "producer",
+            "code_revision",
+            "runtime",
+        ):
             assert after[key] == before[key], f"Live reuse changed {key}"
         evidence["reuse"] = after
         evidence["live_reuse_exercised"] = True
         checkpoint("frozen_same_run_recovery")
         evidence["recovery_submission"] = submit(
-            source, snapshot, upstream, version, run, recovery=True,
+            source,
+            snapshot,
+            upstream,
+            version,
+            run,
+            recovery=True,
         )
         recovery = independent_probe(source, snapshot, upstream, version, run, full=False)
-        for key in ("file_integrity", "sidecar_sha256", "completion_sha256",
-                    "producer_completion_sha256", "producer", "binding_digest", "quality_digest",
-                    "request_digest", "frozen_metadata_sha256", "code_revision", "runtime"):
+        for key in (
+            "file_integrity",
+            "sidecar_sha256",
+            "completion_sha256",
+            "producer_completion_sha256",
+            "producer",
+            "binding_digest",
+            "quality_digest",
+            "request_digest",
+            "frozen_metadata_sha256",
+            "code_revision",
+            "runtime",
+        ):
             assert recovery[key] == before[key], f"Frozen same-run recovery changed {key}"
         evidence["recovery"] = recovery
         evidence["same_run_recovery_exercised"] = True

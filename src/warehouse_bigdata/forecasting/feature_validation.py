@@ -16,11 +16,28 @@ if TYPE_CHECKING:
 
 
 FEATURE_TYPES = (
-    *("string",) * 6, "date", "date", "bigint", "bigint", "bigint",
-    "double", "double", "int", "int", "boolean", "boolean", "boolean", "double", "bigint",
+    *("string",) * 6,
+    "date",
+    "date",
+    "bigint",
+    "bigint",
+    "bigint",
+    "double",
+    "double",
+    "int",
+    "int",
+    "boolean",
+    "boolean",
+    "boolean",
+    "double",
+    "bigint",
 )
-SCOPED_KEY = ("source_snapshot_id", "feature_version", "feature_role",
-              *FORECAST_FEATURES.unique_key)
+SCOPED_KEY = (
+    "source_snapshot_id",
+    "feature_version",
+    "feature_role",
+    *FORECAST_FEATURES.unique_key,
+)
 _DIAGNOSTIC_KEY = ("source_snapshot_id", "feature_version", "item_id", "store_id", "target_date")
 _GROUPS = ("source_snapshot_id", "feature_version", "feature_role", "status")
 _COUNTS = ("observed_count", "candidate_count", "eligible_count", "excluded_count")
@@ -33,8 +50,10 @@ class FeatureValidationError(ValueError):
 
 def typed_feature_schema() -> list[dict]:
     """Fingerprint input: ordered names, exact Spark types, and logical v1 nullability."""
-    return [{"name": field.name, "type": kind, "nullable": field.nullable}
-            for field, kind in zip(FORECAST_FEATURES.fields, FEATURE_TYPES, strict=True)]
+    return [
+        {"name": field.name, "type": kind, "nullable": field.nullable}
+        for field, kind in zip(FORECAST_FEATURES.fields, FEATURE_TYPES, strict=True)
+    ]
 
 
 def _reject_rows(frame, message):
@@ -75,9 +94,14 @@ def validate_persisted_feature_snapshot(
         raise FeatureValidationError("persisted feature physical types differ from T01")
     persisted = persisted.select(*fields)
     required = (*FORECAST_FEATURES.required_field_names, "label")
-    summary = persisted.agg(F.count("*").alias("row_count"), *[
-        F.count(F.when(F.col(name).isNull(), 1)).alias(name) for name in required
-    ]).first().asDict()
+    summary = (
+        persisted.agg(
+            F.count("*").alias("row_count"),
+            *[F.count(F.when(F.col(name).isNull(), 1)).alias(name) for name in required],
+        )
+        .first()
+        .asDict()
+    )
     count = summary.pop("row_count")
     if count == 0:
         raise FeatureValidationError("an empty eligible feature artifact is not publishable")
@@ -97,46 +121,77 @@ def validate_persisted_feature_snapshot(
         F.col("event_flag"),
         F.col("price_missing") != F.col("last_known_price").isNull(),
         *[F.col(name) < 0 for name in ("lag_1", "lag_7", "lag_28", "label")],
-        *[(F.col(name) < 0) | F.isnan(name) | (F.abs(F.col(name)) > 1.7976931348623157e308)
-          for name in ("rolling_mean_7", "rolling_mean_28")],
-        F.col("last_known_price").isNotNull() & (
-            (F.col("last_known_price") <= 0) | F.isnan("last_known_price")
-            | (F.abs(F.col("last_known_price")) > 1.7976931348623157e308)),
+        *[
+            (F.col(name) < 0) | F.isnan(name) | (F.abs(F.col(name)) > 1.7976931348623157e308)
+            for name in ("rolling_mean_7", "rolling_mean_28")
+        ],
+        F.col("last_known_price").isNotNull()
+        & (
+            (F.col("last_known_price") <= 0)
+            | F.isnan("last_known_price")
+            | (F.abs(F.col("last_known_price")) > 1.7976931348623157e308)
+        ),
     ]
     _reject_rows(persisted.where(reduce(or_, invalid)), "persisted historical feature invariant")
-    _reject_rows(persisted.groupBy(*SCOPED_KEY).count().where("count != 1"),
-                 "duplicate scoped feature keys")
+    _reject_rows(
+        persisted.groupBy(*SCOPED_KEY).count().where("count != 1"), "duplicate scoped feature keys"
+    )
     # This join checks original observed labels, department, and canonical split dates.
-    observed = source.select("item_id", "store_id", F.col("date").alias("target_date"),
-                             F.col("dept_id").alias("source_dept"), "day_index", "unit_sales")
+    observed = source.select(
+        "item_id",
+        "store_id",
+        F.col("date").alias("target_date"),
+        F.col("dept_id").alias("source_dept"),
+        "day_index",
+        "unit_sales",
+    )
     joined = persisted.join(observed, list(FORECAST_FEATURES.unique_key), "left")
     day = F.col("day_index")
-    role = (F.when(day.between(*TRAIN_DAYS), "train")
-            .when(day.between(*VALIDATION_DAYS), "validation")
-            .when(day.between(*TEST_DAYS), "test"))
-    _reject_rows(joined.where(
-        day.isNull() | ~F.col("feature_role").eqNullSafe(role)
-        | (F.col("dept_id") != F.col("source_dept"))
-        | (F.col("label") != F.col("unit_sales"))), "source label/department/split mismatch")
+    role = (
+        F.when(day.between(*TRAIN_DAYS), "train")
+        .when(day.between(*VALIDATION_DAYS), "validation")
+        .when(day.between(*TEST_DAYS), "test")
+    )
+    _reject_rows(
+        joined.where(
+            day.isNull()
+            | ~F.col("feature_role").eqNullSafe(role)
+            | (F.col("dept_id") != F.col("source_dept"))
+            | (F.col("label") != F.col("unit_sales"))
+        ),
+        "source label/department/split mismatch",
+    )
     _same_rows(persisted, expected.features, "persisted feature content reconciliation")
 
     eligibility = expected.eligibility
-    _reject_rows(eligibility.where(
-        ~F.col("status").isin(*_STATUSES) | F.col("status").isNull()
-        | (F.col("source_snapshot_id") != source_snapshot_id)
-        | (F.col("feature_version") != feature_version)), "invalid eligibility diagnostics")
+    _reject_rows(
+        eligibility.where(
+            ~F.col("status").isin(*_STATUSES)
+            | F.col("status").isNull()
+            | (F.col("source_snapshot_id") != source_snapshot_id)
+            | (F.col("feature_version") != feature_version)
+        ),
+        "invalid eligibility diagnostics",
+    )
     _same_rows(
         eligibility.select("item_id", "store_id", "target_date", "day_index"),
         source.select("item_id", "store_id", F.col("date").alias("target_date"), "day_index"),
         "observed scope/diagnostic reconciliation",
     )
-    _same_rows(persisted.select(*SCOPED_KEY),
-               eligibility.where("status = 'ELIGIBLE'").select(*SCOPED_KEY),
-               "eligible diagnostic key reconciliation")
-    _same_rows(exclusions, eligibility.where("status != 'ELIGIBLE'"),
-               "persisted exclusion diagnostic reconciliation")
-    _reject_rows(eligibility.groupBy(*_DIAGNOSTIC_KEY).count().where("count != 1"),
-                 "duplicate diagnostic key")
+    _same_rows(
+        persisted.select(*SCOPED_KEY),
+        eligibility.where("status = 'ELIGIBLE'").select(*SCOPED_KEY),
+        "eligible diagnostic key reconciliation",
+    )
+    _same_rows(
+        exclusions,
+        eligibility.where("status != 'ELIGIBLE'"),
+        "persisted exclusion diagnostic reconciliation",
+    )
+    _reject_rows(
+        eligibility.groupBy(*_DIAGNOSTIC_KEY).count().where("count != 1"),
+        "duplicate diagnostic key",
+    )
     candidate = F.col("feature_role").isNotNull()
     eligible = F.col("status") == "ELIGIBLE"
 
@@ -144,30 +199,51 @@ def validate_persisted_feature_snapshot(
         return F.count(F.when(condition, 1))
 
     reconciled = eligibility.groupBy(*_GROUPS).agg(
-        F.count("*").alias("observed_count"), count_if(candidate).alias("candidate_count"),
+        F.count("*").alias("observed_count"),
+        count_if(candidate).alias("candidate_count"),
         count_if(eligible).alias("eligible_count"),
         count_if(candidate & ~eligible).alias("excluded_count"),
     )
-    _same_rows(reconciled, expected.coverage.select(*_GROUPS, *_COUNTS),
-               "T01 coverage/reason reconciliation")
-    _reject_rows(expected.coverage.where(
-        (F.col("price_missing_count") < 0)
-        | (F.col("price_missing_count") > F.col("observed_count"))), "invalid price coverage")
+    _same_rows(
+        reconciled,
+        expected.coverage.select(*_GROUPS, *_COUNTS),
+        "T01 coverage/reason reconciliation",
+    )
+    _reject_rows(
+        expected.coverage.where(
+            (F.col("price_missing_count") < 0)
+            | (F.col("price_missing_count") > F.col("observed_count"))
+        ),
+        "invalid price coverage",
+    )
     groups = reconciled.limit(17).collect()
     if len(groups) > 16:
         raise FeatureValidationError("unbounded role/reason coverage")
     groups.sort(key=lambda row: (row.feature_role or "", row.status))
     totals = {field: sum(row[field] for row in groups) for field in _COUNTS}
     lookback = sum(row.observed_count for row in groups if row.status == "LOOKBACK_ONLY")
-    if (totals["observed_count"] != lookback + totals["candidate_count"]
-            or totals["candidate_count"] != totals["eligible_count"] + totals["excluded_count"]
-            or totals["eligible_count"] != count):
+    if (
+        totals["observed_count"] != lookback + totals["candidate_count"]
+        or totals["candidate_count"] != totals["eligible_count"] + totals["excluded_count"]
+        or totals["eligible_count"] != count
+    ):
         raise FeatureValidationError("coverage conservation failed")
-    roles = {role: sum(r.eligible_count for r in groups if r.feature_role == role)
-             for role in ("train", "validation", "test")}
-    reasons = {status: sum(r.observed_count for r in groups if r.status == status)
-               for status in _STATUSES if status != "ELIGIBLE"}
-    return {**totals, "row_count": count, "lookback_only_count": lookback,
-            "role_counts": roles, "reason_counts": reasons,
-            "required_field_null_counts": summary,
-            "coverage": [r.asDict() for r in groups], "persisted_parquet_validated": True}
+    roles = {
+        role: sum(r.eligible_count for r in groups if r.feature_role == role)
+        for role in ("train", "validation", "test")
+    }
+    reasons = {
+        status: sum(r.observed_count for r in groups if r.status == status)
+        for status in _STATUSES
+        if status != "ELIGIBLE"
+    }
+    return {
+        **totals,
+        "row_count": count,
+        "lookback_only_count": lookback,
+        "role_counts": roles,
+        "reason_counts": reasons,
+        "required_field_null_counts": summary,
+        "coverage": [r.asDict() for r in groups],
+        "persisted_parquet_validated": True,
+    }

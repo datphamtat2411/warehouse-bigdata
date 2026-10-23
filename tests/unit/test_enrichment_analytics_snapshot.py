@@ -422,12 +422,20 @@ def j04_upstream_bundle(spark, tmp_path_factory):
     quality_path = render_staging_path(BASE_PATH, UPSTREAM_RUN_ID) + "/quality_report.json"
     j02["quality_report_uri"] = str(hdfs._local(quality_path))
     hdfs._local(j02_path).write_text(json.dumps(j02))
-    hdfs.upload_bytes(json.dumps({
-        "status": "VALIDATED", "source_version": SOURCE_VERSION,
-        "source_snapshot_id": SOURCE_SNAPSHOT_ID, "pipeline_run_id": UPSTREAM_RUN_ID,
-        "raw_path": result.raw_path, "curated_path": result.sales_daily_path,
-        "measured": {"row_count": 4, "unit_sales_total": 6, "zero_sales_count": 2},
-    }).encode(), quality_path)
+    hdfs.upload_bytes(
+        json.dumps(
+            {
+                "status": "VALIDATED",
+                "source_version": SOURCE_VERSION,
+                "source_snapshot_id": SOURCE_SNAPSHOT_ID,
+                "pipeline_run_id": UPSTREAM_RUN_ID,
+                "raw_path": result.raw_path,
+                "curated_path": result.sales_daily_path,
+                "measured": {"row_count": 4, "unit_sales_total": 6, "zero_sales_count": 2},
+            }
+        ).encode(),
+        quality_path,
+    )
     patch.setattr(module, "_require_sealed_input", lambda *args: None)
     yield hdfs, config
     patch.undo()
@@ -438,8 +446,12 @@ def test_j04_public_reader_returns_verified_ordered_sales_and_evidence(spark, j0
 
     hdfs, config = j04_upstream_bundle
     frame, evidence = module.read_validated_sales_enriched_snapshot(
-        spark, source_version=SOURCE_VERSION, source_snapshot_id=SOURCE_SNAPSHOT_ID,
-        pipeline_run_id=PIPELINE_RUN_ID, hdfs_config=config, client=hdfs,
+        spark,
+        source_version=SOURCE_VERSION,
+        source_snapshot_id=SOURCE_SNAPSHOT_ID,
+        pipeline_run_id=PIPELINE_RUN_ID,
+        hdfs_config=config,
+        client=hdfs,
     )
     assert frame.count() == 4
     assert tuple(frame.columns) == module.SALES_ENRICHED.field_names
@@ -449,15 +461,15 @@ def test_j04_public_reader_returns_verified_ordered_sales_and_evidence(spark, j0
 
 
 def test_j04_public_reader_digests_immutable_raw_manifests(
-    spark, j04_upstream_bundle, monkeypatch,
+    spark,
+    j04_upstream_bundle,
+    monkeypatch,
 ):
     from warehouse_bigdata.processing import enrichment_analytics_snapshot as module
 
     hdfs, config = j04_upstream_bundle
     original_raw = module.validate_hdfs_raw_snapshot(SOURCE_VERSION, client=hdfs, config=config)
-    documents = [
-        {**manifest, "serialization_note": "café"} for manifest in original_raw.manifests
-    ]
+    documents = [{**manifest, "serialization_note": "café"} for manifest in original_raw.manifests]
     manifests = tuple(MappingProxyType(document) for document in documents)
     original_items = tuple(tuple(manifest.items()) for manifest in manifests)
     raw = replace(original_raw, manifests=manifests)
@@ -468,8 +480,12 @@ def test_j04_public_reader_digests_immutable_raw_manifests(
     expected_digest = "sha256:" + hashlib.sha256(canonical_json).hexdigest()
 
     _, evidence = module.read_validated_sales_enriched_snapshot(
-        spark, source_version=SOURCE_VERSION, source_snapshot_id=SOURCE_SNAPSHOT_ID,
-        pipeline_run_id=PIPELINE_RUN_ID, hdfs_config=config, client=hdfs,
+        spark,
+        source_version=SOURCE_VERSION,
+        source_snapshot_id=SOURCE_SNAPSHOT_ID,
+        pipeline_run_id=PIPELINE_RUN_ID,
+        hdfs_config=config,
+        client=hdfs,
     )
 
     assert evidence["raw_manifest_digest"] == expected_digest
@@ -482,25 +498,45 @@ def test_j04_public_reader_digests_immutable_raw_manifests(
             manifest["status"] = "FAILED"
 
 
-@pytest.mark.parametrize("corruption", [
-    "marker", "quality", "dataset", "bundle", "producer", "raw", "j02", "type", "source",
-])
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "marker",
+        "quality",
+        "dataset",
+        "bundle",
+        "producer",
+        "raw",
+        "j02",
+        "type",
+        "source",
+    ],
+)
 def test_j04_public_reader_rejects_incomplete_or_cross_bound_upstream(
-    spark, j04_upstream_bundle, monkeypatch, corruption,
+    spark,
+    j04_upstream_bundle,
+    monkeypatch,
+    corruption,
 ):
     from warehouse_bigdata.processing import enrichment_analytics_snapshot as module
 
     hdfs, config = j04_upstream_bundle
     quality = render_enrichment_quality_path(render_staging_path(BASE_PATH, PIPELINE_RUN_ID))
     dataset = render_enrichment_dataset_manifest_path(
-        render_curated_sales_enriched_path(BASE_PATH, SOURCE_SNAPSHOT_ID))
+        render_curated_sales_enriched_path(BASE_PATH, SOURCE_SNAPSHOT_ID)
+    )
     paths = {
         "marker": render_run_manifest_path(BASE_PATH, PIPELINE_RUN_ID),
-        "quality": quality, "dataset": dataset,
+        "quality": quality,
+        "dataset": dataset,
         "bundle": render_enrichment_dataset_manifest_path(
-            render_curated_store_daily_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID)),
-        "producer": dataset, "source": dataset, "type": dataset,
-        "raw": quality, "j02": quality,
+            render_curated_store_daily_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID)
+        ),
+        "producer": dataset,
+        "source": dataset,
+        "type": dataset,
+        "raw": quality,
+        "j02": quality,
     }
     target = paths[corruption]
     original = hdfs.read_remote
@@ -526,8 +562,12 @@ def test_j04_public_reader_rejects_incomplete_or_cross_bound_upstream(
     monkeypatch.setattr(hdfs, "read_remote", read)
     with pytest.raises(module.EnrichmentAnalyticsSnapshotError):
         module.read_validated_sales_enriched_snapshot(
-            spark, source_version=SOURCE_VERSION, source_snapshot_id=SOURCE_SNAPSHOT_ID,
-            pipeline_run_id=PIPELINE_RUN_ID, hdfs_config=config, client=hdfs,
+            spark,
+            source_version=SOURCE_VERSION,
+            source_snapshot_id=SOURCE_SNAPSHOT_ID,
+            pipeline_run_id=PIPELINE_RUN_ID,
+            hdfs_config=config,
+            client=hdfs,
         )
 
 

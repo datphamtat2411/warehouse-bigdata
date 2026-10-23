@@ -40,13 +40,36 @@ _MAX_DOUBLE: Final = 1.7976931348623157e308
 _SERIES_KEYS: Final = ("item_id", "store_id")
 _METADATA: Final = ("dept_id", "cat_id", "state_id", "series_id")
 _INPUT_TYPES: Final = (
-    *("string",) * 7, "int", "date", "int", "bigint", "double", "boolean",
-    "int", "int", "int", "boolean", "boolean", *("string",) * 4,
+    *("string",) * 7,
+    "int",
+    "date",
+    "int",
+    "bigint",
+    "double",
+    "boolean",
+    "int",
+    "int",
+    "int",
+    "boolean",
+    "boolean",
+    *("string",) * 4,
 )
 _FEATURE_TYPES: Final = (
-    *("string",) * 6, "date", "date", "bigint", "bigint", "bigint",
-    "double", "double", "int", "int", "boolean", "boolean", "boolean",
-    "double", "bigint",
+    *("string",) * 6,
+    "date",
+    "date",
+    "bigint",
+    "bigint",
+    "bigint",
+    "double",
+    "double",
+    "int",
+    "int",
+    "boolean",
+    "boolean",
+    "boolean",
+    "double",
+    "bigint",
 )
 
 
@@ -93,7 +116,8 @@ def build_historical_features(
     from pyspark.sql import functions as F
 
     for name, value in (
-        ("source_snapshot_id", source_snapshot_id), ("feature_version", feature_version)
+        ("source_snapshot_id", source_snapshot_id),
+        ("feature_version", feature_version),
     ):
         if not isinstance(value, str) or not value.strip():
             raise HistoricalFeatureError(f"{name} must be an explicit nonblank string")
@@ -118,21 +142,39 @@ def build_historical_features(
         )
         .withColumn("_as_of_price_missing", F.col("last_known_price").isNull())
     )
-    features = classified.where(F.col("status") == "ELIGIBLE").select(
-        "source_snapshot_id", "feature_version", "feature_role",
-        "item_id", "store_id", "dept_id", "target_date",
-        F.date_sub("target_date", 1).alias("as_of_date"),
-        *[F.col(f"lag_{days}") for days in LAG_DAYS],
-        *[F.col(f"rolling_mean_{days}") for days in MEAN_DAYS],
-        *calendar_features(),
-        F.col("_as_of_price_missing").alias("price_missing"),
-        "last_known_price", F.col("unit_sales").alias("label"),
-    ).select(*FORECAST_FEATURES.field_names)
+    features = (
+        classified.where(F.col("status") == "ELIGIBLE")
+        .select(
+            "source_snapshot_id",
+            "feature_version",
+            "feature_role",
+            "item_id",
+            "store_id",
+            "dept_id",
+            "target_date",
+            F.date_sub("target_date", 1).alias("as_of_date"),
+            *[F.col(f"lag_{days}") for days in LAG_DAYS],
+            *[F.col(f"rolling_mean_{days}") for days in MEAN_DAYS],
+            *calendar_features(),
+            F.col("_as_of_price_missing").alias("price_missing"),
+            "last_known_price",
+            F.col("unit_sales").alias("label"),
+        )
+        .select(*FORECAST_FEATURES.field_names)
+    )
     _validate_output(features, source_snapshot_id, feature_version, calendar_offset)
 
     eligibility = classified.select(
-        "source_snapshot_id", "feature_version", "item_id", "store_id", "target_date",
-        "day_index", "feature_role", "status", "prior_day_count", "missing_day_count",
+        "source_snapshot_id",
+        "feature_version",
+        "item_id",
+        "store_id",
+        "target_date",
+        "day_index",
+        "feature_role",
+        "status",
+        "prior_day_count",
+        "missing_day_count",
     )
 
     def count_if(condition: Column) -> Column:
@@ -173,7 +215,8 @@ def _with_history(sales_enriched: DataFrame) -> DataFrame:
     dated = sales_enriched.withColumn("_day_ordinal", _day_ordinal(F.col("date")))
     return dated.select(
         "*",
-        F.min("_day_ordinal").over(_history_window(Window.unboundedPreceding, 0))
+        F.min("_day_ordinal")
+        .over(_history_window(Window.unboundedPreceding, 0))
         .alias("_first_day_ordinal"),
         F.count(F.lit(1)).over(_history_window(-LOOKBACK_DAYS)).alias("prior_day_count"),
         *[
@@ -185,7 +228,8 @@ def _with_history(sales_enriched: DataFrame) -> DataFrame:
             for days in MEAN_DAYS
         ],
         F.last("sell_price", ignorenulls=True)
-        .over(_history_window(Window.unboundedPreceding)).alias("last_known_price"),
+        .over(_history_window(Window.unboundedPreceding))
+        .alias("last_known_price"),
     )
 
 
@@ -248,25 +292,28 @@ def _validate_input(sales: DataFrame) -> int | None:
     from pyspark.sql import functions as F
 
     _require_schema(sales, SALES_ENRICHED.field_names, _INPUT_TYPES)
-    invalid = _any([
-        *[F.col(name).isNull() for name in SALES_ENRICHED.required_field_names],
-        *[F.col(name).rlike(r"^\s*$") for name in (*_SERIES_KEYS, *_METADATA)],
-        ~F.col("state_id").isin("CA", "TX", "WI"),
-        ~F.col("day_index").between(1, TEST_DAYS[1]),
-        F.col("day_key") != F.concat(F.lit("d_"), F.col("day_index").cast("string")),
-        F.col("unit_sales") < 0,
-        F.col("wm_yr_wk") < 0,
-        _invalid_price(F.col("sell_price")),
-        F.col("price_missing") != F.col("sell_price").isNull(),
-        F.col("is_zero_sale") != (F.col("unit_sales") == 0),
-        F.col("wday") != F.pmod(F.dayofweek("date"), F.lit(7)) + 1,
-        F.col("month") != F.month("date"),
-        F.col("year") != F.year("date"),
-        F.col("year") < 1,
-        *[F.col(name).rlike(r"^\s*$") for name in (
-            "event_name_1", "event_type_1", "event_name_2", "event_type_2"
-        )],
-    ])
+    invalid = _any(
+        [
+            *[F.col(name).isNull() for name in SALES_ENRICHED.required_field_names],
+            *[F.col(name).rlike(r"^\s*$") for name in (*_SERIES_KEYS, *_METADATA)],
+            ~F.col("state_id").isin("CA", "TX", "WI"),
+            ~F.col("day_index").between(1, TEST_DAYS[1]),
+            F.col("day_key") != F.concat(F.lit("d_"), F.col("day_index").cast("string")),
+            F.col("unit_sales") < 0,
+            F.col("wm_yr_wk") < 0,
+            _invalid_price(F.col("sell_price")),
+            F.col("price_missing") != F.col("sell_price").isNull(),
+            F.col("is_zero_sale") != (F.col("unit_sales") == 0),
+            F.col("wday") != F.pmod(F.dayofweek("date"), F.lit(7)) + 1,
+            F.col("month") != F.month("date"),
+            F.col("year") != F.year("date"),
+            F.col("year") < 1,
+            *[
+                F.col(name).rlike(r"^\s*$")
+                for name in ("event_name_1", "event_type_1", "event_name_2", "event_type_2")
+            ],
+        ]
+    )
     # A single global offset proves one-to-one mapping AND calendar-day spacing,
     # including gaps and mappings observed in different series. No dense calendar
     # or single-partition global ordering is needed.
@@ -280,7 +327,8 @@ def _validate_input(sales: DataFrame) -> int | None:
         _raise_for_rows(sales, invalid, "Invalid SALES_ENRICHED observation")
     if metrics.minimum_offset != metrics.maximum_offset:
         _raise_for_rows(
-            sales, offset != F.lit(metrics.minimum_offset),
+            sales,
+            offset != F.lit(metrics.minimum_offset),
             "Inconsistent day-index/date mapping or calendar-day spacing",
         )
 
@@ -298,14 +346,18 @@ def _validate_input(sales: DataFrame) -> int | None:
         F.lit("duplicate grain or unstable metadata").alias("issue"),
         F.to_json(F.struct("*")).alias("details"),
     )
-    ambiguous_ids = sales.groupBy("series_id").agg(
-        F.countDistinct(F.struct(*_SERIES_KEYS)).alias("series_count")
-    ).where(F.col("series_count") != 1).select(
-        F.lit("ambiguous series_id").alias("issue"),
-        F.to_json(F.struct("*")).alias("details"),
+    ambiguous_ids = (
+        sales.groupBy("series_id")
+        .agg(F.countDistinct(F.struct(*_SERIES_KEYS)).alias("series_count"))
+        .where(F.col("series_count") != 1)
+        .select(
+            F.lit("ambiguous series_id").alias("issue"),
+            F.to_json(F.struct("*")).alias("details"),
+        )
     )
     _raise_for_rows(
-        invalid_series.unionByName(ambiguous_ids), F.lit(True),
+        invalid_series.unionByName(ambiguous_ids),
+        F.lit(True),
         "Invalid SALES_ENRICHED grain or series identity",
     )
     return metrics.minimum_offset
@@ -322,40 +374,54 @@ def _validate_output(
 
     _require_schema(features, FORECAST_FEATURES.field_names, _FEATURE_TYPES)
     scope = ("source_snapshot_id", "feature_version", "feature_role", *FORECAST_FEATURES.unique_key)
-    checked = features.withColumn("_scope_count", F.count(F.lit(1)).over(Window.partitionBy(*scope)))
+    checked = features.withColumn(
+        "_scope_count", F.count(F.lit(1)).over(Window.partitionBy(*scope))
+    )
     expected_day = _day_ordinal(F.col("target_date")).cast("long") - F.lit(calendar_offset)
     expected_role = _historical_role(expected_day)
-    invalid = _any([
-        *[F.col(name).isNull() for name in (*FORECAST_FEATURES.required_field_names, "label")],
-        *[F.col(name).rlike(r"^\s*$") for name in (
-            "source_snapshot_id", "feature_version", "feature_role", "item_id", "store_id", "dept_id"
-        )],
-        F.col("source_snapshot_id") != source_snapshot_id,
-        F.col("feature_version") != feature_version,
-        ~F.col("feature_role").eqNullSafe(expected_role),
-        ~expected_day.between(TRAIN_DAYS[0], TEST_DAYS[1]),
-        F.col("as_of_date") != F.date_sub("target_date", 1),
-        *[F.col(f"lag_{days}") < 0 for days in LAG_DAYS],
-        *[
-            (F.col(f"rolling_mean_{days}") < 0)
-            | F.isnan(f"rolling_mean_{days}")
-            | (F.col(f"rolling_mean_{days}") > _MAX_DOUBLE)
-            for days in MEAN_DAYS
-        ],
-        F.col("label") < 0,
-        ~F.col("day_of_week").between(1, 7),
-        F.col("day_of_week") != F.pmod(F.dayofweek("target_date") + 5, F.lit(7)) + 1,
-        F.col("month") != F.month("target_date"),
-        F.col("is_weekend") != F.col("day_of_week").isin(*ISO_WEEKEND_DAYS),
-        F.col("event_flag"),
-        _invalid_price(F.col("last_known_price")),
-        F.col("price_missing") != F.col("last_known_price").isNull(),
-        F.col("_scope_count") != 1,
-    ])
+    invalid = _any(
+        [
+            *[F.col(name).isNull() for name in (*FORECAST_FEATURES.required_field_names, "label")],
+            *[
+                F.col(name).rlike(r"^\s*$")
+                for name in (
+                    "source_snapshot_id",
+                    "feature_version",
+                    "feature_role",
+                    "item_id",
+                    "store_id",
+                    "dept_id",
+                )
+            ],
+            F.col("source_snapshot_id") != source_snapshot_id,
+            F.col("feature_version") != feature_version,
+            ~F.col("feature_role").eqNullSafe(expected_role),
+            ~expected_day.between(TRAIN_DAYS[0], TEST_DAYS[1]),
+            F.col("as_of_date") != F.date_sub("target_date", 1),
+            *[F.col(f"lag_{days}") < 0 for days in LAG_DAYS],
+            *[
+                (F.col(f"rolling_mean_{days}") < 0)
+                | F.isnan(f"rolling_mean_{days}")
+                | (F.col(f"rolling_mean_{days}") > _MAX_DOUBLE)
+                for days in MEAN_DAYS
+            ],
+            F.col("label") < 0,
+            ~F.col("day_of_week").between(1, 7),
+            F.col("day_of_week") != F.pmod(F.dayofweek("target_date") + 5, F.lit(7)) + 1,
+            F.col("month") != F.month("target_date"),
+            F.col("is_weekend") != F.col("day_of_week").isin(*ISO_WEEKEND_DAYS),
+            F.col("event_flag"),
+            _invalid_price(F.col("last_known_price")),
+            F.col("price_missing") != F.col("last_known_price").isNull(),
+            F.col("_scope_count") != 1,
+        ]
+    )
     _raise_for_rows(checked, invalid, "Historical FORECAST_FEATURES invariant violation")
 
 
 __all__ = [
-    "HistoricalFeatureError", "HistoricalFeatureResult", "build_historical_features",
+    "HistoricalFeatureError",
+    "HistoricalFeatureResult",
+    "build_historical_features",
     "calendar_features",
 ]

@@ -13,11 +13,15 @@ from tests.integration.hdfs_support import (
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
-        "--run-m05-published", action="store_true", default=False,
+        "--run-m05-published",
+        action="store_true",
+        default=False,
         help="Read-only full-fixture J04 verification of an existing immutable publication.",
     )
     parser.addoption(
-        "--run-m05-lifecycle", action="store_true", default=False,
+        "--run-m05-lifecycle",
+        action="store_true",
+        default=False,
         help="Expensive fresh-code J04 publication, live reuse and owner-only frozen recovery.",
     )
     parser.addoption(
@@ -45,8 +49,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     enabled = config.getoption("--run-hdfs-disruptions")
     for item in items:
         if item.path.name == "test_feature_snapshot.py":
-            option = ("--run-m05-published" if item.name == "test_published_feature_snapshot"
-                      else "--run-m05-lifecycle")
+            option = (
+                "--run-m05-published"
+                if item.name == "test_published_feature_snapshot"
+                else "--run-m05-lifecycle"
+            )
             if not config.getoption(option):
                 item.add_marker(pytest.mark.skip(reason=f"Live J04 acceptance requires {option}."))
             elif parallel_execution(config):

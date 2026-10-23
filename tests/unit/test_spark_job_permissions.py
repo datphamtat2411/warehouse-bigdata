@@ -71,8 +71,11 @@ def test_run_jobs_prepare_acl_before_spark_context(
     monkeypatch.setattr(module, processor_name, lambda *args, **kwargs: "result")
 
     runner = getattr(module, runner_name)
-    extra = ({"upstream_pipeline_run_id": "j03-run", "feature_version": "historical_v1"}
-             if module is build_forecast_features else {})
+    extra = (
+        {"upstream_pipeline_run_id": "j03-run", "feature_version": "historical_v1"}
+        if module is build_forecast_features
+        else {}
+    )
     result = runner(
         source_version="sha256:" + "a" * 64,
         source_snapshot_id="snapshot-001",

@@ -51,8 +51,15 @@ def _terminate(process):
 def cleanup_container(owned):
     """Only a name AND matching random ownership label authorize removal."""
     name, token = owned
-    inspect = ["docker", "inspect", "--type", "container", "--format",
-               '{{ index .Config.Labels "' + OWNER_LABEL + '" }}', name]
+    inspect = [
+        "docker",
+        "inspect",
+        "--type",
+        "container",
+        "--format",
+        '{{ index .Config.Labels "' + OWNER_LABEL + '" }}',
+        name,
+    ]
     # Recheck delayed creates after terminating an attached Compose client.
     for attempt in range(3):
         result = subprocess.run(inspect, capture_output=True, timeout=10, check=False)
@@ -64,10 +71,12 @@ def cleanup_container(owned):
             continue
         if result.stdout.decode().strip() != token:
             raise CommandError(f"Container ownership mismatch; refusing cleanup: {name}")
-        subprocess.run(["docker", "stop", "--time", "10", name], capture_output=True,
-                       timeout=15, check=False)
-        removed = subprocess.run(["docker", "rm", "--force", name], capture_output=True,
-                                 timeout=10, check=False)
+        subprocess.run(
+            ["docker", "stop", "--time", "10", name], capture_output=True, timeout=15, check=False
+        )
+        removed = subprocess.run(
+            ["docker", "rm", "--force", name], capture_output=True, timeout=10, check=False
+        )
         if removed.returncode and b"No such" not in removed.stderr:
             raise CommandError(f"Cannot remove owned container {name}: {removed.stderr!r}")
 
@@ -122,8 +131,9 @@ def command(args, *, operation, timeout=None, owned=None, allowed_codes=(0,), on
 
         signal.signal(signal.SIGTERM, cancel)
     try:
-        process = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   start_new_session=True)
+        process = subprocess.Popen(
+            args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
+        )
         try:
             _drain(process, time.monotonic() + budget, tail, on_stdout_line)
         except (TimeoutError, subprocess.TimeoutExpired) as error:
@@ -178,8 +188,10 @@ class TaskEvidence:
         self.event_count += 1
         if event.get("Event") == "SparkListenerApplicationStart":
             self.applications.add(event.get("App ID"))
-        if (event.get("Event") == "SparkListenerTaskEnd"
-                and event.get("Task End Reason", {}).get("Reason") == "Success"):
+        if (
+            event.get("Event") == "SparkListenerTaskEnd"
+            and event.get("Task End Reason", {}).get("Reason") == "Success"
+        ):
             info = event["Task Info"]
             if info.get("Failed", False) or info.get("Killed", False):
                 return
@@ -197,8 +209,12 @@ class TaskEvidence:
         assert all(self.counts[h] > 0 for h in ("spark-worker-1", "spark-worker-2")), (
             f"Task evidence must include both workers: {self.counts}"
         )
-        return {"application_id": self.application_id, "events": self.event_count,
-                "worker_tasks": dict(self.counts), "task_metrics": dict(self.metrics)}
+        return {
+            "application_id": self.application_id,
+            "events": self.event_count,
+            "worker_tasks": dict(self.counts),
+            "task_metrics": dict(self.metrics),
+        }
 
 
 def task_evidence(lines, application_id):
@@ -217,13 +233,19 @@ def stream_task_evidence(client, directory, application_id):
     paths = []
     for status in files:
         path = status["path"]
-        assert (status["type"] == "FILE" and str(PurePosixPath(path).parent) == directory
-                and not path.endswith(".inprogress")), f"Incomplete/unsupported event evidence: {path}"
+        assert (
+            status["type"] == "FILE"
+            and str(PurePosixPath(path).parent) == directory
+            and not path.endswith(".inprogress")
+        ), f"Incomplete/unsupported event evidence: {path}"
         paths.append(path)
     assert len(set(paths)) == len(paths), "Duplicate event paths"
     tracker = TaskEvidence(application_id)
-    command([*client.command_prefix, client.hdfs_command, "dfs", "-text", *sorted(paths)],
-            operation="events", on_stdout_line=tracker.add)
+    command(
+        [*client.command_prefix, client.hdfs_command, "dfs", "-text", *sorted(paths)],
+        operation="events",
+        on_stdout_line=tracker.add,
+    )
     checksums = client.checksums(sorted(paths))
     assert set(checksums) == set(paths) and all(checksums.values()), "Missing event checksums"
     return {**tracker.result(), "paths": sorted(paths), "file_checksums": checksums}

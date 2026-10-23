@@ -17,11 +17,14 @@ from warehouse_bigdata.forecasting.features import build_historical_features
 
 @pytest.fixture(scope="module")
 def context(spark, tmp_path_factory):
-    source = _frame(spark, (
-        _rows([*range(1, 33), *range(1857, 1942)], zero=True, prices={})
-        + _rows([d for d in range(1, 34) if d != 30], item="gap")
-        + _rows(range(25, 32), item="late")
-    ))
+    source = _frame(
+        spark,
+        (
+            _rows([*range(1, 33), *range(1857, 1942)], zero=True, prices={})
+            + _rows([d for d in range(1, 34) if d != 30], item="gap")
+            + _rows(range(25, 32), item="late")
+        ),
+    )
     result = build_historical_features(
         source, source_snapshot_id="snapshot_1", feature_version="historical_v1"
     )
@@ -44,7 +47,8 @@ def check(context, *, persisted=None, result=None, exclusions=None):
         expected=expected if result is None else result,
         source=source,
         exclusions=diagnostics if exclusions is None else exclusions,
-        source_snapshot_id="snapshot_1", feature_version="historical_v1",
+        source_snapshot_id="snapshot_1",
+        feature_version="historical_v1",
     )
 
 
@@ -60,25 +64,28 @@ def test_persisted_boundary_roles_zeros_missing_prices_and_conservation(context)
     assert metrics["required_field_null_counts"]["label"] == 0
 
 
-@pytest.mark.parametrize("mutation", [
-    lambda df: df.drop("month"),
-    lambda df: df.withColumn("extra", F.lit(1)),
-    lambda df: df.withColumn("lag_1", F.col("lag_1").cast("int")),
-    lambda df: df.select("*", F.col("month")),
-    lambda df: df.withColumn("label", F.lit(None).cast("bigint")),
-    lambda df: df.withColumn("feature_version", F.lit("other")),
-    lambda df: df.withColumn("feature_role", F.lit("scoring")),
-    lambda df: df.withColumn("as_of_date", F.col("target_date")),
-    lambda df: df.withColumn("rolling_mean_7", F.lit(float("nan"))),
-    lambda df: df.withColumn("event_flag", F.lit(True)),
-    lambda df: df.withColumn("price_missing", ~F.col("price_missing")),
-    lambda df: df.withColumn("label", F.col("label") + 1),
-    lambda df: df.withColumn("dept_id", F.lit("substituted")),
-    lambda df: df.withColumn("lag_7", F.col("lag_7") + 1),
-    lambda df: df.withColumn("item_id", F.lit("swapped")),
-    lambda df: df.limit(1),
-    lambda df: df.unionByName(df.limit(1)),
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda df: df.drop("month"),
+        lambda df: df.withColumn("extra", F.lit(1)),
+        lambda df: df.withColumn("lag_1", F.col("lag_1").cast("int")),
+        lambda df: df.select("*", F.col("month")),
+        lambda df: df.withColumn("label", F.lit(None).cast("bigint")),
+        lambda df: df.withColumn("feature_version", F.lit("other")),
+        lambda df: df.withColumn("feature_role", F.lit("scoring")),
+        lambda df: df.withColumn("as_of_date", F.col("target_date")),
+        lambda df: df.withColumn("rolling_mean_7", F.lit(float("nan"))),
+        lambda df: df.withColumn("event_flag", F.lit(True)),
+        lambda df: df.withColumn("price_missing", ~F.col("price_missing")),
+        lambda df: df.withColumn("label", F.col("label") + 1),
+        lambda df: df.withColumn("dept_id", F.lit("substituted")),
+        lambda df: df.withColumn("lag_7", F.col("lag_7") + 1),
+        lambda df: df.withColumn("item_id", F.lit("swapped")),
+        lambda df: df.limit(1),
+        lambda df: df.unionByName(df.limit(1)),
+    ],
+)
 def test_corrupt_persisted_features_fail_closed(context, mutation):
     with pytest.raises(FeatureValidationError):
         check(context, persisted=mutation(context[2]))

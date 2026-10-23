@@ -268,12 +268,13 @@ def _require_sealed_input(hdfs: Any, path: str, base_path: str) -> None:
     for current in (selected, *selected.parents):
         text = str(current)
         status = hdfs.path_status(text)
-        if (status is None or status["owner"] != HDFS_OWNER
-                or int(status["permission"], 8) & 0o022):
+        if status is None or status["owner"] != HDFS_OWNER or int(status["permission"], 8) & 0o022:
             raise EnrichmentAnalyticsSnapshotError(f"upstream publication is not sealed: {text}")
         acl = hdfs.get_acl(text)
-        if any(line.strip().startswith(("default:", "mask:", "user:spark:"))
-               for line in acl.splitlines()):
+        if any(
+            line.strip().startswith(("default:", "mask:", "user:spark:"))
+            for line in acl.splitlines()
+        ):
             raise EnrichmentAnalyticsSnapshotError(f"upstream publication has shared ACLs: {text}")
         if text == base_path:
             break
@@ -299,15 +300,24 @@ def read_validated_sales_enriched_snapshot(
     staging = render_staging_path(hdfs_config.base_path, pipeline_run_id)
     quality_path = render_enrichment_quality_path(staging)
     outputs = {
-        "sales_enriched": render_curated_sales_enriched_path(hdfs_config.base_path, source_snapshot_id),
+        "sales_enriched": render_curated_sales_enriched_path(
+            hdfs_config.base_path, source_snapshot_id
+        ),
         "store_daily_sales": render_curated_store_daily_sales_path(
-            hdfs_config.base_path, source_snapshot_id),
+            hdfs_config.base_path, source_snapshot_id
+        ),
         "category_monthly_sales": render_curated_category_monthly_sales_path(
-            hdfs_config.base_path, source_snapshot_id),
+            hdfs_config.base_path, source_snapshot_id
+        ),
     }
     validate_enrichment_analytics_completion_marker(
-        hdfs, hdfs_config, source_version=source_version, source_snapshot_id=source_snapshot_id,
-        pipeline_run_id=pipeline_run_id, curated_output_paths=outputs, quality_path=quality_path,
+        hdfs,
+        hdfs_config,
+        source_version=source_version,
+        source_snapshot_id=source_snapshot_id,
+        pipeline_run_id=pipeline_run_id,
+        curated_output_paths=outputs,
+        quality_path=quality_path,
     )
     documents: dict[str, dict] = {}
 
@@ -320,26 +330,59 @@ def read_validated_sales_enriched_snapshot(
         if any(document.get(key) != value for key, value in values.items()):
             raise EnrichmentAnalyticsSnapshotError(f"{label} lineage or quality is inconsistent")
 
-    identity = {"status": VALIDATED, "source_version": source_version,
-                "source_snapshot_id": source_snapshot_id, "pipeline_run_id": pipeline_run_id}
+    identity = {
+        "status": VALIDATED,
+        "source_version": source_version,
+        "source_snapshot_id": source_snapshot_id,
+        "pipeline_run_id": pipeline_run_id,
+    }
     marker_path = render_run_manifest_path(hdfs_config.base_path, pipeline_run_id)
     marker = read(marker_path, "J03 completion")
-    require(marker, {"producer": _CODE_REVISION,
-                     "artifact_uri": _hdfs_uri(hdfs_config.uri, marker_path),
-                     "quality_report_uri": _hdfs_uri(hdfs_config.uri, quality_path)}, "J03 marker")
+    require(
+        marker,
+        {
+            "producer": _CODE_REVISION,
+            "artifact_uri": _hdfs_uri(hdfs_config.uri, marker_path),
+            "quality_report_uri": _hdfs_uri(hdfs_config.uri, quality_path),
+        },
+        "J03 marker",
+    )
     quality = read(quality_path, "J03 quality")
     daily_path = render_curated_sales_daily_path(hdfs_config.base_path, source_snapshot_id)
     raw_path = render_raw_m5_path(hdfs_config.base_path, source_version)
-    require(quality, {**identity, "quality_schema_version": _QUALITY_SCHEMA_VERSION,
-                      "output_paths": outputs, "sales_daily_path": daily_path,
-                      "raw_path": raw_path, "failure_details": []}, "J03 quality")
+    require(
+        quality,
+        {
+            **identity,
+            "quality_schema_version": _QUALITY_SCHEMA_VERSION,
+            "output_paths": outputs,
+            "sales_daily_path": daily_path,
+            "raw_path": raw_path,
+            "failure_details": [],
+        },
+        "J03 quality",
+    )
     binding = read(render_enrichment_staging_binding_path(staging), "J03 input binding")
-    require(binding, {key: value for key, value in {
-        **identity, "schema_version": _BINDING_SCHEMA_VERSION, "sales_daily_path": daily_path,
-        "raw_path": raw_path, "code_revision": _CODE_REVISION,
-    }.items() if key != "status"}, "J03 input binding")
-    contracts = {"sales_enriched": SALES_ENRICHED, "store_daily_sales": STORE_DAILY_SALES,
-                 "category_monthly_sales": CATEGORY_MONTHLY_SALES}
+    require(
+        binding,
+        {
+            key: value
+            for key, value in {
+                **identity,
+                "schema_version": _BINDING_SCHEMA_VERSION,
+                "sales_daily_path": daily_path,
+                "raw_path": raw_path,
+                "code_revision": _CODE_REVISION,
+            }.items()
+            if key != "status"
+        },
+        "J03 input binding",
+    )
+    contracts = {
+        "sales_enriched": SALES_ENRICHED,
+        "store_daily_sales": STORE_DAILY_SALES,
+        "category_monthly_sales": CATEGORY_MONTHLY_SALES,
+    }
     manifests = {}
     for name, path in outputs.items():
         _require_sealed_input(hdfs, path, hdfs_config.base_path)
@@ -350,29 +393,45 @@ def read_validated_sales_enriched_snapshot(
         contract = contracts[name]
         output_quality_path = render_enrichment_output_quality_path(staging, name)
         output_quality = read(output_quality_path, name + " quality")
-        require(output_quality, {
-            **identity, "quality_schema_version": _QUALITY_SCHEMA_VERSION,
-            "dataset_name": name, "contract_name": name, "contract_version": contract.version,
-            "artifact_uri": _hdfs_uri(hdfs_config.uri, path),
-            "quality_report_uri": _hdfs_uri(hdfs_config.uri, output_quality_path),
-            "schema_fingerprint": sidecar["schema_fingerprint"],
-            "row_count": _manifest_int(sidecar, "row_count"),
-            "persisted_parquet_validated": True, "candidate_only": False,
-        }, name + " quality")
+        require(
+            output_quality,
+            {
+                **identity,
+                "quality_schema_version": _QUALITY_SCHEMA_VERSION,
+                "dataset_name": name,
+                "contract_name": name,
+                "contract_version": contract.version,
+                "artifact_uri": _hdfs_uri(hdfs_config.uri, path),
+                "quality_report_uri": _hdfs_uri(hdfs_config.uri, output_quality_path),
+                "schema_fingerprint": sidecar["schema_fingerprint"],
+                "row_count": _manifest_int(sidecar, "row_count"),
+                "persisted_parquet_validated": True,
+                "candidate_only": False,
+            },
+            name + " quality",
+        )
         require(quality.get("outputs", {}).get(name, {}), output_quality, name + " quality summary")
         nulls = output_quality.get("required_field_null_counts")
-        if (not isinstance(nulls, dict) or set(nulls) != set(contract.required_field_names)
-                or any(type(v) is not int or v != 0 for v in nulls.values())):
+        if (
+            not isinstance(nulls, dict)
+            or set(nulls) != set(contract.required_field_names)
+            or any(type(v) is not int or v != 0 for v in nulls.values())
+        ):
             raise EnrichmentAnalyticsSnapshotError(name + " required-field quality is invalid")
         for field in ("unit_sales_total", "zero_sales_count"):
             if field in sidecar and output_quality.get(field) != sidecar[field]:
                 raise EnrichmentAnalyticsSnapshotError(name + " quality counts disagree")
         manifests[name] = sidecar
-    require(marker, {
-        "row_count": manifests["sales_enriched"]["row_count"],
-        "schema_fingerprint": _schema_fingerprint_map(
-            {name: contract.field_names for name, contract in contracts.items()}),
-    }, "J03 completion schema/counts")
+    require(
+        marker,
+        {
+            "row_count": manifests["sales_enriched"]["row_count"],
+            "schema_fingerprint": _schema_fingerprint_map(
+                {name: contract.field_names for name, contract in contracts.items()}
+            ),
+        },
+        "J03 completion schema/counts",
+    )
 
     # Follow the binding actually recorded by J03, rather than selecting another J02 run.
     daily_sidecar_path = daily_path + "/_snapshot_manifest.json"
@@ -383,28 +442,47 @@ def read_validated_sales_enriched_snapshot(
     except HdfsPathError as error:
         raise EnrichmentAnalyticsSnapshotError("unsafe J02 producer identity") from error
     input_quality = quality.get("input", {})
-    require(input_quality, {"manifest_pipeline_run_id": upstream_run,
-                            "schema_fingerprint": _SALES_SCHEMA_FINGERPRINT}, "J03/J02 binding")
+    require(
+        input_quality,
+        {"manifest_pipeline_run_id": upstream_run, "schema_fingerprint": _SALES_SCHEMA_FINGERPRINT},
+        "J03/J02 binding",
+    )
     upstream_path = render_run_manifest_path(hdfs_config.base_path, upstream_run)
     upstream_marker = read(upstream_path, "J02 completion")
     upstream_quality_path = render_enrichment_quality_path(
-        render_staging_path(hdfs_config.base_path, upstream_run))
-    require(upstream_marker, {
-        "producer": "warehouse-bigdata:normalization-snapshot",
-        "output_dataset_names": json.dumps(["sales_daily"], separators=(",", ":")),
-        "quality_report_uri": _hdfs_uri(hdfs_config.uri, upstream_quality_path),
-    }, "J02 marker")
-    if (_json_string_list(upstream_marker.get("output_dataset_uris"), "J02 output URIs")
-            != [_hdfs_uri(hdfs_config.uri, daily_path)]):
+        render_staging_path(hdfs_config.base_path, upstream_run)
+    )
+    require(
+        upstream_marker,
+        {
+            "producer": "warehouse-bigdata:normalization-snapshot",
+            "output_dataset_names": json.dumps(["sales_daily"], separators=(",", ":")),
+            "quality_report_uri": _hdfs_uri(hdfs_config.uri, upstream_quality_path),
+        },
+        "J02 marker",
+    )
+    if _json_string_list(upstream_marker.get("output_dataset_uris"), "J02 output URIs") != [
+        _hdfs_uri(hdfs_config.uri, daily_path)
+    ]:
         raise EnrichmentAnalyticsSnapshotError("J02 output names/URIs do not pair exactly")
     upstream_quality = read(upstream_quality_path, "J02 quality")
-    require(upstream_quality, {**identity, "pipeline_run_id": upstream_run,
-                               "raw_path": raw_path, "curated_path": daily_path}, "J02 quality")
+    require(
+        upstream_quality,
+        {
+            **identity,
+            "pipeline_run_id": upstream_run,
+            "raw_path": raw_path,
+            "curated_path": daily_path,
+        },
+        "J02 quality",
+    )
     for field in ("row_count", "unit_sales_total", "zero_sales_count"):
         value = _manifest_int(daily_sidecar, field)
-        if (input_quality.get(field) != value
-                or upstream_quality.get("measured", {}).get(field) != value
-                or manifests["sales_enriched"].get(field) != value):
+        if (
+            input_quality.get(field) != value
+            or upstream_quality.get("measured", {}).get(field) != value
+            or manifests["sales_enriched"].get(field) != value
+        ):
             raise EnrichmentAnalyticsSnapshotError("raw/J02/J03 observed counts disagree")
     _require_sealed_input(hdfs, daily_path, hdfs_config.base_path)
     _require_sealed_input(hdfs, upstream_path, hdfs_config.base_path)
@@ -414,43 +492,70 @@ def read_validated_sales_enriched_snapshot(
     _require_sealed_input(hdfs, raw_path, hdfs_config.base_path)
     # Existing J03 validation supplies J02 contract/grain/content gates.
     _, _, daily_metrics = _read_validated_sales_daily(
-        spark, hdfs, hdfs_config, source_version=source_version,
+        spark,
+        hdfs,
+        hdfs_config,
+        source_version=source_version,
         source_snapshot_id=source_snapshot_id,
     )
-    frame = (spark.read.option("mergeSchema", "true").option("ignoreCorruptFiles", "false")
-             .option("ignoreMissingFiles", "false").parquet(
-                 _hdfs_uri(hdfs_config.uri, outputs["sales_enriched"])))
-    expected_types = (
-        *("string",) * 7, "int", "date", "int", "bigint", "double", "boolean",
-        "int", "int", "int", "boolean", "boolean", *("string",) * 4,
+    frame = (
+        spark.read.option("mergeSchema", "true")
+        .option("ignoreCorruptFiles", "false")
+        .option("ignoreMissingFiles", "false")
+        .parquet(_hdfs_uri(hdfs_config.uri, outputs["sales_enriched"]))
     )
-    if (len(frame.columns) != len(SALES_ENRICHED.field_names)
-            or _physical_schema(frame) != dict(zip(SALES_ENRICHED.field_names, expected_types,
-                                                   strict=True))):
+    expected_types = (
+        *("string",) * 7,
+        "int",
+        "date",
+        "int",
+        "bigint",
+        "double",
+        "boolean",
+        "int",
+        "int",
+        "int",
+        "boolean",
+        "boolean",
+        *("string",) * 4,
+    )
+    if len(frame.columns) != len(SALES_ENRICHED.field_names) or _physical_schema(frame) != dict(
+        zip(SALES_ENRICHED.field_names, expected_types, strict=True)
+    ):
         raise EnrichmentAnalyticsSnapshotError("SALES_ENRICHED physical schema differs from T01")
     frame = frame.select(*SALES_ENRICHED.field_names)
     metrics = _validate_persisted_enriched_frame(
-        frame, expected_row_count=daily_metrics.row_count,
+        frame,
+        expected_row_count=daily_metrics.row_count,
         expected_unit_sales_total=daily_metrics.unit_sales_total,
     )
     _validate_dataset_manifest(
-        hdfs, outputs["sales_enriched"], hdfs_config, contract=SALES_ENRICHED,
-        source_version=source_version, source_snapshot_id=source_snapshot_id,
-        expected_metrics=metrics, artifact_path=outputs["sales_enriched"],
-        physical_schema=_physical_schema(frame), expected_pipeline_run_id=pipeline_run_id,
+        hdfs,
+        outputs["sales_enriched"],
+        hdfs_config,
+        contract=SALES_ENRICHED,
+        source_version=source_version,
+        source_snapshot_id=source_snapshot_id,
+        expected_metrics=metrics,
+        artifact_path=outputs["sales_enriched"],
+        physical_schema=_physical_schema(frame),
+        expected_pipeline_run_id=pipeline_run_id,
     )
     return frame, {
-        "source_version": source_version, "source_snapshot_id": source_snapshot_id,
-        "pipeline_run_id": pipeline_run_id, "upstream_pipeline_run_id": upstream_run,
+        "source_version": source_version,
+        "source_snapshot_id": source_snapshot_id,
+        "pipeline_run_id": pipeline_run_id,
+        "upstream_pipeline_run_id": upstream_run,
         "completion_marker_uri": _hdfs_uri(hdfs_config.uri, marker_path),
         "sales_enriched_uri": _hdfs_uri(hdfs_config.uri, outputs["sales_enriched"]),
         "raw_uri": _hdfs_uri(hdfs_config.uri, raw_path),
         "row_count": metrics.row_count,
-        "metadata_digests": {path: "sha256:" + hashlib.sha256(_json_bytes(doc)).hexdigest()
-                             for path, doc in documents.items()},
-        "raw_manifest_digest": "sha256:" + hashlib.sha256(
-            _json_bytes([dict(manifest) for manifest in raw.manifests])
-        ).hexdigest(),
+        "metadata_digests": {
+            path: "sha256:" + hashlib.sha256(_json_bytes(doc)).hexdigest()
+            for path, doc in documents.items()
+        },
+        "raw_manifest_digest": "sha256:"
+        + hashlib.sha256(_json_bytes([dict(manifest) for manifest in raw.manifests])).hexdigest(),
     }
 
 
