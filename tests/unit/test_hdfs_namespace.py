@@ -149,12 +149,22 @@ def test_owner_provisioning_is_minimal_and_idempotent_and_preserves_existing_dat
     assert client.entries == first
     assert client.calls == []
     assert all(client.entries[path] == entry for path, entry in before.items())
-    assert len(publication_parents(CONFIG)) == 7
+    assert len(publication_parents(CONFIG)) == 8
     assert CONFIG.base_path + "/models" in publication_parents(CONFIG)
     assert CONFIG.base_path + "/features/demand_forecasting" in publication_parents(CONFIG)
     client.identity = "spark"
     validate_publication_namespace(client, CONFIG)
     for path in (*publication_parents(CONFIG), CONFIG.base_path, CONFIG.base_path + "/staging"):
+        assert not client.can_access(path, "w")
+
+
+def test_j06_forecast_namespace_is_owner_provisioned_and_spark_readonly():
+    client = PermissionHdfs()
+    provision_publication_namespace(client, CONFIG)
+    assert CONFIG.base_path + "/outputs/forecasts" in publication_parents(CONFIG)
+    client.identity = "spark"
+    validate_publication_namespace(client, CONFIG)
+    for path in (CONFIG.base_path + "/outputs", CONFIG.base_path + "/outputs/forecasts"):
         assert not client.can_access(path, "w")
 
 

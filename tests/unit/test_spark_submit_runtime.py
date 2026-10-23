@@ -344,6 +344,33 @@ def test_m06_launcher_driver_failure_never_promotes(sandbox):
     assert len(publication) == 1 and "--recover" in publication[0]
 
 
+@pytest.mark.parametrize("status", [0, 10, 17])
+def test_j06_launcher_recovery_and_failure_propagation(sandbox, status):
+    sandbox["env"]["TEST_PUBLICATION_STATUS"] = str(status)
+    binding = ["--pipeline-run-id", "j06", "--forecast-run-id", "forecast", "--model-run-id", "model",
+               "--source-version", "sha256:" + "a" * 64, "--source-snapshot-id", "snapshot",
+               "--j03-pipeline-run-id", "j03", "--j04-pipeline-run-id", "j04", "--feature-version", "v1",
+               "--issue-date", "2016-03-27", "--run-type", "validation", "--hdfs-uri", "hdfs://hdfs-namenode:8020",
+               "--spark-master", "spark://spark-master:7077"]
+    result = invoke(sandbox, "--", "warehouse_bigdata/jobs/forecast_daily.py", *binding)
+    assert result.returncode == (0 if status == 10 else status), result.stderr
+    publication = [call for call in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" in call]
+    assert publication and "--skip-completed-driver" in publication[0]
+    for value in binding:
+        assert value in publication[0]
+    assert publication[0][publication[0].index("--seed") + 1] == "42"
+    assert len([call for call in runs(sandbox) if call not in publication]) == (1 if status == 0 else 0)
+    assert_cluster_untouched(sandbox)
+
+
+def test_j06_launcher_failed_driver_never_publishes(sandbox):
+    sandbox["env"]["TEST_DRIVER_ONLY_STATUS"] = "23"
+    result = invoke(sandbox, "--", "warehouse_bigdata/jobs/forecast_daily.py", "--pipeline-run-id", "j06",
+                    "--forecast-run-id", "forecast", "--model-run-id", "model")
+    assert result.returncode == 23
+    assert len([c for c in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" in c]) == 1
+
+
 @pytest.mark.parametrize(
     "job", ["build_forecast_features", "normalize_sales_daily", "enrich_analytics"]
 )

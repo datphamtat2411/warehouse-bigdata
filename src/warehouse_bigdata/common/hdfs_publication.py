@@ -348,6 +348,11 @@ def finalize_publication(client, config, *, pipeline_run_id: str) -> str:
     validate_publication_namespace(client, config)
     request = _json(client, _request_path(config, pipeline_run_id))
     manifest = request["manifest"]
+    if manifest.get("contract_name") == "forecast_manifest":
+        from warehouse_bigdata.forecasting.forecast_artifacts import finalize_forecast_publication
+        if request.get("version") != 1 or request.get("pipeline_run_id") != pipeline_run_id:
+            raise HdfsNamespaceError("forecast publication execution identity/version mismatch")
+        return finalize_forecast_publication(client, config, pipeline_run_id=pipeline_run_id, manifest=manifest)
     if request.get("version") != 1 or manifest.get("pipeline_run_id") != pipeline_run_id:
         raise HdfsNamespaceError("publication request identity/version mismatch")
     if manifest.get("contract_name") == "model_manifest":
@@ -456,10 +461,16 @@ def main() -> None:
         "resource-justification",
         "pilot-evidence-uri",
         "event-log-dir",
+        "j03-pipeline-run-id",
+        "j04-pipeline-run-id",
+        "forecast-run-id",
+        "issue-date",
+        "run-type",
     ):
         parser.add_argument("--" + name)
     parser.add_argument("--training-cap", type=int)
     parser.add_argument("--sampling-seed", type=int)
+    parser.add_argument("--seed", type=int)
     args = parser.parse_args()
     config = load_hdfs_config()
     client = HdfsCliClient()
@@ -469,6 +480,12 @@ def main() -> None:
     if args.skip_completed_driver:
         request = _json(client, _request_path(config, args.pipeline_run_id))
         manifest = request["manifest"]
+        if manifest.get("contract_name") == "forecast_manifest":
+            from warehouse_bigdata.forecasting.forecast_artifacts import validate_forecast_recovery
+            binding = _json(client, render_staging_path(config.base_path, args.pipeline_run_id) + "/input_binding.json")
+            validate_forecast_recovery(args, binding)
+            finalize_publication(client, config, pipeline_run_id=args.pipeline_run_id)
+            raise SystemExit(10)
         is_model = manifest.get("contract_name") == "model_manifest"
         if not is_model and json.loads(manifest["output_dataset_names"]) != ["forecast_features"]:
             raise HdfsNamespaceError("J04 recovery run belongs to another job")
@@ -509,9 +526,13 @@ def main() -> None:
     status = finalize_publication(client, config, pipeline_run_id=args.pipeline_run_id)
     if not args.recover:
         print(f"status={status}")
-        print(
-            f"run_manifest_path={render_run_manifest_path(config.base_path, args.pipeline_run_id)}"
-        )
+        request = _json(client, _request_path(config, args.pipeline_run_id))
+        if request["manifest"].get("contract_name") == "forecast_manifest":
+            from warehouse_bigdata.common.hdfs_paths import render_forecast_output_path
+            path = render_forecast_output_path(config.base_path, request["manifest"]["forecast_run_id"]) + "/scoring_manifest.json"
+        else:
+            path = render_run_manifest_path(config.base_path, args.pipeline_run_id)
+        print(f"run_manifest_path={path}")
     elif args.skip_completed_driver:
         # Internal launcher protocol: owner recovery has completed a frozen J04
         # request. Do not start Spark and accidentally recompute under this ID.

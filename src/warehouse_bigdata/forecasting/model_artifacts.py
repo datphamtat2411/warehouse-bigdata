@@ -211,10 +211,9 @@ def finalize_model_publication(client, config, *, pipeline_run_id, manifest):
     return "VALIDATED"
 
 
-def load_validated_model(spark, *, model_run_id, source_snapshot_id, feature_version,
+def read_validated_model_metadata(*, model_run_id, source_snapshot_id, feature_version,
                          hdfs_config, client):
     """Load only a completed, sealed and integrity-checked model with matching lineage."""
-    from pyspark.ml import PipelineModel
     from warehouse_bigdata.forecasting.training import NUMERIC_FEATURES, PREDICTORS
 
     validate_model_run_id(model_run_id)
@@ -236,4 +235,45 @@ def load_validated_model(spark, *, model_run_id, source_snapshot_id, feature_ver
         raise HdfsNamespaceError("unsupported model input schema")
     for item in model_file_integrity(client, path):
         require_sealed(client, path + "/" + item["path"], hdfs_config.base_path)
-    return PipelineModel.load(artifact_uri(hdfs_config, path + "/spark_pipeline_model"))
+    binding = _json(client, path + "/evidence/training.json")["input_binding"]
+    frozen = _json(client, render_staging_path(hdfs_config.base_path, manifest["pipeline_run_id"]) + "/input_binding.json")
+    if binding != frozen:
+        raise HdfsNamespaceError("model training evidence input binding conflicts")
+    return {"manifest": manifest, "feature_schema": schema,
+            "input_binding": binding,
+            "artifact_path": path}
+
+
+def validate_scoring_pipeline(model):
+    """Require the supported fitted T01 stages, input order and unknown policy."""
+    from pyspark.ml.feature import (SQLTransformer, StringIndexerModel, OneHotEncoderModel,
+                                    ImputerModel, VectorAssembler)
+    from pyspark.ml.regression import RandomForestRegressionModel
+    from warehouse_bigdata.forecasting.training import NUMERIC_FEATURES, PREDICTORS
+
+    expected = (SQLTransformer, StringIndexerModel, StringIndexerModel, OneHotEncoderModel,
+                ImputerModel, VectorAssembler, RandomForestRegressionModel)
+    stages = model.stages
+    aliases = ", ".join(f"CAST(`{n}` AS DOUBLE) AS `_rf_{n}`" for n in NUMERIC_FEATURES)
+    if len(stages) != 7 or any(not isinstance(s, cls) for s, cls in zip(stages, expected)):
+        raise HdfsNamespaceError("unsupported fitted T01 pipeline stages")
+    if (stages[0].getStatement() != "SELECT *, " + aliases + " FROM __THIS__" or
+        stages[1].getInputCol() != "store_id" or stages[1].getOutputCol() != "_rf_store_index" or
+        stages[2].getInputCol() != "dept_id" or stages[2].getOutputCol() != "_rf_dept_index" or
+        any(stages[i].getHandleInvalid() != "keep" for i in (1, 2, 3)) or
+        stages[3].getInputCols() != ["_rf_store_index", "_rf_dept_index"] or
+        stages[3].getOutputCols() != ["_rf_store_vector", "_rf_dept_vector"] or stages[3].getDropLast() or
+        stages[4].getInputCols() != ["last_known_price"] or stages[4].getOutputCols() != ["_rf_price"] or
+        stages[4].getStrategy() != "median" or stages[5].getInputCols() != list(PREDICTORS) or
+        stages[5].getOutputCol() != "features" or stages[5].getHandleInvalid() != "error" or
+        stages[6].getFeaturesCol() != "features" or stages[6].getPredictionCol() != "raw_prediction"):
+        raise HdfsNamespaceError("unsupported fitted T01 preprocessing inputs/order/output")
+
+
+def load_validated_model(spark, *, model_run_id, source_snapshot_id, feature_version, hdfs_config, client):
+    from pyspark.ml import PipelineModel
+    metadata = read_validated_model_metadata(model_run_id=model_run_id, source_snapshot_id=source_snapshot_id,
+        feature_version=feature_version, hdfs_config=hdfs_config, client=client)
+    model = PipelineModel.load(artifact_uri(hdfs_config, metadata["artifact_path"] + "/spark_pipeline_model"))
+    validate_scoring_pipeline(model)
+    return model

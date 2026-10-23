@@ -136,7 +136,7 @@ def _read_bound_calendar(spark, client, config, binding):
                      "calendar_checksum": manifest["artifact_checksum"]}
 
 
-def read_validated_forecast_features_snapshot(spark, *, source_version, source_snapshot_id,
+def read_validated_feature_context(spark, *, source_version, source_snapshot_id,
         upstream_pipeline_run_id, feature_version, hdfs_config, client):
     validate_source_version(source_version)
     validate_source_snapshot_id(source_snapshot_id)
@@ -190,8 +190,27 @@ def read_validated_forecast_features_snapshot(spark, *, source_version, source_s
     for item in sidecar["file_integrity"]:
         require_sealed(client, artifact + "/" + item["path"], config.base_path)
     mapping, calendar_evidence = _read_bound_calendar(spark, client, config, binding)
+    if sidecar.get("row_count") != manifest["row_count"]:
+        raise FeatureInputError("J04 completion/sidecar counts conflict")
+    return {"calendar_mapping": mapping, "completion_digest": document_digest(manifest),
+            "dataset_manifest_digest": document_digest(sidecar), "input_binding_digest": document_digest(binding),
+            "calendar_evidence": calendar_evidence, "artifact_uri": config.uri + artifact,
+            "source_version": source_version, "source_snapshot_id": source_snapshot_id,
+            "feature_version": feature_version, "upstream_pipeline_run_id": upstream_pipeline_run_id,
+            "upstream_evidence": binding["upstream_evidence"], "manifest": manifest, "sidecar": sidecar}
+
+
+def read_validated_forecast_features_snapshot(spark, *, source_version, source_snapshot_id,
+        upstream_pipeline_run_id, feature_version, hdfs_config, client):
+    context = read_validated_feature_context(spark, source_version=source_version,
+        source_snapshot_id=source_snapshot_id, upstream_pipeline_run_id=upstream_pipeline_run_id,
+        feature_version=feature_version, hdfs_config=hdfs_config, client=client)
+    config = hdfs_config
+    manifest, sidecar = context["manifest"], context["sidecar"]
+    mapping = context["calendar_mapping"]
+    coverage = json.loads(manifest["coverage_and_exclusion_counts"])
     frame = (spark.read.option("mergeSchema", "true").option("ignoreCorruptFiles", "false")
-             .option("ignoreMissingFiles", "false").parquet(config.uri + artifact))
+             .option("ignoreMissingFiles", "false").parquet(context["artifact_uri"]))
     if sidecar.get("row_count") != manifest["row_count"]:
         raise FeatureInputError("J04 completion/sidecar counts conflict")
     validate_feature_rows(frame, calendar_mapping=mapping, source_snapshot_id=source_snapshot_id,
@@ -203,8 +222,4 @@ def read_validated_forecast_features_snapshot(spark, *, source_version, source_s
         metrics != coverage.get("metrics") or metrics.get("role_counts") !=
         {role: role_counts.get(role, 0) for role in ("train", "validation", "test")}):
         raise FeatureInputError("J04 frozen coverage/count evidence conflicts with Parquet")
-    return frame, {"calendar_mapping": mapping, "completion_digest": document_digest(manifest),
-                   "dataset_manifest_digest": document_digest(sidecar), "input_binding_digest": document_digest(binding),
-                   "calendar_evidence": calendar_evidence, "artifact_uri": config.uri + artifact,
-                   "source_version": source_version, "source_snapshot_id": source_snapshot_id,
-                   "feature_version": feature_version, "upstream_pipeline_run_id": upstream_pipeline_run_id}
+    return frame, {key: value for key, value in context.items() if key not in {"manifest", "sidecar", "upstream_evidence"}}
