@@ -371,6 +371,27 @@ def test_j06_launcher_failed_driver_never_publishes(sandbox):
     assert len([c for c in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" in c]) == 1
 
 
+@pytest.mark.parametrize("status", [0, 10, 17, 23])
+def test_evaluation_launcher_recovery_and_failure_propagation(sandbox, status):
+    sandbox["env"]["TEST_PUBLICATION_STATUS"] = str(status if status != 23 else 0)
+    if status == 23:
+        sandbox["env"]["TEST_DRIVER_ONLY_STATUS"] = "23"
+    binding = ["--pipeline-run-id", "evaluation-execution", "--evaluation-run-id", "evaluation",
+        "--model-run-id", "model", "--source-version", "sha256:" + "a"*64,
+        "--source-snapshot-id", "snapshot", "--j03-pipeline-run-id", "j03", "--j04-pipeline-run-id", "j04",
+        "--feature-version", "v1", "--run-type", "test", "--validation-evaluation-run-id", "frozen-validation",
+        "--hdfs-uri", "hdfs://hdfs-namenode:8020", "--spark-master", "spark://spark-master:7077"]
+    result = invoke(sandbox, "--", "warehouse_bigdata/jobs/evaluate_forecasts.py", *binding)
+    assert result.returncode == (0 if status == 10 else status), result.stderr
+    publication = [c for c in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" in c]
+    assert "--skip-completed-driver" in publication[0]
+    assert all(value in publication[0] for value in binding)
+    assert publication[0][publication[0].index("--seed") + 1] == "42"
+    assert len(publication) == (2 if status == 0 else 1)
+    assert len([c for c in runs(sandbox) if c not in publication]) == (1 if status in (0, 23) else 0)
+    assert_cluster_untouched(sandbox)
+
+
 @pytest.mark.parametrize(
     "job", ["build_forecast_features", "normalize_sales_daily", "enrich_analytics"]
 )

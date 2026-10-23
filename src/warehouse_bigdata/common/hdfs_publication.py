@@ -348,6 +348,11 @@ def finalize_publication(client, config, *, pipeline_run_id: str) -> str:
     validate_publication_namespace(client, config)
     request = _json(client, _request_path(config, pipeline_run_id))
     manifest = request["manifest"]
+    if manifest.get("contract_name") == "evaluation_manifest":
+        from warehouse_bigdata.forecasting.evaluation_artifacts import finalize_evaluation_publication
+        if request.get("version") != 1 or request.get("pipeline_run_id") != pipeline_run_id:
+            raise HdfsNamespaceError("evaluation publication execution identity/version mismatch")
+        return finalize_evaluation_publication(client, config, pipeline_run_id=pipeline_run_id, manifest=manifest)
     if manifest.get("contract_name") == "forecast_manifest":
         from warehouse_bigdata.forecasting.forecast_artifacts import finalize_forecast_publication
         if request.get("version") != 1 or request.get("pipeline_run_id") != pipeline_run_id:
@@ -466,6 +471,8 @@ def main() -> None:
         "forecast-run-id",
         "issue-date",
         "run-type",
+        "evaluation-run-id",
+        "validation-evaluation-run-id",
     ):
         parser.add_argument("--" + name)
     parser.add_argument("--training-cap", type=int)
@@ -480,6 +487,12 @@ def main() -> None:
     if args.skip_completed_driver:
         request = _json(client, _request_path(config, args.pipeline_run_id))
         manifest = request["manifest"]
+        if manifest.get("contract_name") == "evaluation_manifest":
+            from warehouse_bigdata.forecasting.evaluation_artifacts import validate_evaluation_recovery
+            binding = _json(client, render_staging_path(config.base_path, args.pipeline_run_id) + "/input_binding.json")
+            validate_evaluation_recovery(args, binding)
+            finalize_publication(client, config, pipeline_run_id=args.pipeline_run_id)
+            raise SystemExit(10)
         if manifest.get("contract_name") == "forecast_manifest":
             from warehouse_bigdata.forecasting.forecast_artifacts import validate_forecast_recovery
             binding = _json(client, render_staging_path(config.base_path, args.pipeline_run_id) + "/input_binding.json")
@@ -527,7 +540,10 @@ def main() -> None:
     if not args.recover:
         print(f"status={status}")
         request = _json(client, _request_path(config, args.pipeline_run_id))
-        if request["manifest"].get("contract_name") == "forecast_manifest":
+        if request["manifest"].get("contract_name") == "evaluation_manifest":
+            from warehouse_bigdata.common.hdfs_paths import render_evaluation_output_path
+            path = render_evaluation_output_path(config.base_path, request["manifest"]["evaluation_run_id"]) + "/evaluation_manifest.json"
+        elif request["manifest"].get("contract_name") == "forecast_manifest":
             from warehouse_bigdata.common.hdfs_paths import render_forecast_output_path
             path = render_forecast_output_path(config.base_path, request["manifest"]["forecast_run_id"]) + "/scoring_manifest.json"
         else:

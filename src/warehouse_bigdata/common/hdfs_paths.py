@@ -180,6 +180,17 @@ def render_forecast_output_path(base_path: str, forecast_run_id: str) -> str:
     return render_hdfs_artifact_path(base_path, "forecast_output", forecast_run_id=forecast_run_id)
 
 
+def validate_evaluation_run_id(evaluation_run_id: str) -> str:
+    if not isinstance(evaluation_run_id, str) or not _SAFE_IDENTIFIER.fullmatch(evaluation_run_id):
+        raise HdfsPathError("evaluation_run_id must be a bounded safe identifier")
+    return evaluation_run_id
+
+
+def render_evaluation_output_path(base_path: str, evaluation_run_id: str) -> str:
+    validate_evaluation_run_id(evaluation_run_id)
+    return render_hdfs_artifact_path(base_path, "evaluation_output", evaluation_run_id=evaluation_run_id)
+
+
 def render_normalization_chunk_path(staging_path: str, day_start: int, day_end: int) -> str:
     """Render one deterministic day-range Parquet chunk path."""
     _validate_day_range(day_start, day_end)

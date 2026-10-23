@@ -35,6 +35,7 @@ publication_run_id=
 feature_job=0
 model_job=0
 forecast_job=0
+evaluation_job=0
 recovery_binding=()
 [[ $2 == warehouse_bigdata/jobs/build_forecast_features.py ]] && feature_job=1
 if [[ $2 == warehouse_bigdata/jobs/train_forecast_model.py ]]; then
@@ -45,8 +46,13 @@ if [[ $2 == warehouse_bigdata/jobs/forecast_daily.py ]]; then
     feature_job=1
     forecast_job=1
 fi
+if [[ $2 == warehouse_bigdata/jobs/evaluate_forecasts.py ]]; then
+    feature_job=1
+    forecast_job=1
+    evaluation_job=1
+fi
 case $2 in
-    warehouse_bigdata/jobs/normalize_sales_daily.py|warehouse_bigdata/jobs/enrich_analytics.py|warehouse_bigdata/jobs/build_forecast_features.py|warehouse_bigdata/jobs/train_forecast_model.py|warehouse_bigdata/jobs/forecast_daily.py)
+    warehouse_bigdata/jobs/normalize_sales_daily.py|warehouse_bigdata/jobs/enrich_analytics.py|warehouse_bigdata/jobs/build_forecast_features.py|warehouse_bigdata/jobs/train_forecast_model.py|warehouse_bigdata/jobs/forecast_daily.py|warehouse_bigdata/jobs/evaluate_forecasts.py)
         shift 2
         while [[ $# -gt 0 ]]; do
             case $1 in
@@ -69,13 +75,13 @@ case $2 in
                         recovery_binding+=("$1")
                     fi
                     shift ;;
-                --model-run-id|--training-cap|--sampling-seed|--resource-justification|--pilot-evidence-uri|--hdfs-uri|--spark-master|--event-log-dir|--j03-pipeline-run-id|--j04-pipeline-run-id|--forecast-run-id|--issue-date|--run-type|--seed)
+                --model-run-id|--training-cap|--sampling-seed|--resource-justification|--pilot-evidence-uri|--hdfs-uri|--spark-master|--event-log-dir|--j03-pipeline-run-id|--j04-pipeline-run-id|--forecast-run-id|--issue-date|--run-type|--seed|--evaluation-run-id|--validation-evaluation-run-id)
                     [[ $# -ge 2 ]] || { usage >&2; exit 2; }
                     if (( model_job || forecast_job )); then
                         recovery_binding+=("$1" "$2")
                     fi
                     shift 2 ;;
-                --model-run-id=*|--training-cap=*|--sampling-seed=*|--resource-justification=*|--pilot-evidence-uri=*|--hdfs-uri=*|--spark-master=*|--event-log-dir=*|--j03-pipeline-run-id=*|--j04-pipeline-run-id=*|--forecast-run-id=*|--issue-date=*|--run-type=*|--seed=*)
+                --model-run-id=*|--training-cap=*|--sampling-seed=*|--resource-justification=*|--pilot-evidence-uri=*|--hdfs-uri=*|--spark-master=*|--event-log-dir=*|--j03-pipeline-run-id=*|--j04-pipeline-run-id=*|--forecast-run-id=*|--issue-date=*|--run-type=*|--seed=*|--evaluation-run-id=*|--validation-evaluation-run-id=*)
                     if (( model_job || forecast_job )); then
                         recovery_binding+=("$1")
                     fi
@@ -218,6 +224,7 @@ publish_m04() {
         local job_label=J04
         (( model_job )) && job_label=J05
         (( forecast_job )) && job_label=J06
+        (( evaluation_job )) && job_label=J05/J06-evaluation
         printf '%s owner publication failed/interrupted (status %s). Preserve frozen HDFS evidence; retry this launcher with the same run ID %s and binding arguments for owner recovery.\n' \
             "$job_label" "$publication_status" "$publication_run_id" >&2
     fi

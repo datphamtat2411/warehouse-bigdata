@@ -128,6 +128,53 @@ schema, row count, and reconciliation measures. The final validated J03
 consumers must reject a run when that marker or any referenced dataset manifest is absent.
 Manifest paths contain metadata. `published/current.json` is an approval pointer, not a data directory.
 
+### Frozen chronological forecast evaluation (M06-T03)
+
+Each phase has its own `evaluation_run_id` and independent immutable bundle at
+`outputs/evaluation/<evaluation_run_id>/`; evaluation never changes a sealed model.
+Validation origins are d_1885, d_1892, d_1899, d_1906 (outcomes d_1886–d_1913).
+Test origins are d_1913, d_1920, d_1927, d_1934 (outcomes d_1914–d_1941).
+Holdout IDs are `m5-chronological-paired-v1-validation` and
+`m5-chronological-paired-v1-test`. Each origin's RF forecast ID is deterministically
+derived from the evaluation ID and day index, and mapped in binding/manifest evidence.
+
+Before forecasting, validation persists the unchanged T01 model/checksum/training
+selection binding, training-only T02 cohort evidence, seed, feature/source lineage,
+code revision, origins, preprocessing and analytical policy in `input_binding.json`.
+Test explicitly selects a sealed validation evaluation and reuses its cohort; the
+model, source, code and analytical freeze must match before test scoring or label
+alignment. Preparation reads observed history only through each origin. Seasonal
+naïve uses the original observed `T+h-7` value, without fallback or imputation.
+
+`forecast_metrics` remains Contract v1: exactly 48 rows per phase (two methods ×
+three metrics × horizons 0–7). Horizon 0 pools all paired observations across all
+four origins. Both methods use identical valid observed-label keys, including
+partially labelled series. MAE is SAE/N, RMSE is sqrt(SSE/N), and WAPE is
+100×SAE/sum(actual units). Zero actual sum gives null WAPE; empty slices have zero
+counts/sums and null scores. Aggregate `forecast_run_id` is null; only RF metrics
+carry `model_run_id`. Squared-error sums live in evidence, outside the v1 schema.
+
+Bundles contain `metrics`, `metric_statistics`, `paired`, `alignment`, `coverage`,
+`exceptions`, `cohort_selection`, `diagnostics`, `seven_day_errors`, plus per-origin
+`origins/d_<index>/{forecast_daily,baseline_predictions,baseline_exceptions,rf_exceptions,eligibility}`.
+RF rows retain FORECAST_DAILY v1 and predicted-unit-sales provenance; baseline
+evidence records observed-history provenance and its exact source date. Coverage
+reconciles candidates, preparation eligibility, method predictions, labels, pairs,
+drops, full/partial series and prediction differences. All unpaired method
+predictions and attributable exclusions remain available for audit.
+
+The `evaluation_manifest.json` completion marker uses EVALUATION_MANIFEST v1;
+execution identity belongs to the binding and publication request. Parquet writes
+use `errorifexists` and are independently reread/validated before staging a request
+under `staging/pipeline_run_id=<id>/candidates/evaluation`. The bundle checksum is
+SHA-256 of canonical JSON `{files: sorted relative paths, sizes, HDFS checksums}`
+plus newline, excluding `evaluation_manifest.json` and `evidence/publication.json`
+to avoid self-reference; the request binds their contents separately. Inventories
+are bounded to 4,096 entries and the declared layout. Owner-only private claim,
+seal and exclusive rename publish the complete bundle. Recovery checks exact
+arguments and fresh integrity without rescoring; verified published reuse performs
+no writes. Real-data execution and distributed acceptance belong to opt-in T04.
+
 ## Application Read Contract
 
 J08 is the publication approval authority. The HDFS pointer
