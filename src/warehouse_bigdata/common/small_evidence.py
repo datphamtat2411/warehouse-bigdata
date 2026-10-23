@@ -30,7 +30,13 @@ def completed_execution(
 
     Worker participation is derived only from successful tasks in successful
     stage attempts. Failed/retried attempts remain explicit in the returned
-    evidence instead of being folded into the successful counts.
+    evidence instead of being folded into the successful counts. ``Task Info.Index``
+    is the canonical task-set identity used for coverage. ``Partition ID`` is
+    retained as the separate RDD partition identity and is optional for legacy
+    event records produced before Spark 3.3; a missing index is rejected because
+    task-set coverage would otherwise be ambiguous. The legacy ``partition``
+    report field keeps its prior fallback behavior, while ``task_set_index`` and
+    ``partition_id`` expose the two identities explicitly.
     """
     root = render_staging_path(config.base_path, run) + "/events"
     paths = client.list_children(root)
@@ -63,6 +69,9 @@ def completed_execution(
     stage_attempts = {}
     task_attempts = {}
     task_ids = set()
+    task_attempt_ids = set()
+    partition_ids_by_task = {}
+    partition_to_task_index = {}
     event_kinds = []
     application = None
     application_name = None
@@ -232,11 +241,31 @@ def completed_execution(
             if not isinstance(info, dict):
                 raise ScopeError("task completion is missing Task Info")
             task_id = _nonnegative_int(info.get("Task ID"), "task ID")
-            partition = info.get("Partition ID", info.get("Index"))
-            if "Partition ID" in info and "Index" in info and info["Partition ID"] != info["Index"]:
-                raise ScopeError("task partition identities differ")
-            partition = _nonnegative_int(partition, "task partition")
+            if "Index" not in info:
+                raise ScopeError("task completion is missing task-set index")
+            task_set_index = _nonnegative_int(info["Index"], "task-set index")
+            if "Partition ID" in info:
+                partition_id = _nonnegative_int(info["Partition ID"], "RDD partition ID")
+            else:
+                partition_id = None
             attempt = _nonnegative_int(info.get("Attempt"), "task attempt")
+            if task_set_index >= record["expected_tasks"]:
+                raise ScopeError("task-set index is outside the stage task set")
+            task_attempt_key = (key, task_set_index, attempt)
+            if task_attempt_key in task_attempt_ids:
+                raise ScopeError("event log contains duplicate logical task attempt")
+            task_attempt_ids.add(task_attempt_key)
+            logical_task_key = (key[0], task_set_index)
+            if partition_id is not None:
+                previous_partition_id = partition_ids_by_task.get(logical_task_key)
+                if previous_partition_id is not None and previous_partition_id != partition_id:
+                    raise ScopeError("RDD partition ID differs across task attempts")
+                partition_ids_by_task[logical_task_key] = partition_id
+                partition_key = (key[0], partition_id)
+                previous_index = partition_to_task_index.get(partition_key)
+                if previous_index is not None and previous_index != task_set_index:
+                    raise ScopeError("RDD partition ID maps to multiple task-set indices")
+                partition_to_task_index[partition_key] = task_set_index
             launch_time = _nonnegative_int(info.get("Launch Time"), "task launch time")
             finish_time = _nonnegative_int(info.get("Finish Time"), "task finish time")
             if finish_time < launch_time:
@@ -265,7 +294,11 @@ def completed_execution(
             task = {
                 "stage": key,
                 "task_id": task_id,
-                "partition": partition,
+                # Keep the legacy field's fallback behavior while exposing both
+                # Spark identities explicitly to new consumers.
+                "partition": partition_id if partition_id is not None else task_set_index,
+                "task_set_index": task_set_index,
+                "partition_id": partition_id,
                 "attempt": attempt,
                 "launch_time": launch_time,
                 "finish_time": finish_time,
@@ -276,7 +309,7 @@ def completed_execution(
                 "metrics": metrics,
             }
             record["tasks"].append(task)
-            task_attempts.setdefault((key[0], partition), []).append(task)
+            task_attempts.setdefault(logical_task_key, []).append(task)
 
     if event_kinds[0] != "SparkListenerLogStart" or log_start_count != 1:
         raise ScopeError("event log is missing exactly one SparkListenerLogStart")
@@ -332,17 +365,33 @@ def completed_execution(
             retried_task_records.extend(attempts)
         failed_task_records.extend(task for task in attempts if not task["success"])
     for stage in stage_attempts.values():
+        attempts_by_index = {}
+        for task in stage["tasks"]:
+            attempts_by_index.setdefault(task["task_set_index"], []).append(task["attempt"])
+        for attempts in attempts_by_index.values():
+            numbers = sorted(attempts)
+            if numbers != list(range(len(numbers))):
+                raise ScopeError("task retry attempt sequence is incomplete")
         if stage["successful"]:
             successful = [task for task in stage["tasks"] if task["success"]]
-            partitions = {task["partition"] for task in successful}
+            task_indices = {task["task_set_index"] for task in successful}
             expected_tasks = stage["expected_tasks"]
-            if expected_tasks is None or partitions != set(range(expected_tasks)):
-                raise ScopeError("successful stage partition coverage is incomplete")
-            stage["successful_partitions"] = len(partitions)
+            if (
+                expected_tasks is None
+                or len(successful) != expected_tasks
+                or task_indices != set(range(expected_tasks))
+            ):
+                raise ScopeError(
+                    "successful stage task-set index coverage is incomplete (partition coverage)"
+                )
+            stage["successful_task_indices"] = sorted(task_indices)
+            stage["successful_partitions"] = len(task_indices)
             successful_tasks.extend(successful)
     for stage in stage_attempts.values():
         if "successful_partitions" not in stage:
             stage["successful_partitions"] = 0
+        if "successful_task_indices" not in stage:
+            stage["successful_task_indices"] = []
         stage["failed_task_attempts"] = sum(not task["success"] for task in stage["tasks"])
 
     def task_record(task):
@@ -351,6 +400,8 @@ def completed_execution(
             "stage_attempt_id": task["stage"][1],
             "task_id": task["task_id"],
             "partition": task["partition"],
+            "task_set_index": task["task_set_index"],
+            "partition_id": task["partition_id"],
             "attempt": task["attempt"],
             "launch_time": task["launch_time"],
             "finish_time": task["finish_time"],
@@ -433,6 +484,7 @@ def completed_execution(
                 "stage_id": stage["stage_id"],
                 "stage_attempt_id": stage["stage_attempt_id"],
                 "expected_tasks": stage["expected_tasks"],
+                "successful_task_indices": stage["successful_task_indices"],
                 "successful_partitions": stage["successful_partitions"],
                 "failed_task_attempts": stage["failed_task_attempts"],
                 "successful": stage["successful"],

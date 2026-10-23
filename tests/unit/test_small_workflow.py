@@ -1,5 +1,6 @@
 """No live services: artifact reuse, authorization, and exact-run staging boundaries."""
 
+import copy
 import json
 import sys
 from types import SimpleNamespace
@@ -27,6 +28,29 @@ def complete_selector():
         test_evaluation_run_id="small-test",
         **{key: "small-" + stage for stage, key in RUN_KEYS.items()},
     )
+
+
+def _execution_events():
+    from tests.unit.test_m06_acceptance import _event_log
+
+    return [json.loads(line) for line in _event_log().splitlines()]
+
+
+def _execution_client(events):
+    payload = ("\n".join(json.dumps(event) for event in events) + "\n").encode()
+    return SimpleNamespace(
+        list_children=lambda path: [path + "/app-1"],
+        stat=lambda path: SimpleNamespace(size_bytes=len(payload)),
+        read_remote=lambda path: payload,
+    )
+
+
+def _task_events(events):
+    return [event for event in events if event["Event"] == "SparkListenerTaskEnd"]
+
+
+def _task_event(events, index):
+    return next(event for event in _task_events(events) if event["Task Info"]["Index"] == index)
 
 
 def test_immutable_scope_write_rejects_different_selection():
@@ -200,6 +224,159 @@ def test_owner_preparation_is_exact_and_refuses_execution_evidence():
     client.entries[root]["permission"] = "777"
     with pytest.raises(HdfsNamespaceError, match="world-writable"):
         prepare_run_staging(client, CONFIG, pipeline_run_id="small-j02", events=True)
+
+
+@pytest.mark.parametrize("partition_ids", [(0, 1), (11, 29)])
+def test_execution_evidence_separates_task_set_index_and_rdd_partition_id(partition_ids):
+    from tests.unit.test_hdfs_namespace import CONFIG
+    from warehouse_bigdata.common.small_evidence import completed_execution
+
+    events = _execution_events()
+    for event, partition_id in zip(_task_events(events), partition_ids, strict=True):
+        event["Task Info"]["Partition ID"] = partition_id
+
+    execution = completed_execution(_execution_client(events), CONFIG, "small-j02")
+    tasks = execution["stage_attempts"][0]["task_attempts"]
+    assert [task["task_set_index"] for task in tasks] == [0, 1]
+    assert [task["partition_id"] for task in tasks] == list(partition_ids)
+    assert [task["partition"] for task in tasks] == list(partition_ids)
+    assert execution["stage_attempts"][0]["successful_task_indices"] == [0, 1]
+    assert execution["successful_partition_count"] == 2
+
+
+def test_execution_evidence_accepts_missing_rdd_partition_id_as_legacy_compatibility():
+    from tests.unit.test_hdfs_namespace import CONFIG
+    from warehouse_bigdata.common.small_evidence import completed_execution
+
+    events = _execution_events()
+    for event in _task_events(events):
+        event["Task Info"].pop("Partition ID")
+
+    execution = completed_execution(_execution_client(events), CONFIG, "small-j02")
+    tasks = execution["stage_attempts"][0]["task_attempts"]
+    assert [task["partition_id"] for task in tasks] == [None, None]
+    assert [task["partition"] for task in tasks] == [0, 1]
+
+
+def test_execution_evidence_rejects_missing_task_set_index_and_incomplete_coverage():
+    from tests.unit.test_hdfs_namespace import CONFIG
+    from warehouse_bigdata.common.small_evidence import completed_execution
+
+    missing_index = _execution_events()
+    _task_event(missing_index, 0)["Task Info"].pop("Index")
+    with pytest.raises(ScopeError, match="task-set index"):
+        completed_execution(_execution_client(missing_index), CONFIG, "small-j02")
+
+    incomplete = _execution_events()
+    task = _task_event(incomplete, 1)
+    incomplete.remove(task)
+    with pytest.raises(ScopeError, match="task-set index coverage"):
+        completed_execution(_execution_client(incomplete), CONFIG, "small-j02")
+
+
+@pytest.mark.parametrize(
+    "field,value,pattern",
+    [
+        ("Index", "not-an-int", "task-set index"),
+        ("Index", -1, "task-set index"),
+        ("Partition ID", "not-an-int", "RDD partition ID"),
+        ("Partition ID", -1, "RDD partition ID"),
+    ],
+)
+def test_execution_evidence_rejects_malformed_task_identity(field, value, pattern):
+    from tests.unit.test_hdfs_namespace import CONFIG
+    from warehouse_bigdata.common.small_evidence import completed_execution
+
+    events = _execution_events()
+    _task_event(events, 0)["Task Info"][field] = value
+    with pytest.raises(ScopeError, match=pattern):
+        completed_execution(_execution_client(events), CONFIG, "small-j02")
+
+
+def test_execution_evidence_rejects_duplicate_logical_task_attempt():
+    from tests.unit.test_hdfs_namespace import CONFIG
+    from warehouse_bigdata.common.small_evidence import completed_execution
+
+    events = _execution_events()
+    duplicate = copy.deepcopy(_task_event(events, 0))
+    duplicate["Task Info"]["Task ID"] = 100
+    stage_completed = next(
+        index
+        for index, event in enumerate(events)
+        if event["Event"] == "SparkListenerStageCompleted"
+    )
+    events.insert(stage_completed, duplicate)
+    with pytest.raises(ScopeError, match="duplicate logical task attempt"):
+        completed_execution(_execution_client(events), CONFIG, "small-j02")
+
+
+def _retried_execution_events(*, conflicting_partition=False, missing_first_attempt=False):
+    events = _execution_events()
+    original = _task_event(events, 0)
+    if missing_first_attempt:
+        original["Task Info"]["Attempt"] = 1
+        return events
+    failed = copy.deepcopy(original)
+    failed["Task Info"].update({"Task ID": 100, "Attempt": 0, "Failed": True})
+    failed["Task End Reason"] = {"Reason": "FetchFailed"}
+    original["Task Info"].update({"Task ID": 101, "Attempt": 1})
+    if conflicting_partition:
+        failed["Task Info"]["Partition ID"] = 11
+        original["Task Info"]["Partition ID"] = 12
+    events.insert(events.index(original), failed)
+    return events
+
+
+def test_execution_evidence_keeps_failed_retry_attributed_to_its_logical_task():
+    from tests.unit.test_hdfs_namespace import CONFIG
+    from warehouse_bigdata.common.small_evidence import completed_execution
+
+    execution = completed_execution(
+        _execution_client(_retried_execution_events()), CONFIG, "small-j02"
+    )
+    assert execution["successful_task_count"] == 2
+    assert execution["failed_task_attempt_count"] == 1
+    assert execution["retried_task_attempt_count"] == 1
+    assert len(execution["retried_task_records"]) == 2
+
+
+@pytest.mark.parametrize(
+    "events,pattern",
+    [
+        (_retried_execution_events(missing_first_attempt=True), "retry attempt sequence"),
+        (_retried_execution_events(conflicting_partition=True), "RDD partition ID differs"),
+    ],
+)
+def test_execution_evidence_rejects_inconsistent_retry_identity(events, pattern):
+    from tests.unit.test_hdfs_namespace import CONFIG
+    from warehouse_bigdata.common.small_evidence import completed_execution
+
+    with pytest.raises(ScopeError, match=pattern):
+        completed_execution(_execution_client(events), CONFIG, "small-j02")
+
+
+@pytest.mark.parametrize(
+    "removed_event,pattern",
+    [("SparkListenerStageCompleted", "stage"), ("SparkListenerApplicationEnd", "ApplicationEnd")],
+)
+def test_execution_evidence_requires_stage_and_application_termination(removed_event, pattern):
+    from tests.unit.test_hdfs_namespace import CONFIG
+    from warehouse_bigdata.common.small_evidence import completed_execution
+
+    events = [event for event in _execution_events() if event["Event"] != removed_event]
+    with pytest.raises(ScopeError, match=pattern):
+        completed_execution(_execution_client(events), CONFIG, "small-j02")
+
+
+def test_execution_evidence_rejects_successful_work_on_only_one_worker():
+    from tests.unit.test_hdfs_namespace import CONFIG
+    from warehouse_bigdata.common.small_evidence import completed_execution
+
+    events = _execution_events()
+    for event in _task_events(events):
+        event["Task Info"].update(Host="spark-worker-1", **{"Executor ID": "1"})
+    with pytest.raises(ScopeError, match="both named Workers"):
+        completed_execution(_execution_client(events), CONFIG, "small-j02")
 
 
 def test_execution_evidence_requires_both_workers_and_completed_standalone():
