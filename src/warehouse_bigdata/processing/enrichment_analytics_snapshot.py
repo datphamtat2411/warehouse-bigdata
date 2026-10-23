@@ -448,7 +448,9 @@ def read_validated_sales_enriched_snapshot(
         "row_count": metrics.row_count,
         "metadata_digests": {path: "sha256:" + hashlib.sha256(_json_bytes(doc)).hexdigest()
                              for path, doc in documents.items()},
-        "raw_manifest_digest": "sha256:" + hashlib.sha256(_json_bytes(raw.manifests)).hexdigest(),
+        "raw_manifest_digest": "sha256:" + hashlib.sha256(
+            _json_bytes([dict(manifest) for manifest in raw.manifests])
+        ).hexdigest(),
     }
 
 

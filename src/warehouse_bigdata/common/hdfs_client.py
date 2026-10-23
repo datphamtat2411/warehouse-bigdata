@@ -16,7 +16,7 @@ import re
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode, urlsplit
@@ -350,16 +350,76 @@ class HdfsCliClient:
         return RemoteFileStat(int(fields[0]), int(fields[1]))
 
     def checksum(self, remote_path: str) -> str:
-        """Return the bounded raw HDFS checksum record for a file."""
-        output = (
-            self._run(("dfs", "-checksum", remote_path)).stdout.decode(errors="replace").strip()
-        )
-        if not output or "\n" in output:
-            raise HdfsCommandError(f"Malformed HDFS checksum output for {remote_path!r}.")
-        fields = output.split("\t")
-        if len(fields) == 3 and fields[0] == remote_path:
-            return "\t".join(fields[1:])
-        return output
+        """Return a fresh actual checksum, rejecting unbound or malformed records."""
+        return self.checksums((remote_path,))[remote_path]
+
+    def checksums(self, remote_paths: Sequence[str]) -> dict[str, str]:
+        """Read every actual file checksum in bounded multi-path Hadoop CLI batches.
+
+        Hadoop 3.4.3 Display.Checksum emits exactly path TAB algorithm TAB hex.
+        MD5MD5CRC includes a 12-byte parameter header and 16-byte digest (56 hex);
+        composite CRC is four bytes (8 hex), not the MD5 encoding.
+        Never accept NONE, wildcard expansion, partial success, or an unbound record.
+        No results are cached, including between preclaim and postseal verification.
+        """
+        paths = tuple(remote_paths)
+        if len(paths) > 1024 or len(set(paths)) != len(paths):
+            raise HdfsCommandError("Checksum paths exceed the bound or contain duplicates.")
+        argument_limit = min(16 * 1024, self.metadata_limit - 256)
+        for path in paths:
+            if (
+                not path.startswith("/")
+                or path == "/"
+                or str(PurePosixPath(path)) != path
+                or ".." in PurePosixPath(path).parts
+                or any(ord(character) <= 32 or character in "*?[]{}\\" for character in path)
+                or len(path.encode()) + 1 > argument_limit
+            ):
+                raise HdfsCommandError(f"Unsafe or oversized checksum path: {path!r}.")
+        result: dict[str, str] = {}
+        offset = 0
+        while offset < len(paths):
+            batch: list[str] = []
+            size = 0
+            while offset < len(paths) and len(batch) < 64:
+                path = paths[offset]
+                cost = len(path.encode()) + 1
+                if size + cost > argument_limit:
+                    break
+                batch.append(path)
+                size += cost
+                offset += 1
+            try:
+                lines = self._run(("dfs", "-checksum", *batch)).stdout.decode("utf-8").splitlines()
+            except UnicodeDecodeError as error:
+                raise HdfsCommandError("Malformed HDFS checksum encoding.") from error
+            expected = set(batch)
+            found: dict[str, str] = {}
+            for line in lines:
+                fields = line.split("\t")
+                if (
+                    len(fields) != 3
+                    or fields[0] not in expected
+                    or fields[0] in found
+                    or not (
+                        (
+                            re.fullmatch(r"MD5-of-\d+MD5-of-\d+CRC32C?", fields[1])
+                            and re.fullmatch(r"[0-9a-fA-F]{56}", fields[2])
+                        )
+                        or (
+                            re.fullmatch(r"COMPOSITE-CRC32C?", fields[1])
+                            and re.fullmatch(r"[0-9a-fA-F]{8}", fields[2])
+                        )
+                    )
+                ):
+                    raise HdfsCommandError(
+                        "Malformed, unexpected, or duplicate HDFS checksum record."
+                    )
+                found[fields[0]] = "\t".join(fields[1:])
+            if set(found) != expected:
+                raise HdfsCommandError("HDFS checksum response is missing requested files.")
+            result.update(found)
+        return result
 
     def getconf(self, key: str) -> str:
         """Read one effective Hadoop configuration value."""
@@ -427,6 +487,41 @@ class HdfsCliClient:
                 f"HDFS metadata denied/unavailable: path={path} identity={self.effective_user()} "
                 f"requires --x on ancestors (HTTP {error.code})"
             ) from error
+
+    def list_status(self, path: str) -> tuple[dict, ...]:
+        """List bounded immediate children with fresh NameNode types and byte lengths."""
+        try:
+            statuses = self._webhdfs(path, "LISTSTATUS")["FileStatuses"]["FileStatus"]
+        except HTTPError as error:
+            raise HdfsCommandError(
+                f"HDFS listing denied/unavailable: path={path} (HTTP {error.code})"
+            ) from error
+        except (KeyError, TypeError) as error:
+            raise HdfsCommandError(f"Malformed HDFS listing for {path}.") from error
+        if not isinstance(statuses, list) or len(statuses) > 1024:
+            raise HdfsCommandError(f"Malformed or oversized HDFS listing for {path}.")
+        result = []
+        seen = set()
+        for status in statuses:
+            if not isinstance(status, dict):
+                raise HdfsCommandError(f"Malformed HDFS child status for {path}.")
+            name, kind, length = (status.get(key) for key in ("pathSuffix", "type", "length"))
+            if (
+                not isinstance(name, str)
+                or not name
+                or name in {".", ".."}
+                or "/" in name
+                or any(ord(character) < 32 for character in name)
+                or name in seen
+                or not isinstance(kind, str)
+                or kind not in {"DIRECTORY", "FILE", "SYMLINK"}
+                or type(length) is not int
+                or length < 0
+            ):
+                raise HdfsCommandError(f"Malformed or duplicate HDFS child status for {path}.")
+            seen.add(name)
+            result.append({"path": path.rstrip("/") + "/" + name, "type": kind, "length": length})
+        return tuple(result)
 
     def can_access(self, path: str, permission: str) -> bool:
         """Ask the NameNode to check effective FsAction, including ancestor traversal."""

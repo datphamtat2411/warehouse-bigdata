@@ -8,28 +8,49 @@ from pathlib import PurePosixPath
 import pytest
 
 from tests.unit.test_enrichment_analytics_snapshot import (
-    BASE_PATH, PIPELINE_RUN_ID as J03_RUN, SOURCE_SNAPSHOT_ID, SOURCE_VERSION,
-    _LocalHdfs, spark,  # noqa: F401
+    BASE_PATH,
+    SOURCE_SNAPSHOT_ID,
+    SOURCE_VERSION,
+    _LocalHdfs,  # noqa: F401
+)
+from tests.unit.test_enrichment_analytics_snapshot import (
+    PIPELINE_RUN_ID as J03_RUN,
 )
 from tests.unit.test_hdfs_namespace import CONFIG, PermissionHdfs
 from tests.unit.test_hdfs_raw_ingestion import _run_manifest
 from tests.unit.test_historical_features import _frame, _rows
 from warehouse_bigdata.common.hdfs_namespace import (
-    HdfsNamespaceError, provision_publication_namespace,
+    HdfsNamespaceError,
+    provision_publication_namespace,
 )
 from warehouse_bigdata.common.hdfs_paths import (
-    render_forecast_features_path, render_run_manifest_path, render_staging_path,
+    render_forecast_features_path,
+    render_run_manifest_path,
+    render_staging_path,
 )
 from warehouse_bigdata.common.hdfs_publication import finalize_publication, stage_publication
 from warehouse_bigdata.forecasting import feature_snapshot as module
 from warehouse_bigdata.processing import enrichment_analytics_snapshot as upstream
-
 
 RUN = "j04-feature-001"
 VERSION = "historical_v1"
 
 
 class FeatureLocalHdfs(_LocalHdfs):
+    def list_status(self, path):
+        return tuple(
+            {
+                "path": path + "/" + child.name,
+                "type": "DIRECTORY" if child.is_dir() else "FILE",
+                "length": child.stat().st_size,
+            }
+            for child in sorted(self._local(path).iterdir())
+            if not child.name.endswith(".crc")
+        )
+
+    def checksums(self, paths):
+        return {path: self.checksum(path) for path in paths}
+
     def list_children(self, path):
         return tuple(path + "/" + child.name for child in sorted(self._local(path).iterdir()))
 
@@ -38,6 +59,7 @@ class FeatureLocalHdfs(_LocalHdfs):
 
     def stat(self, path):
         from types import SimpleNamespace
+
         return SimpleNamespace(size_bytes=self._local(path).stat().st_size)
 
 
@@ -47,23 +69,36 @@ def staged_inputs(spark, tmp_path, monkeypatch):
     staging = render_staging_path(BASE_PATH, RUN)
     hdfs.mkdir_parents(staging)
     source = _frame(spark, _rows(range(1, 32), zero=True, prices={}))
-    evidence = {"source_version": SOURCE_VERSION, "source_snapshot_id": SOURCE_SNAPSHOT_ID,
-                "pipeline_run_id": J03_RUN, "metadata_digests": {"marker": "sha256:fixture"}}
-    monkeypatch.setattr(module, "read_validated_sales_enriched_snapshot",
-                        lambda *args, **kwargs: (source, evidence))
+    evidence = {
+        "source_version": SOURCE_VERSION,
+        "source_snapshot_id": SOURCE_SNAPSHOT_ID,
+        "pipeline_run_id": J03_RUN,
+        "metadata_digests": {"marker": "sha256:fixture"},
+    }
+    monkeypatch.setattr(
+        module, "read_validated_sales_enriched_snapshot", lambda *args, **kwargs: (source, evidence)
+    )
     monkeypatch.setattr(module, "_uri", lambda config, path: str(hdfs._local(path)))
     monkeypatch.setattr(module, "packaged_code_revision", lambda: "sha256:" + "c" * 64)
     requests = []
-    monkeypatch.setattr(module, "stage_publication", lambda *args, **kwargs: requests.append(args[2]))
+    monkeypatch.setattr(
+        module, "stage_publication", lambda *args, **kwargs: requests.append(args[2])
+    )
     return hdfs, requests
 
 
 def run(spark, hdfs, **kwargs):
     return module.run_feature_snapshot(
-        spark, source_version=SOURCE_VERSION, source_snapshot_id=SOURCE_SNAPSHOT_ID,
-        upstream_pipeline_run_id=J03_RUN, feature_version=VERSION,
-        pipeline_run_id=kwargs.pop("pipeline_run_id", RUN), hdfs_config=CONFIG,
-        client=hdfs, output_partitions=2, **kwargs,
+        spark,
+        source_version=SOURCE_VERSION,
+        source_snapshot_id=SOURCE_SNAPSHOT_ID,
+        upstream_pipeline_run_id=J03_RUN,
+        feature_version=VERSION,
+        pipeline_run_id=kwargs.pop("pipeline_run_id", RUN),
+        hdfs_config=CONFIG,
+        client=hdfs,
+        output_partitions=2,
+        **kwargs,
     )
 
 
@@ -87,9 +122,7 @@ def test_snapshot_validates_actual_parquet_before_staging_owner_request(spark, s
     assert json.loads(requests[0]["coverage_and_exclusion_counts"])["feature_version"] == VERSION
 
     # A frozen attempt cannot invoke T01 again, even after a successful candidate write.
-    original = hdfs.read_remote(
-        candidate + "/_dataset_manifest.json"
-    )
+    original = hdfs.read_remote(candidate + "/_dataset_manifest.json")
     retry = run(spark, hdfs)
     assert retry.status == "FAILED"
     assert "new pipeline_run_id" in " ".join(retry.failure_details)
@@ -98,8 +131,11 @@ def test_snapshot_validates_actual_parquet_before_staging_owner_request(spark, s
 
 def test_failed_write_preserves_binding_and_failure_evidence(spark, staged_inputs, monkeypatch):
     hdfs, requests = staged_inputs
-    monkeypatch.setattr(module, "_write_candidate", lambda *args, **kwargs: (_ for _ in ()).throw(
-        OSError("isolated write failure")))
+    monkeypatch.setattr(
+        module,
+        "_write_candidate",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("isolated write failure")),
+    )
     result = run(spark, hdfs)
     assert result.status == "FAILED"
     assert hdfs.exists(result.staging_path + "/input_binding.json")
@@ -123,20 +159,35 @@ def test_new_execution_reuses_artifact_without_rewriting_producer(spark, staged_
     assert second.pipeline_run_id == next_run
     assert hdfs.read_remote(first.artifact_path + "/_dataset_manifest.json") == original
     assert len(requests) == 2
-    assert json.loads(requests[-1]["coverage_and_exclusion_counts"])[
-        "producing_pipeline_run_id"] == RUN
+    assert (
+        json.loads(requests[-1]["coverage_and_exclusion_counts"])["producing_pipeline_run_id"]
+        == RUN
+    )
 
 
-@pytest.mark.parametrize("kwargs", [
-    {"feature_version": "../escape"}, {"source_snapshot_id": "../escape"},
-    {"upstream_pipeline_run_id": "../escape"}, {"source_version": "not-a-digest"},
-    {"pipeline_run_id": "../escape"}, {"output_partitions": 0},
-    {"max_records_per_file": 0}, {"output_partitions": True},
-])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"feature_version": "../escape"},
+        {"source_snapshot_id": "../escape"},
+        {"upstream_pipeline_run_id": "../escape"},
+        {"source_version": "not-a-digest"},
+        {"pipeline_run_id": "../escape"},
+        {"output_partitions": 0},
+        {"max_records_per_file": 0},
+        {"output_partitions": True},
+    ],
+)
 def test_invalid_configuration_fails_before_hdfs(kwargs):
-    arguments = dict(source_version=SOURCE_VERSION, source_snapshot_id=SOURCE_SNAPSHOT_ID,
-                     upstream_pipeline_run_id=J03_RUN, feature_version=VERSION,
-                     pipeline_run_id=RUN, hdfs_config=CONFIG, client=object())
+    arguments = dict(
+        source_version=SOURCE_VERSION,
+        source_snapshot_id=SOURCE_SNAPSHOT_ID,
+        upstream_pipeline_run_id=J03_RUN,
+        feature_version=VERSION,
+        pipeline_run_id=RUN,
+        hdfs_config=CONFIG,
+        client=object(),
+    )
     arguments.update(kwargs)
     with pytest.raises((ValueError, module.FeatureSnapshotError)):
         module.run_feature_snapshot(object(), **arguments)
@@ -150,42 +201,76 @@ def _feature_staged(client, run_id=RUN):
     candidate = staging + "/candidates/forecast_features"
     client.mkdir_exclusive(candidate)
     final = render_forecast_features_path(BASE_PATH, SOURCE_SNAPSHOT_ID, VERSION)
-    binding = {"source_version": SOURCE_VERSION, "source_snapshot_id": SOURCE_SNAPSHOT_ID,
-               "pipeline_run_id": run_id, "feature_version": VERSION,
-               "upstream_pipeline_run_id": J03_RUN, "code_revision": "sha256:" + "c" * 64,
-               "configuration_digest": "sha256:" + "b" * 64,
-               "artifact_uri": CONFIG.uri + final, "upstream_evidence": {"verified": True}}
+    binding = {
+        "source_version": SOURCE_VERSION,
+        "source_snapshot_id": SOURCE_SNAPSHOT_ID,
+        "pipeline_run_id": run_id,
+        "feature_version": VERSION,
+        "upstream_pipeline_run_id": J03_RUN,
+        "code_revision": "sha256:" + "c" * 64,
+        "configuration_digest": "sha256:" + "b" * 64,
+        "artifact_uri": CONFIG.uri + final,
+        "upstream_evidence": {"verified": True},
+    }
     client.upload_bytes(b"parquet fixture", candidate + "/part-00000.parquet")
     integrity = [{"path": "part-00000.parquet", "size_bytes": 15, "checksum": "fixture-hash"}]
-    sidecar = {**binding, "status": "VALIDATED", "file_integrity": integrity,
-               "persisted_parquet_validated": True}
-    quality = {**binding, "status": "VALIDATED", "file_integrity": integrity,
-               "persisted_parquet_validated": True}
-    for path, document in ((staging + "/input_binding.json", binding),
-                           (staging + "/quality_report.json", quality),
-                           (candidate + "/_dataset_manifest.json", sidecar)):
-        client.upload_bytes(json.dumps(document).encode(), path)
-    manifest = _run_manifest(run_id, SOURCE_VERSION,
-                             CONFIG.uri + render_run_manifest_path(BASE_PATH, run_id))
-    manifest.update(source_snapshot_id=SOURCE_SNAPSHOT_ID, producer="warehouse-bigdata:feature-snapshot",
-                    output_dataset_names='["forecast_features"]',
-                    output_dataset_uris=json.dumps([CONFIG.uri + final]),
-                    quality_report_uri=CONFIG.uri + staging + "/quality_report.json",
-                    code_revision=binding["code_revision"],
-                    configuration_digest=binding["configuration_digest"])
-    manifest["coverage_and_exclusion_counts"] = json.dumps({
-        "feature_version": VERSION, "producing_pipeline_run_id": run_id,
-        "publication_complete": True, "persisted_parquet_validated": True,
-        "binding_digest": module.document_digest(binding),
-        "quality_digest": module.document_digest(quality),
-        "dataset_manifest_digest": module.document_digest(sidecar),
+    sidecar = {
+        **binding,
+        "status": "VALIDATED",
         "file_integrity": integrity,
-    })
+        "persisted_parquet_validated": True,
+    }
+    quality = {
+        **binding,
+        "status": "VALIDATED",
+        "file_integrity": integrity,
+        "persisted_parquet_validated": True,
+    }
+    for path, document in (
+        (staging + "/input_binding.json", binding),
+        (staging + "/quality_report.json", quality),
+        (candidate + "/_dataset_manifest.json", sidecar),
+    ):
+        client.upload_bytes(json.dumps(document).encode(), path)
+    manifest = _run_manifest(
+        run_id, SOURCE_VERSION, CONFIG.uri + render_run_manifest_path(BASE_PATH, run_id)
+    )
+    manifest.update(
+        source_snapshot_id=SOURCE_SNAPSHOT_ID,
+        producer="warehouse-bigdata:feature-snapshot",
+        output_dataset_names='["forecast_features"]',
+        output_dataset_uris=json.dumps([CONFIG.uri + final]),
+        quality_report_uri=CONFIG.uri + staging + "/quality_report.json",
+        code_revision=binding["code_revision"],
+        configuration_digest=binding["configuration_digest"],
+    )
+    manifest["coverage_and_exclusion_counts"] = json.dumps(
+        {
+            "feature_version": VERSION,
+            "producing_pipeline_run_id": run_id,
+            "publication_complete": True,
+            "persisted_parquet_validated": True,
+            "binding_digest": module.document_digest(binding),
+            "quality_digest": module.document_digest(quality),
+            "dataset_manifest_digest": module.document_digest(sidecar),
+            "file_integrity": integrity,
+        }
+    )
     client.list_children = lambda path: tuple(
         p for p in client.entries if str(PurePosixPath(p).parent) == path
     )
     client.stat = lambda path: type("Stat", (), {"size_bytes": len(client.files[path])})()
     client.checksum = lambda path: "fixture-hash"
+    client.list_status = lambda path: tuple(
+        {
+            "path": child,
+            "type": metadata["type"],
+            "length": len(client.files.get(child, b"")),
+        }
+        for child, metadata in client.entries.items()
+        if str(PurePosixPath(child).parent) == path
+    )
+    client.checksums = lambda paths: {path: client.checksum(path) for path in paths}
     stage_publication(client, CONFIG, manifest, result_status="VALIDATED")
     return candidate, final, manifest
 
@@ -198,9 +283,11 @@ def test_feature_owner_recovery_is_frozen_and_marker_last(phase):
     original_rename, original_owner = client.rename_exclusive, client.set_owner
 
     def rename(source, destination):
-        if ((phase == "claim" and source == candidate)
-                or (phase == "rename" and destination == final)
-                or (phase == "marker" and destination == marker)):
+        if (
+            (phase == "claim" and source == candidate)
+            or (phase == "rename" and destination == final)
+            or (phase == "marker" and destination == marker)
+        ):
             raise OSError("isolated publication failure")
         original_rename(source, destination)
 
@@ -236,9 +323,11 @@ def test_owner_rejects_changed_frozen_evidence_before_publication(corruption):
     elif corruption == "bytes":
         client.files[candidate + "/part-00000.parquet"] = b"changed"
     else:
-        path = {"quality": render_staging_path(BASE_PATH, RUN) + "/quality_report.json",
-                "binding": render_staging_path(BASE_PATH, RUN) + "/input_binding.json",
-                "sidecar": candidate + "/_dataset_manifest.json"}[corruption]
+        path = {
+            "quality": render_staging_path(BASE_PATH, RUN) + "/quality_report.json",
+            "binding": render_staging_path(BASE_PATH, RUN) + "/input_binding.json",
+            "sidecar": candidate + "/_dataset_manifest.json",
+        }[corruption]
         document = json.loads(client.files[path])
         document["feature_version"] = "changed"
         client.files[path] = json.dumps(document).encode()
@@ -250,14 +339,22 @@ def test_owner_rejects_changed_frozen_evidence_before_publication(corruption):
 def test_public_upstream_requires_safe_identity_before_any_access():
     with pytest.raises(upstream.EnrichmentAnalyticsSnapshotError):
         upstream.read_validated_sales_enriched_snapshot(
-            object(), source_version=SOURCE_VERSION, source_snapshot_id=SOURCE_SNAPSHOT_ID,
-            pipeline_run_id="../escape", hdfs_config=CONFIG, client=object(),
+            object(),
+            source_version=SOURCE_VERSION,
+            source_snapshot_id=SOURCE_SNAPSHOT_ID,
+            pipeline_run_id="../escape",
+            hdfs_config=CONFIG,
+            client=object(),
         )
 
 
 def test_public_upstream_rejects_absent_completion_before_spark(tmp_path):
     with pytest.raises(upstream.EnrichmentAnalyticsSnapshotError, match="completion"):
         upstream.read_validated_sales_enriched_snapshot(
-            object(), source_version=SOURCE_VERSION, source_snapshot_id=SOURCE_SNAPSHOT_ID,
-            pipeline_run_id=J03_RUN, hdfs_config=CONFIG, client=FeatureLocalHdfs(tmp_path),
+            object(),
+            source_version=SOURCE_VERSION,
+            source_snapshot_id=SOURCE_SNAPSHOT_ID,
+            pipeline_run_id=J03_RUN,
+            hdfs_config=CONFIG,
+            client=FeatureLocalHdfs(tmp_path),
         )

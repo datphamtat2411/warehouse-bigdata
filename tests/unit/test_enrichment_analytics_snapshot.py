@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
+from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -443,6 +446,40 @@ def test_j04_public_reader_returns_verified_ordered_sales_and_evidence(spark, j0
     assert evidence["pipeline_run_id"] == PIPELINE_RUN_ID
     assert evidence["upstream_pipeline_run_id"] == UPSTREAM_RUN_ID
     assert evidence["metadata_digests"]
+
+
+def test_j04_public_reader_digests_immutable_raw_manifests(
+    spark, j04_upstream_bundle, monkeypatch,
+):
+    from warehouse_bigdata.processing import enrichment_analytics_snapshot as module
+
+    hdfs, config = j04_upstream_bundle
+    original_raw = module.validate_hdfs_raw_snapshot(SOURCE_VERSION, client=hdfs, config=config)
+    documents = [
+        {**manifest, "serialization_note": "café"} for manifest in original_raw.manifests
+    ]
+    manifests = tuple(MappingProxyType(document) for document in documents)
+    original_items = tuple(tuple(manifest.items()) for manifest in manifests)
+    raw = replace(original_raw, manifests=manifests)
+    monkeypatch.setattr(module, "validate_hdfs_raw_snapshot", lambda *args, **kwargs: raw)
+    canonical_json = (
+        json.dumps(documents, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    expected_digest = "sha256:" + hashlib.sha256(canonical_json).hexdigest()
+
+    _, evidence = module.read_validated_sales_enriched_snapshot(
+        spark, source_version=SOURCE_VERSION, source_snapshot_id=SOURCE_SNAPSHOT_ID,
+        pipeline_run_id=PIPELINE_RUN_ID, hdfs_config=config, client=hdfs,
+    )
+
+    assert evidence["raw_manifest_digest"] == expected_digest
+    assert raw.manifests is manifests
+    assert tuple(tuple(manifest.items()) for manifest in raw.manifests) == original_items
+    for original, manifest in zip(manifests, raw.manifests, strict=True):
+        assert manifest is original
+        assert isinstance(manifest, MappingProxyType)
+        with pytest.raises(TypeError):
+            manifest["status"] = "FAILED"
 
 
 @pytest.mark.parametrize("corruption", [

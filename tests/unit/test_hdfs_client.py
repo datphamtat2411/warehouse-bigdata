@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from textwrap import dedent
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -209,3 +210,166 @@ def test_whoami_uses_the_local_simple_authentication_identity(
     )
 
     assert HdfsCliClient().whoami() == "spark"
+
+
+def test_batched_checksums_bind_every_record_to_exact_requested_path(monkeypatch):
+    client = HdfsCliClient()
+    run = Mock(
+        return_value=SimpleNamespace(
+            stdout=(
+                b"/data/b\tMD5-of-0MD5-of-512CRC32C\t" + b"ab" * 28 + b"\n"
+                b"/data/a\tMD5-of-0MD5-of-512CRC32C\t" + b"cd" * 28 + b"\n"
+            )
+        )
+    )
+    monkeypatch.setattr(client, "_run", run)
+    assert client.checksums(["/data/a", "/data/b"]) == {
+        "/data/a": "MD5-of-0MD5-of-512CRC32C\t" + "cd" * 28,
+        "/data/b": "MD5-of-0MD5-of-512CRC32C\t" + "ab" * 28,
+    }
+    run.assert_called_once_with(("dfs", "-checksum", "/data/a", "/data/b"))
+
+
+CHECKSUM_RECORD = b"/data/a\tMD5-of-0MD5-of-512CRC32C\t" + b"aa" * 28 + b"\n"
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        b"",
+        b"/data/a\tNONE\n",
+        b"/data/a\tMD5\tnot-hex\n",
+        b"/data/a\tMD5\ta\n",
+        b"/data/a\tMD5\taa\textra\n",
+        CHECKSUM_RECORD.replace(b"/data/a", b"/wrong"),
+        CHECKSUM_RECORD * 2,
+        CHECKSUM_RECORD + CHECKSUM_RECORD.replace(b"/data/a", b"/data/extra"),
+        CHECKSUM_RECORD.replace(b"aa" * 28, b"aa" * 16),
+        CHECKSUM_RECORD.replace(b"CRC32C", b"UNKNOWN"),
+        b"\xff\n",
+        CHECKSUM_RECORD + b"\n",
+    ],
+)
+def test_checksum_parser_rejects_incomplete_duplicate_and_malformed_output(monkeypatch, output):
+    client = HdfsCliClient()
+    monkeypatch.setattr(client, "_run", lambda args: SimpleNamespace(stdout=output))
+    with pytest.raises(HdfsCommandError):
+        client.checksums(["/data/a"])
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ["/a", "/a"],
+        ["/a*"],
+        ["/a\n"],
+        ["relative"],
+        ["/a/../b"],
+        ["/a//b"],
+    ],
+)
+def test_checksum_inputs_fail_before_subprocess(monkeypatch, paths):
+    client = HdfsCliClient()
+    run = Mock()
+    monkeypatch.setattr(client, "_run", run)
+    with pytest.raises(HdfsCommandError):
+        client.checksums(paths)
+    run.assert_not_called()
+
+
+def test_checksum_batches_are_bounded_and_fresh(monkeypatch):
+    client = HdfsCliClient()
+    calls = []
+
+    def run(args):
+        calls.append(args)
+        return SimpleNamespace(
+            stdout="".join(
+                path + "\tMD5-of-0MD5-of-512CRC32C\t" + "aa" * 28 + "\n" for path in args[2:]
+            ).encode()
+        )
+
+    monkeypatch.setattr(client, "_run", run)
+    paths = [f"/data/{i}" for i in range(130)]
+    assert len(client.checksums(paths)) == 130
+    assert [len(call) - 2 for call in calls] == [64, 64, 2]
+    client.checksum(paths[0])
+    assert len(calls) == 4
+
+
+def test_checksum_batches_respect_argument_bytes_and_propagate_partial_failure(monkeypatch):
+    client = HdfsCliClient()
+    calls = []
+
+    def run(args):
+        calls.append(args)
+        assert sum(len(path.encode()) + 1 for path in args[2:]) <= 16 * 1024
+        if len(calls) == 2:
+            raise HdfsCommandError("one requested file is inaccessible")
+        return SimpleNamespace(
+            stdout=b"".join(CHECKSUM_RECORD.replace(b"/data/a", path.encode()) for path in args[2:])
+        )
+
+    monkeypatch.setattr(client, "_run", run)
+    with pytest.raises(HdfsCommandError, match="inaccessible"):
+        client.checksums(["/" + str(index) + "x" * 1000 for index in range(20)])
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "algorithm,checksum",
+    [
+        ("MD5-of-0MD5-of-0CRC32", "00000000000000000000000070bc8f4b72a86921468bf8e8441dce51"),
+        ("COMPOSITE-CRC32C", "aabb0011"),
+    ],
+)
+def test_checksum_accepts_hadoop_empty_file_and_composite_encodings(
+    monkeypatch, algorithm, checksum
+):
+    client = HdfsCliClient()
+    monkeypatch.setattr(
+        client,
+        "_run",
+        lambda args: SimpleNamespace(stdout=f"/data/a\t{algorithm}\t{checksum}\n".encode()),
+    )
+    assert client.checksum("/data/a") == algorithm + "\t" + checksum
+
+
+@pytest.mark.parametrize(
+    "statuses",
+    [
+        [{"pathSuffix": "../escape", "type": "FILE", "length": 1}],
+        [{"pathSuffix": "a/b", "type": "FILE", "length": 1}],
+        [{"pathSuffix": "a", "type": "FILE", "length": -1}],
+        [{"pathSuffix": "a", "type": "FILE", "length": True}],
+        [{"pathSuffix": "a", "type": "UNKNOWN", "length": 1}],
+        [{"pathSuffix": "a", "type": "FILE", "length": 1}] * 2,
+        [{}],
+        None,
+    ],
+)
+def test_list_status_rejects_malformed_or_duplicate_metadata(monkeypatch, statuses):
+    client = HdfsCliClient()
+    monkeypatch.setattr(
+        client, "_webhdfs", lambda *args: {"FileStatuses": {"FileStatus": statuses}}
+    )
+    with pytest.raises(HdfsCommandError):
+        client.list_status("/data")
+
+
+def test_list_status_returns_namenode_types_and_lengths_without_cli(monkeypatch):
+    client = HdfsCliClient()
+    web = Mock(
+        return_value={
+            "FileStatuses": {
+                "FileStatus": [
+                    {"pathSuffix": "part.parquet", "type": "FILE", "length": 123},
+                ]
+            }
+        }
+    )
+    monkeypatch.setattr(client, "_webhdfs", web)
+    assert client.list_status("/data") == (
+        {"path": "/data/part.parquet", "type": "FILE", "length": 123},
+    )
+    web.assert_called_once_with("/data", "LISTSTATUS")

@@ -139,15 +139,22 @@ finish() {
     # A create request can finish just after the client is interrupted. Recheck only
     # this invocation's name/token; never list or clean shared services or aliases.
     for ((attempt = 0; attempt < 5; attempt++)); do
+        local driver_clean=0 publisher_clean=1
         if cleanup_driver; then
+            driver_clean=1
+        fi
+        if [[ -n $publication_run_id ]]; then
+            publisher_clean=0
+            if cleanup_driver "$driver-publish"; then
+                publisher_clean=1
+            fi
+        fi
+        if (( driver_clean && publisher_clean )); then
             break
         fi
-        (( cancelled )) || break
+        (( cancelled || result != 0 )) || break
         sleep 0.2
     done
-    if [[ -n $publication_run_id ]]; then
-        cleanup_driver "$driver-publish" || true
-    fi
     exit "$result"
 }
 trap finish EXIT
@@ -155,12 +162,21 @@ trap 'cancelled=1; exit 130' INT
 trap 'cancelled=1; exit 143' TERM
 
 publish_m04() {
+    # Keep the existing J02/J03 bound. J04 batches fresh checksum requests and
+    # uses NameNode metadata rather than extending this bound to hide JVM startup.
     timeout --foreground --kill-after=15s 240s "${compose[@]}" run --rm --no-deps -T --pull never \
         --name "$driver-publish" --label "$owner_label=$token" --user 1000:100 \
         --entrypoint /opt/warehouse-app/.venv/bin/python spark-submit \
         -m warehouse_bigdata.common.hdfs_publication "$@" --pipeline-run-id "$publication_run_id" &
     run_pid=$!
-    wait "$run_pid"
+    local publication_status=0
+    wait "$run_pid" || publication_status=$?
+    run_pid=
+    if (( feature_job && publication_status != 0 && publication_status != 10 )); then
+        printf 'J04 owner publication failed/interrupted (status %s). Preserve frozen HDFS evidence; retry this launcher with the same run ID %s and binding arguments for owner recovery.\n' \
+            "$publication_status" "$publication_run_id" >&2
+    fi
+    return "$publication_status"
 }
 # Recover a previously claimed candidate before Spark attempts to reconstruct staging.
 if [[ -n $publication_run_id ]]; then

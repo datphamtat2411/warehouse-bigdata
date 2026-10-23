@@ -48,7 +48,10 @@ def sandbox(tmp_path: Path) -> dict:
                 sys.exit(int(os.environ.get("TEST_READY_STATUS", "0")))
             if "run" not in args:
                 sys.exit(0)
-            if "warehouse_bigdata.common.hdfs_publication" in args:
+            publication = "warehouse_bigdata.common.hdfs_publication" in args
+            phase = "recover" if "--recover" in args else "finalize"
+            block_publication = publication and os.environ.get("TEST_BLOCK_PUBLICATION") == phase
+            if publication and not block_publication:
                 sys.exit(int(os.environ.get("TEST_PUBLICATION_STATUS", os.environ.get("TEST_RUN_STATUS", "0"))))
             if os.environ.get("TEST_DRIVER_ONLY_STATUS"):
                 sys.exit(int(os.environ["TEST_DRIVER_ONLY_STATUS"]))
@@ -57,11 +60,12 @@ def sandbox(tmp_path: Path) -> dict:
             late = os.environ.get("TEST_LATE_CREATE") == "1"
             if late:
                 signal.signal(signal.SIGTERM, signal.SIG_IGN)
-            Path(os.environ["TEST_RUN_STARTED"]).write_text(name)
+            if not os.environ.get("TEST_BLOCK_PUBLICATION") or block_publication:
+                Path(os.environ["TEST_RUN_STARTED"]).write_text(name)
             if late:
                 time.sleep(0.3)
-            state.write_text(json.dumps({"name": name, "owner": label}))
-            if os.environ.get("TEST_BLOCK") == "1":
+            state.write_text(json.dumps({"name": name, "owner": label, "pid": os.getpid()}))
+            if os.environ.get("TEST_BLOCK") == "1" or block_publication:
                 while True:
                     time.sleep(0.1)
             if os.environ.get("TEST_AUTO_REMOVE", "1") == "1":
@@ -71,11 +75,17 @@ def sandbox(tmp_path: Path) -> dict:
             if not state.exists():
                 sys.exit(1)
             data = json.loads(state.read_text())
-            assert args[-1] == data["name"]
+            if args[-1] != data["name"]:
+                sys.exit(1)
             print(os.environ.get("TEST_OWNER", data["owner"]))
         elif args[0] in {"logs", "stop", "rm"}:
             data = json.loads(state.read_text())
             assert args[-1] == data["name"]
+            if args[0] == "stop" and os.environ.get("TEST_BLOCK_PUBLICATION"):
+                try:
+                    os.kill(data["pid"], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             if args[0] == "rm" and not os.environ.get("TEST_CLEANUP_STATUS"):
                 state.unlink()
             sys.exit(int(os.environ.get("TEST_CLEANUP_STATUS", "0")))
@@ -283,6 +293,97 @@ def test_cleanup_refuses_a_foreign_ownership_token(sandbox: dict) -> None:
     sandbox["env"].update(TEST_RUN_STATUS="31", TEST_AUTO_REMOVE="0", TEST_OWNER="someone-else")
     assert invoke(sandbox, "--", "job.py").returncode == 31
     assert not any(args[0] in {"logs", "stop", "rm"} for args in commands(sandbox))
+
+
+def test_j04_frozen_recovery_skips_driver_and_retains_exact_binding(sandbox):
+    sandbox["env"]["TEST_PUBLICATION_STATUS"] = "10"
+    result = invoke(
+        sandbox,
+        "--",
+        "warehouse_bigdata/jobs/build_forecast_features.py",
+        "--pipeline-run-id",
+        "frozen-001",
+        "--feature-version",
+        "historical_v1",
+    )
+    assert result.returncode == 0, result.stderr
+    assert len(runs(sandbox)) == 1
+    assert "--skip-completed-driver" in runs(sandbox)[0]
+    assert "historical_v1" in runs(sandbox)[0]
+
+
+@pytest.mark.parametrize(
+    "job", ["build_forecast_features", "normalize_sales_daily", "enrich_analytics"]
+)
+def test_owner_timeout_aborts_recovery_without_starting_spark(sandbox, job):
+    sandbox["env"]["TEST_PUBLICATION_STATUS"] = "124"
+    result = invoke(
+        sandbox, "--", f"warehouse_bigdata/jobs/{job}.py", "--pipeline-run-id", "frozen-001"
+    )
+    assert result.returncode == 124
+    assert len(runs(sandbox)) == 1
+    assert "--recover" in runs(sandbox)[0]
+    if job == "build_forecast_features":
+        assert "Preserve frozen HDFS evidence" in result.stderr
+        assert "frozen-001" in result.stderr
+    else:
+        assert "J04" not in result.stderr
+    assert_cluster_untouched(sandbox)
+
+
+@pytest.mark.parametrize(
+    "phase,late",
+    [
+        ("recover", False),
+        ("recover", True),
+        ("finalize", False),
+        ("finalize", True),
+    ],
+)
+def test_cancelled_j04_publisher_cleans_late_owned_container_without_driver_retry(
+    sandbox,
+    phase,
+    late,
+):
+    sandbox["env"].update(TEST_BLOCK_PUBLICATION=phase, TEST_LATE_CREATE="1" if late else "0")
+    process = subprocess.Popen(
+        [
+            "bash",
+            str(ROOT / "scripts/spark-submit.sh"),
+            "--",
+            "warehouse_bigdata/jobs/build_forecast_features.py",
+            "--pipeline-run-id",
+            "frozen-001",
+        ],
+        cwd=sandbox["cwd"],
+        env=sandbox["env"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while (
+            not sandbox["ready"].exists() and process.poll() is None and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+        assert sandbox["ready"].exists()
+        process.send_signal(signal.SIGTERM)
+        _, error = process.communicate(timeout=12)
+        assert process.returncode == 143, error
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+    name = sandbox["ready"].read_text()
+    assert name.endswith("-publish")
+    assert any(call[0] == "rm" and call[-1] == name for call in commands(sandbox))
+    drivers = [
+        call for call in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" not in call
+    ]
+    assert len(drivers) == (0 if phase == "recover" else 1)
+    assert_cluster_untouched(sandbox)
 
 
 @pytest.mark.parametrize(
