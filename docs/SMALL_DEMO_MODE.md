@@ -205,6 +205,17 @@ selection digest. Missing or conflicting inputs stop the stage before a Spark dr
 starts. J02 checks validated raw input and any existing frozen selection; a new null
 digest remains unresolved until completed-execution and published-scope readback succeed.
 
+Preflight writes phase start/completion and elapsed seconds to stderr, preserving the
+active validation phase on failure. J06, validation and test preflights have a 600-second
+bound: a measured J06 preflight took 388 seconds after removing repeated model ancestor
+ACL checks (baseline: 912 seconds); the rebuilt image's independent CLI preflight
+completed in 517 seconds. Other preflights retain the 240-second bound.
+Every model file and ancestor still receives ownership, mode and ACL checks; shared
+ancestors are checked once per read-only batch, with no cache across validation calls
+or publication mutation boundaries. The model inventory/checksums are freshly verified
+once per metadata load. Preflight timeout/interruption stops its uniquely named one-off
+container as well as reaping the compose client.
+
 ### Narrow manual owner preparation
 
 For one explicitly chosen run (the serial runner performs the same operation):

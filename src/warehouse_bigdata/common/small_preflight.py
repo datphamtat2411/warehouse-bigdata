@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 
 from warehouse_bigdata.common.config import load_hdfs_config
 from warehouse_bigdata.common.hdfs_client import HdfsCliClient
@@ -23,6 +24,7 @@ from warehouse_bigdata.common.scope_evidence import (
     validate_scope_binding,
 )
 from warehouse_bigdata.common.small_artifacts import STAGES, validate_small_artifacts
+from warehouse_bigdata.common.validation_timing import validation_phase
 from warehouse_bigdata.contracts.dataset_scope import ScopeError
 from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import validate_manifest
@@ -211,19 +213,21 @@ def validate_small_publications(selector, *, through, client, config):
     stages = STAGES[: STAGES.index(through) + 1]
     for stage in stages:
         if stage in _PIPELINE_OUTPUTS:
-            _pipeline_publication(selector, stage, client, config)
+            with validation_phase(stage + ".publication"):
+                _pipeline_publication(selector, stage, client, config)
     if "j05" in stages:
         from warehouse_bigdata.forecasting.model_artifacts import read_validated_model_metadata
 
         path = render_model_artifact_path(config.base_path, selector["model_run_id"])
         scope = _scope(selector, client, path)
-        metadata = read_validated_model_metadata(
-            model_run_id=selector["model_run_id"],
-            source_snapshot_id=selector["source_snapshot_id"],
-            feature_version=selector["feature_version"],
-            hdfs_config=config,
-            client=client,
-        )
+        with validation_phase("j05.model_metadata"):
+            metadata = read_validated_model_metadata(
+                model_run_id=selector["model_run_id"],
+                source_snapshot_id=selector["source_snapshot_id"],
+                feature_version=selector["feature_version"],
+                hdfs_config=config,
+                client=client,
+            )
         _require(
             metadata["input_binding"],
             {
@@ -247,7 +251,8 @@ def validate_small_publications(selector, *, through, client, config):
     evaluations = {}
     for stage in ("j06", "validation", "test"):
         if stage in stages:
-            evaluations[stage] = _analytical_publication(selector, stage, client, config)
+            with validation_phase(stage + ".publication"):
+                evaluations[stage] = _analytical_publication(selector, stage, client, config)
     if "test" in stages:
         from warehouse_bigdata.common.hdfs_publication import document_digest
         from warehouse_bigdata.forecasting.evaluation import validate_freeze
@@ -315,6 +320,7 @@ def preflight_small_stage(selector, stage, *, client, config):
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selector-json", required=True)
     parser.add_argument("--stage", choices=STAGES, required=True)

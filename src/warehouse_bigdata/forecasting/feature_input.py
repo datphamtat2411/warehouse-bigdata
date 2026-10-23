@@ -48,21 +48,39 @@ def read_json(client, path):
 
 def require_sealed(client, path, base):
     """Check selected paths and ancestors, including named/default ACL isolation."""
-    for current in (PurePosixPath(path), *PurePosixPath(path).parents):
-        text = str(current)
-        status = client.path_status(text)
-        if status is None or status["owner"] != "hadoop" or int(status["permission"], 8) & 0o022:
-            raise FeatureInputError("published input is not sealed: " + text)
-        for line in client.get_acl(text).splitlines():
-            line = line.strip()
+    require_sealed_paths(client, [path], base)
+
+
+def require_sealed_paths(client, paths, base):
+    """Check a read-only batch once per path/ancestor, with no cross-call cache.
+
+    Use only within one validation boundary. Publication mutations must initiate
+    a fresh call, so preclaim and postseal checks never reuse old permissions.
+    """
+    checked = set()
+    for path in paths:
+        for current in (PurePosixPath(path), *PurePosixPath(path).parents):
+            text = str(current)
+            if text in checked:
+                break
+            status = client.path_status(text)
             if (
-                line.startswith(("default:", "mask:"))
-                or (line.startswith("user:") and not line.startswith("user::"))
-                or (line.startswith("group:") and not line.startswith("group::"))
+                status is None
+                or status["owner"] != "hadoop"
+                or int(status["permission"], 8) & 0o022
             ):
-                raise FeatureInputError("published input has shared ACLs: " + text)
-        if text == base:
-            break
+                raise FeatureInputError("published input is not sealed: " + text)
+            for line in client.get_acl(text).splitlines():
+                line = line.strip()
+                if (
+                    line.startswith(("default:", "mask:"))
+                    or (line.startswith("user:") and not line.startswith("user::"))
+                    or (line.startswith("group:") and not line.startswith("group::"))
+                ):
+                    raise FeatureInputError("published input has shared ACLs: " + text)
+            checked.add(text)
+            if text == base:
+                break
 
 
 def _reject(frame, message):

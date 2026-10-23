@@ -285,3 +285,20 @@ def test_test_preflight_requires_validation_freeze_without_unrelated_forward_out
     selector["validation_evaluation_run_id"] = "missing-freeze"
     with pytest.raises(ScopeError, match="missing"):
         small_preflight.preflight_small_stage(selector, "test", client=client, config=CONFIG)
+
+
+def test_publication_timing_reports_failed_phase_without_swallowing_error(monkeypatch, caplog):
+    import logging
+
+    from warehouse_bigdata.common import small_preflight
+
+    def rejected(*args):
+        raise ScopeError("publication rejected")
+
+    monkeypatch.setattr(small_preflight, "_pipeline_publication", rejected)
+    with caplog.at_level(logging.INFO), pytest.raises(ScopeError, match="rejected"):
+        small_preflight.preflight_small_stage(
+            complete_selector(), "j06", client=None, config=CONFIG
+        )
+    assert "validation_phase=j02.publication status=STARTED" in caplog.text
+    assert "validation_phase=j02.publication status=FAILED elapsed_seconds=" in caplog.text

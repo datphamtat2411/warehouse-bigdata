@@ -851,3 +851,120 @@ def test_full_chain_integration_readback_rejects_partial_report(monkeypatch, tmp
     monkeypatch.setattr(small_support, "container_command", command)
     with pytest.raises(AssertionError, match="test"):
         small_support.readback(tmp_path, selector=complete_selector())
+
+
+@pytest.mark.parametrize(
+    "stage,expected", [("j05", 240), ("j06", 600), ("validation", 600), ("test", 600)]
+)
+def test_model_consuming_preflight_has_measured_bound_and_exact_container(
+    monkeypatch, tmp_path, stage, expected
+):
+    from warehouse_bigdata.common import small_demo
+
+    calls = []
+
+    def bounded(root, args, stem, **kwargs):
+        calls.append((args, stem, kwargs))
+        if stem.endswith("-preflight"):
+            raise ScopeError("stop after read-only preflight")
+        return 0
+
+    monkeypatch.setattr(small_demo, "run_bounded_command", bounded)
+    with pytest.raises(ScopeError, match="read-only"):
+        small_demo.run_live(
+            complete_selector(), stages=[stage], authorize=True, evidence_dir=tmp_path / "run"
+        )
+    args, _, options = calls[-1]
+    assert options["timeout"] == expected
+    assert args[args.index("--name") + 1] == options["container_name"]
+    assert options["container_name"].startswith("small-preflight-")
+    assert not any("prepare-run" in args for args, _, _ in calls)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "interrupt"])
+def test_bounded_preflight_stops_only_owned_container_and_reaps_client(
+    monkeypatch, tmp_path, failure
+):
+    import subprocess
+
+    from warehouse_bigdata.common import small_demo
+
+    events = []
+    error = (
+        subprocess.TimeoutExpired(["compose"], 600) if failure == "timeout" else KeyboardInterrupt()
+    )
+
+    def wait(timeout):
+        events.append(("wait", timeout))
+        if len([e for e in events if e[0] == "wait"]) == 1:
+            raise error
+        return 0
+
+    process = SimpleNamespace(
+        wait=wait,
+        send_signal=lambda sig: events.append(("signal", sig)),
+        kill=lambda: events.append(("kill",)),
+    )
+    monkeypatch.setattr(small_demo.subprocess, "Popen", lambda *a, **kw: process)
+    monkeypatch.setattr(
+        small_demo.subprocess,
+        "run",
+        lambda args, **kw: events.append(("docker", args, kw)) or SimpleNamespace(returncode=0),
+    )
+    with pytest.raises(type(error)) as raised:
+        small_demo.run_bounded_command(
+            tmp_path,
+            ["compose"],
+            "j06-preflight",
+            timeout=600,
+            container_name="small-preflight-owned",
+        )
+    assert raised.value is error
+    docker = [e for e in events if e[0] == "docker"]
+    assert docker[0][1] == ["docker", "stop", "--time", "10", "small-preflight-owned"]
+    assert docker[0][2]["timeout"] == 30
+    assert events[-1] == ("wait", 60)
+
+
+def test_bounded_preflight_escalates_container_and_client_cleanup_without_masking_timeout(
+    monkeypatch, tmp_path
+):
+    import subprocess
+
+    from warehouse_bigdata.common import small_demo
+
+    waits = []
+    commands = []
+    killed = []
+    error = subprocess.TimeoutExpired(["compose"], 600)
+
+    def wait(timeout):
+        waits.append(timeout)
+        if len(waits) < 3:
+            raise error
+        return 0
+
+    process = SimpleNamespace(
+        wait=wait, send_signal=lambda sig: None, kill=lambda: killed.append(True)
+    )
+    monkeypatch.setattr(small_demo.subprocess, "Popen", lambda *a, **kw: process)
+
+    def run(args, **kwargs):
+        commands.append(args)
+        if args[1] == "stop":
+            raise subprocess.TimeoutExpired(args, 30)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(small_demo.subprocess, "run", run)
+    with pytest.raises(subprocess.TimeoutExpired) as raised:
+        small_demo.run_bounded_command(
+            tmp_path,
+            ["compose"],
+            "j06-preflight",
+            timeout=600,
+            container_name="small-preflight-owned",
+        )
+    assert raised.value is error
+    assert commands[-1] == ["docker", "kill", "small-preflight-owned"]
+    assert killed == [True]
+    assert waits == [600, 60, 15]

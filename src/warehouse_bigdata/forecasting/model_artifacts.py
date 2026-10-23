@@ -35,9 +35,10 @@ from warehouse_bigdata.common.hdfs_publication import (
     document_digest,
 )
 from warehouse_bigdata.common.scope_evidence import bind_scope, read_scope, validate_scope_binding
+from warehouse_bigdata.common.validation_timing import validation_phase
 from warehouse_bigdata.contracts.manifests import MODEL_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import validate_manifest
-from warehouse_bigdata.forecasting.feature_input import require_sealed
+from warehouse_bigdata.forecasting.feature_input import require_sealed, require_sealed_paths
 
 _EXCLUDED = {"model_manifest.json", "evidence/publication.json"}
 _SIDECARS = {"feature_schema.json", "evidence/training.json", "_scope.json"}
@@ -117,7 +118,8 @@ def model_file_integrity(client, root):
         raise HdfsNamespaceError("incomplete model bundle layout")
     inventory.sort(key=lambda item: item["path"])
     paths = [root + "/" + item["path"] for item in inventory]
-    checksums = client.checksums(paths)
+    with validation_phase("j05.model_checksums"):
+        checksums = client.checksums(paths)
     if set(checksums) != set(paths) or any(not c for c in checksums.values()):
         raise HdfsNamespaceError("model integrity checksums incomplete")
     for item, path in zip(inventory, paths, strict=True):
@@ -252,6 +254,7 @@ def validate_model_evidence(client, config, manifest, path):
         or quality.get("schema_fingerprint") != manifest["schema_fingerprint"]
     ):
         raise HdfsNamespaceError("model file integrity/schema conflicts with persisted validation")
+    return inventory
 
 
 def finalize_model_publication(client, config, *, pipeline_run_id, manifest):
@@ -314,7 +317,8 @@ def read_validated_model_metadata(
     ).items():
         if manifest.get(key) != value:
             raise HdfsNamespaceError("selected model lineage conflicts: " + key)
-    validate_model_evidence(client, hdfs_config, manifest, path)
+    with validation_phase("j05.model_evidence_and_inventory"):
+        inventory = validate_model_evidence(client, hdfs_config, manifest, path)
     schema = _json(client, path + "/feature_schema.json")
     if (
         schema.get("schema_version") != "model-feature-schema-v1"
@@ -324,8 +328,10 @@ def read_validated_model_metadata(
         or document_digest(schema) != manifest["schema_fingerprint"]
     ):
         raise HdfsNamespaceError("unsupported model input schema")
-    for item in model_file_integrity(client, path):
-        require_sealed(client, path + "/" + item["path"], hdfs_config.base_path)
+    with validation_phase("j05.model_permissions_and_acls"):
+        require_sealed_paths(
+            client, (path + "/" + item["path"] for item in inventory), hdfs_config.base_path
+        )
     binding = _json(client, path + "/evidence/training.json")["input_binding"]
     frozen = _json(
         client,

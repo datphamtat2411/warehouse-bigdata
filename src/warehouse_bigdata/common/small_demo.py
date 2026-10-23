@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import signal
 import subprocess
 import time
@@ -38,9 +39,12 @@ APPLICATION_NAMES = dict(
 COMPOSE = ["docker", "compose", "-f", "infrastructure/compose.yaml", "--profile", "spark-submit"]
 HDFS = "hdfs://hdfs-namenode:8020"
 MASTER = "spark://spark-master:7077"
+# Measured J06 read-only preflight: 388s after redundant model ACL work was removed.
+# Model-consuming stages share that same upstream frontier; retain bounded headroom.
+MODEL_PREFLIGHT_TIMEOUT = 600
 
 
-def owner_command(module, *args):
+def owner_command(module, *args, container_name=None):
     return [
         *COMPOSE,
         "run",
@@ -49,6 +53,7 @@ def owner_command(module, *args):
         "-T",
         "--pull",
         "never",
+        *(["--name", container_name] if container_name else []),
         "--user",
         "1000:100",
         "--entrypoint",
@@ -126,7 +131,21 @@ def stage_arguments(selector, stage):
     return arguments
 
 
-def run_bounded_command(root, args, stem, *, timeout=240):
+def _stop_owned_container(name):
+    """Stop only this command's unique one-off container, even if compose detached."""
+    for arguments, timeout in ((["stop", "--time", "10", name], 30), (["kill", name], 15)):
+        try:
+            result = subprocess.run(
+                ["docker", *arguments], capture_output=True, timeout=timeout, check=False
+            )
+            if result.returncode == 0:
+                return
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    logging.getLogger(__name__).error("Could not confirm preflight container cleanup: %s", name)
+
+
+def run_bounded_command(root, args, stem, *, timeout=240, container_name=None):
     """Run one bounded command while retaining exact argv and raw stdout/stderr."""
     root = Path(root)
     (root / (stem + ".command.json")).write_text(json.dumps(args, indent=2) + "\n")
@@ -140,7 +159,12 @@ def run_bounded_command(root, args, stem, *, timeout=240):
             returncode = process.wait(timeout=timeout)
         except BaseException:
             # Let the existing launcher perform its ownership-scoped cleanup.
-            process.send_signal(signal.SIGTERM)
+            try:
+                process.send_signal(signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            if container_name:
+                _stop_owned_container(container_name)
             try:
                 process.wait(timeout=60)
             except subprocess.TimeoutExpired:
@@ -187,6 +211,7 @@ def run_live(selector, *, stages, authorize, evidence_dir, recover=False):
         )
         for stage in stages:
             run = selector[RUN_KEYS[stage]]
+            container_name = "small-preflight-" + uuid4().hex
             run_bounded_command(
                 root,
                 owner_command(
@@ -195,8 +220,11 @@ def run_live(selector, *, stages, authorize, evidence_dir, recover=False):
                     stage,
                     "--selector-json",
                     json.dumps(selector, separators=(",", ":")),
+                    container_name=container_name,
                 ),
                 stage + "-preflight",
+                timeout=MODEL_PREFLIGHT_TIMEOUT if stage in {"j06", "validation", "test"} else 240,
+                container_name=container_name,
             )
             if not recover:
                 run_bounded_command(

@@ -237,3 +237,123 @@ def test_m06_owner_recovery_checks_complete_config_and_skips_refit(monkeypatch, 
             module.main()
         assert result.value.code == 10
         assert not client.exists(candidate)
+
+
+def test_batch_sealing_checks_each_ancestor_once_and_is_fresh_between_calls():
+    from warehouse_bigdata.forecasting.feature_input import require_sealed_paths
+
+    client, _, _ = staged_model()
+    finalize_publication(client, CONFIG, pipeline_run_id="j05-001")
+    root = render_model_artifact_path(CONFIG.base_path, "rf-001")
+    paths = [root + "/feature_schema.json", root + "/evidence/training.json"]
+    calls = []
+    get_acl = client.get_acl
+
+    def counted(path):
+        calls.append(path)
+        return get_acl(path)
+
+    client.get_acl = counted
+    require_sealed_paths(client, paths, CONFIG.base_path)
+    expected = set()
+    for path in paths:
+        for parent in (PurePosixPath(path), *PurePosixPath(path).parents):
+            expected.add(str(parent))
+            if str(parent) == CONFIG.base_path:
+                break
+    assert set(calls) == expected
+    assert len(calls) == len(expected)
+    client.entries[root]["permission"] = "777"
+    with pytest.raises(ValueError, match="sealed"):
+        require_sealed_paths(client, paths, CONFIG.base_path)
+
+
+@pytest.mark.parametrize("target", ["file", "directory", "ancestor"])
+@pytest.mark.parametrize(
+    "acl", ["user:other:r--", "default:user::rwx", "mask::rwx", "group:other:r--"]
+)
+def test_batch_sealing_rejects_shared_acls_on_every_level(target, acl):
+    from warehouse_bigdata.forecasting.feature_input import require_sealed_paths
+
+    client, _, _ = staged_model()
+    finalize_publication(client, CONFIG, pipeline_run_id="j05-001")
+    root = render_model_artifact_path(CONFIG.base_path, "rf-001")
+    path = root + "/evidence/training.json"
+    bad = {"file": path, "directory": root + "/evidence", "ancestor": CONFIG.base_path}[target]
+    get_acl = client.get_acl
+    client.get_acl = lambda p: acl if p == bad else get_acl(p)
+    with pytest.raises(ValueError, match="shared ACLs"):
+        require_sealed_paths(client, [root + "/feature_schema.json", path], CONFIG.base_path)
+
+
+def readable_model():
+    """Use a supported schema so the real metadata consumer can run without Spark."""
+    from warehouse_bigdata.forecasting.training import NUMERIC_FEATURES, PREDICTORS
+
+    client, candidate, manifest = staged_model()
+    schema = {
+        "schema_version": "model-feature-schema-v1",
+        "predictor_order": list(PREDICTORS),
+        "normalized_predictors": [{"name": n, "type": "double"} for n in NUMERIC_FEATURES],
+    }
+    staging = render_staging_path(CONFIG.base_path, "j05-001")
+    binding = json.loads(client.files[staging + "/input_binding.json"])
+    client.files[candidate + "/feature_schema.json"] = json.dumps(schema).encode()
+    client.files[candidate + "/evidence/training.json"] = json.dumps(
+        {"input_binding": binding}
+    ).encode()
+    quality = json.loads(client.files[staging + "/quality_report.json"])
+    quality.update(
+        file_integrity=model_file_integrity(client, candidate),
+        schema_fingerprint=document_digest(schema),
+    )
+    coverage = json.loads(manifest["coverage_and_exclusion_counts"])
+    coverage["publication_evidence_digest"] = document_digest(quality)
+    checksum = document_digest({"files": quality["file_integrity"]})
+    manifest.update(
+        schema_fingerprint=document_digest(schema),
+        model_artifact_schema_fingerprint=document_digest(schema),
+        artifact_checksum=checksum,
+        model_artifact_checksum=checksum,
+        coverage_and_exclusion_counts=json.dumps(coverage),
+    )
+    for path, document in (
+        (staging + "/quality_report.json", quality),
+        (candidate + "/evidence/publication.json", quality),
+        (candidate + "/model_manifest.json", manifest),
+    ):
+        client.files[path] = json.dumps(document).encode()
+    # The fixture's initial request belongs to the original bundle; freeze the new one.
+    client.remove(staging + "/publication")
+    stage_publication(client, CONFIG, manifest, result_status="VALIDATED")
+    finalize_publication(client, CONFIG, pipeline_run_id="j05-001")
+    return client, render_model_artifact_path(CONFIG.base_path, "rf-001")
+
+
+def test_metadata_consumer_reuses_one_fresh_inventory_without_cross_call_cache(monkeypatch):
+    from warehouse_bigdata.forecasting import model_artifacts
+
+    client, root = readable_model()
+    original = model_artifacts.model_file_integrity
+    calls = []
+
+    def counted(*args):
+        calls.append(args[1])
+        return original(*args)
+
+    monkeypatch.setattr(model_artifacts, "model_file_integrity", counted)
+    arguments = dict(
+        model_run_id="rf-001",
+        source_snapshot_id="snapshot",
+        feature_version="historical_v1",
+        hdfs_config=CONFIG,
+        client=client,
+    )
+    before = copy.deepcopy((client.entries, client.files))
+    assert model_artifacts.read_validated_model_metadata(**arguments)["artifact_path"] == root
+    assert calls == [root]
+    assert (client.entries, client.files) == before
+    client.files[root + "/spark_pipeline_model/metadata/part-00000"] = b"tampered"
+    with pytest.raises(HdfsNamespaceError, match="integrity"):
+        model_artifacts.read_validated_model_metadata(**arguments)
+    assert calls == [root, root]
