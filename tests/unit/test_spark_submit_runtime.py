@@ -131,6 +131,25 @@ def runs(sandbox: dict) -> list[list[str]]:
     return [args for args in commands(sandbox) if args[0] == "compose" and "run" in args]
 
 
+@pytest.mark.parametrize('job', ['inventory_decision_batch', 'inventory_policy_evaluation'])
+def test_j07_launcher_forwards_exact_recovery_and_skips_driver(sandbox, job):
+    sandbox['env']['TEST_PUBLICATION_STATUS'] = '10'
+    binding = ['--decision-run-id', 'decision', '--evaluation-run-id=policy-eval',
+        '--scenario-id', 'scenario', '--selection-digest', 'sha256:' + 'a' * 64,
+        '--policy-id', 'shortage_first_proportional', '--policy-version=v1',
+        '--issue-date', '2016-05-22', '--run-type=test', '--configuration-digest', 'sha256:' + 'b' * 64,
+        '--proposed-decision-run-id', 'proposed', '--baseline-decision-run-id=baseline']
+    result = invoke(sandbox, '--', f'warehouse_bigdata/jobs/{job}.py',
+                    '--pipeline-run-id', 'j07-attempt', *binding)
+    assert result.returncode == 0, result.stderr
+    calls = runs(sandbox)
+    assert len(calls) == 1
+    call = calls[0]
+    assert 'warehouse_bigdata.common.hdfs_publication' in call
+    for arg in binding:
+        assert arg in call
+
+
 def test_m04_success_finalizes_as_owner_only_after_driver_success(sandbox: dict) -> None:
     args = ["--", "warehouse_bigdata/jobs/normalize_sales_daily.py", "--pipeline-run-id", "run-001"]
     result = invoke(sandbox, *args)

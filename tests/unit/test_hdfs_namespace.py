@@ -149,7 +149,7 @@ def test_owner_provisioning_is_minimal_and_idempotent_and_preserves_existing_dat
     assert client.entries == first
     assert client.calls == []
     assert all(client.entries[path] == entry for path, entry in before.items())
-    assert len(publication_parents(CONFIG)) == 9
+    assert len(publication_parents(CONFIG)) == 10
     assert CONFIG.base_path + "/models" in publication_parents(CONFIG)
     assert CONFIG.base_path + "/features/demand_forecasting" in publication_parents(CONFIG)
     client.identity = "spark"
@@ -166,6 +166,18 @@ def test_j06_forecast_namespace_is_owner_provisioned_and_spark_readonly():
     validate_publication_namespace(client, CONFIG)
     for path in (CONFIG.base_path + "/outputs", CONFIG.base_path + "/outputs/forecasts"):
         assert not client.can_access(path, "w")
+
+
+def test_j07_decision_parent_is_protected():
+    client = PermissionHdfs()
+    provision_publication_namespace(client, CONFIG)
+    path = CONFIG.base_path + '/outputs/decisions'
+    assert path in publication_parents(CONFIG)
+    client.identity = 'spark'
+    assert not client.can_access(path, 'w')
+    client.entries[path]['permission'] = '777'
+    with pytest.raises(HdfsNamespaceError):
+        validate_publication_namespace(client, CONFIG)
 
 
 def test_spark_cannot_provision_or_silently_bypass_denied_owner_write():

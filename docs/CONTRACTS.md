@@ -83,6 +83,46 @@ All compatible numeric casts are validated before publication. ClickHouse `ORDER
 
 The catalog declares `source_manifest`, `pipeline_run_manifest`, `model_manifest`, `forecast_manifest`, `scenario_manifest`, `decision_manifest`, `evaluation_manifest`, and `publication_manifest`. Each includes the common manifest schema/version, producer, artifact checksum, schema fingerprint, grain, logical key, row count, null-count summary, code/configuration revisions, timestamps, and applicable lineage.
 
+### J07 inventory artifact bundles
+
+J07 retains Contract v1 fields and immutable semantic IDs. A decision bundle at
+`outputs/decisions/{decision_run_id}/` contains `inventory_scenario/`,
+`central_supply_scenario/`, `replenishment_recommendations/`, and
+`allocation_recommendations/` Parquet directories, plus `scenario_manifest.json`.
+The owner publishes `decision_manifest.json` last. Scenarios have no separate
+canonical root. A historical policy bundle at `outputs/evaluation/{evaluation_run_id}/`
+contains only `inventory_policy_evaluation/` as a canonical dataset, with
+`evaluation_manifest.json` published last and `run_type=test`. Its producer is
+`warehouse-bigdata:inventory-policy-evaluation`; forecast evaluation retains its
+existing producer and finalizer.
+
+Both bundles contain immutable `_scope.json`, `evidence/decision_binding.json`,
+`evidence/audit.json`, and `evidence/publication.json`. Audit evidence includes
+frozen inputs, upstream identities/digests, reproducibility configuration,
+coverage/exclusions and, for historical evaluation, observed-sales-proxy labels,
+daily simulation rows, metrics, and the original decision-freeze digest. These
+are bounded audit records, not additional Contract v1 serving datasets. The
+evaluation coverage field carries both policy/decision ID maps; no single policy
+is falsely selected. Evaluation lineage includes the selected test holdout identity.
+
+Physical fields follow catalog order: strings, dates, signed 64-bit quantities,
+doubles and booleans. Spark Parquet readback exposes nullable physical fields;
+required logical nullability is enforced on actual values. Readback rejects
+physical order/type/nullability, counts, key, lineage, membership, exclusion,
+daily-equation and supply-conservation differences before `VALIDATED`.
+
+The bundle checksum is SHA-256 of canonical JSON `{files: [...]}` plus newline,
+using sorted relative paths, byte lengths and fresh HDFS checksums. Only the
+completion manifest and `evidence/publication.json` are excluded to avoid
+self-reference. Their contents are independently bound by the immutable staging
+request and manifest evidence digests. Per-dataset counts, physical schema
+fingerprints and checksums are retained in manifest metadata.
+
+The `pipeline_run_id` selects the staging/recovery attempt, never the immutable
+decision/evaluation identity. Owner-only exclusive promotion and exact retry
+verification stop at `VALIDATED`; ClickHouse loading, `APPROVED`, `publication_id`
+and `manifests/published/current.json` belong to J08.
+
 Lifecycle meanings are separate:
 
 1. `COMPLETED` means the process produced an artifact.

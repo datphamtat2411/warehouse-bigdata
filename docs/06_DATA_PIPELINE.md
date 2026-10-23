@@ -762,6 +762,45 @@ No dashboard action should trigger unbounded Spark transformations, random unres
 
 ---
 
+### 10.5. J07 inventory artifact publication
+
+`inventory_decision_batch.py` and `inventory_policy_evaluation.py` preserve their
+side-effect-free computation APIs and expose explicit persistence wrappers and
+production CLIs. Use the exact upstream file selected by
+`WAREHOUSE_SMALL_ARTIFACTS`; do not extend that selector with J07 IDs. Pass the
+source, scope digest, forecast/model/feature and upstream attempt identities,
+scenario, issue date, code revision, effective-configuration digest and J07 IDs
+explicitly. Historical policy evaluation accepts only `run_type=test` and distinct
+proposed/baseline decision IDs. The effective configuration is canonical JSON of
+`hdfs_uri`, `spark_master`, `selector_source`, and `event_log_dir` (null if absent);
+its SHA-256 digest uses the repository canonical-byte convention.
+
+The owner prepares the publication namespace (including `outputs/decisions`) and
+run staging before submission. Spark writes with `errorifexists` beneath
+`staging/pipeline_run_id={pipeline_run_id}/candidates/inventory/`; pre-existing
+execution evidence is refused. The bundle layout and audit semantics are defined
+in `CONTRACTS.md`, “J07 inventory artifact bundles”. Fresh independent Parquet
+readback validates all canonical rows and frozen audit evidence before writing
+the immutable publication request. Failure reports preserve candidate evidence.
+
+The existing launcher invokes owner recovery before Spark and owner publication
+after driver success. J07 recovery requires the exact frozen CLI bindings and
+effective configuration. The owner preflights final/candidate/private-envelope
+conflicts, claims the candidate, seals it, independently rereads its Parquet and
+fresh file checksums, then exclusively renames to the semantic identity path.
+The completion manifest is independently prepared/sealed and renamed last.
+Interrupted claim, sealing, final rename and completion preparation resume from
+persisted evidence; sealed exact retries return `REUSED` without writes. Conflicts
+or missing/altered evidence fail closed and are retained for inspection.
+
+`verify_inventory_artifacts.py --decision-run-id ID` or
+`--evaluation-run-id ID` reads only that explicit sealed bundle and revalidates
+physical Parquet, manifests, scope, lineage, coverage, exclusions and inventory
+equations. It never regenerates upstreams or selects a latest artifact. J07
+performs no ClickHouse loading or serving approval and never updates the published
+current pointer. All metrics describe the frozen `demo_sample` population and
+simulated inventory with observed M5 sales used only as a demand proxy.
+
 ## 11. Data-Quality Gates, Severity, and Failure Policy
 
 ### 11.1. Quality-gate taxonomy

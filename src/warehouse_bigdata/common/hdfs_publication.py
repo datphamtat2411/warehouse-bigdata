@@ -366,6 +366,17 @@ def finalize_publication(client, config, *, pipeline_run_id: str) -> str:
     validate_publication_namespace(client, config)
     request = _json(client, _request_path(config, pipeline_run_id))
     manifest = request["manifest"]
+    if manifest.get("contract_name") == "decision_manifest" or (
+        manifest.get("contract_name") == "evaluation_manifest"
+        and manifest.get("producer") == "warehouse-bigdata:inventory-policy-evaluation"
+    ):
+        from warehouse_bigdata.optimization.inventory_artifacts import finalize_inventory_publication
+
+        if request.get("version") != 1 or request.get("pipeline_run_id") != pipeline_run_id:
+            raise HdfsNamespaceError("inventory publication execution identity/version mismatch")
+        return finalize_inventory_publication(
+            client, config, pipeline_run_id=pipeline_run_id, manifest=manifest
+        )
     if manifest.get("contract_name") == "evaluation_manifest":
         from warehouse_bigdata.forecasting.evaluation_artifacts import (
             finalize_evaluation_publication,
@@ -502,6 +513,22 @@ def main() -> None:
         "run-type",
         "evaluation-run-id",
         "validation-evaluation-run-id",
+        "decision-run-id",
+        "proposed-decision-run-id",
+        "baseline-decision-run-id",
+        "scenario-id",
+        "selection-digest",
+        "configuration-digest",
+        "policy-id",
+        "policy-version",
+        "j02-pipeline-run-id",
+        "j05-pipeline-run-id",
+        "j06-pipeline-run-id",
+        "test-evaluation-run-id",
+        "validation-pipeline-run-id",
+        "test-pipeline-run-id",
+        "selector-source",
+        "code-revision",
     ):
         parser.add_argument("--" + name)
     parser.add_argument("--training-cap", type=int)
@@ -516,6 +543,17 @@ def main() -> None:
     if args.skip_completed_driver:
         request = _json(client, _request_path(config, args.pipeline_run_id))
         manifest = request["manifest"]
+        if manifest.get("contract_name") == "decision_manifest" or (
+            manifest.get("contract_name") == "evaluation_manifest"
+            and manifest.get("producer") == "warehouse-bigdata:inventory-policy-evaluation"
+        ):
+            from warehouse_bigdata.optimization.inventory_artifacts import validate_inventory_recovery
+
+            binding = _json(client, render_staging_path(config.base_path, args.pipeline_run_id)
+                            + "/input_binding.json")
+            validate_inventory_recovery(args, binding)
+            finalize_publication(client, config, pipeline_run_id=args.pipeline_run_id)
+            raise SystemExit(10)
         if manifest.get("contract_name") == PIPELINE_RUN_MANIFEST.name:
             processing_job = {
                 ("sales_daily",): "normalize_sales_daily",
@@ -618,7 +656,11 @@ def main() -> None:
     if not args.recover:
         print(f"status={status}")
         request = _json(client, _request_path(config, args.pipeline_run_id))
-        if request["manifest"].get("contract_name") == "evaluation_manifest":
+        if request["manifest"].get("contract_name") == "decision_manifest":
+            from warehouse_bigdata.common.hdfs_paths import render_decision_output_path
+
+            path = render_decision_output_path(config.base_path, request["manifest"]["decision_run_id"]) + "/decision_manifest.json"
+        elif request["manifest"].get("contract_name") == "evaluation_manifest":
             from warehouse_bigdata.common.hdfs_paths import render_evaluation_output_path
 
             path = (
