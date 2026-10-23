@@ -306,6 +306,43 @@ application ID and successful tasks on **both** named Workers. It reports stage/
 counts, input/output bytes, executor runtime, spill and GC; unavailable metrics are not
 invented. Docker snapshots are point-in-time usage, not measured peak memory.
 
+### Spark event lifecycle and evidence report
+
+`SparkListenerJobStart.Stage Infos` is a DAG snapshot, not a list of submitted task
+sets. Spark 3.5.7 can create a new shuffle stage ID while retaining earlier shuffle
+outputs in MapOutputTracker. Such planned-only references have no submission,
+completion or tasks. The validator requires a connected, acyclic completed-job DAG
+and **earlier successful ShuffleMapTask execution with the identical root RDD,
+narrow-RDD parent graph and partition counts, covering every shuffle partition**.
+Unproven references fail validation. Skipped references never become executed attempts.
+See Spark v3.5.7 [DAGScheduler](https://github.com/apache/spark/blob/v3.5.7/core/src/main/scala/org/apache/spark/scheduler/DAGScheduler.scala)
+(`createShuffleMapStage`, `getMissingParentStages`, `submitMissingTasks`) and
+[StageInfo](https://github.com/apache/spark/blob/v3.5.7/core/src/main/scala/org/apache/spark/scheduler/StageInfo.scala)
+(`fromStage`).
+
+Every submitted attempt must complete. Its `Number of Tasks` is the number of missing
+tasks submitted in that attempt, which can differ from the initial JobStart population
+and can be zero. Successful coverage uses dense `Task Info.Index` values within that
+attempt, independently of possibly sparse `Partition ID` values. Partition/index
+bindings are stable within a task set, not across stage attempts. Every task completion
+must match a unique start and executor-host mapping; retry numbers must be complete.
+Already-started late speculative/zombie task completions remain attributed to their
+original attempt, but cannot fill missing coverage at StageCompleted. Failed attempts
+remain explicit; every job and the final submitted attempt of each executed stage must
+succeed. Only successful tasks in successful submitted attempts prove Worker participation.
+Failed tasks may lack metrics in Spark's JSON; those metrics remain `null`, never zeroed.
+
+Existing execution-report fields are retained. Additions are
+`planned_only_stage_attempt_count` and `planned_only_stage_attempts`; each planned record
+contains `stage_id`, `stage_attempt_id`, `expected_tasks` (planned population), `parent_ids`,
+`root_rdd_id`, `referenced_by_jobs` and `reuse_sources` (actual earlier stage/attempt IDs).
+Submitted `stage_attempts` additionally expose `parent_ids`, and task records expose
+`task_type`. `successful_partition_count` counts unique task-set coverage in final
+submitted attempts; `successful_task_count` counts actual successful task attempts,
+including distinct retries. Retry attribution across stage attempts uses RDD partition
+identity, with attempt-local index fallback for legacy records without Partition ID.
+All execution counts and Worker metrics exclude planned-only references.
+
 The J02–J04 target **under 30 minutes** is unverified. Record J05/J06 separately. Compare
 only identical scope/digest/code and disclose resource/cache conditions. No benchmark
 matrix is required. Raw integrity validation still reads original source bytes and can

@@ -1,5 +1,6 @@
 """Offline M06 coordination and distributed-execution evidence gates."""
 
+import copy
 import json
 from types import SimpleNamespace
 
@@ -107,6 +108,19 @@ def _event_log(*, master="spark://spark-master:7077", workers=("spark-worker-1",
             dict(Event="SparkListenerApplicationEnd"),
         ]
     )
+    with_starts = []
+    for event in events:
+        if event["Event"] == "SparkListenerTaskEnd":
+            with_starts.append(
+                {
+                    "Event": "SparkListenerTaskStart",
+                    "Stage ID": event["Stage ID"],
+                    "Stage Attempt ID": event["Stage Attempt ID"],
+                    "Task Info": copy.deepcopy(event["Task Info"]),
+                }
+            )
+        with_starts.append(event)
+    events = with_starts
     return ("\n".join(json.dumps(event) for event in events) + "\n").encode()
 
 
@@ -133,9 +147,36 @@ def test_completed_execution_reconciles_jobs_stages_partitions_and_workers():
     assert evidence["application_id"] == "app-1"
     assert evidence["successful_job_count"] == 1
     assert evidence["successful_stage_attempt_count"] == 1
+    assert evidence["planned_only_stage_attempt_count"] == 0
     assert evidence["successful_partition_count"] == 2
     assert evidence["workers"]["spark-worker-1"]["successful_tasks"] == 1
     assert evidence["workers"]["spark-worker-2"]["successful_tasks"] == 1
+
+
+def test_completed_execution_accepts_job_dag_snapshot_for_skipped_stage():
+    from tests.unit.test_small_evidence import reuse_events
+    from warehouse_bigdata.common.small_evidence import completed_execution
+
+    events = reuse_events()
+    payload = ("\n".join(json.dumps(event) for event in events) + "\n").encode()
+    evidence = completed_execution(_event_client(payload), CONFIG, "m06-run")
+
+    assert evidence["planned_only_stage_attempt_count"] == 1
+    assert evidence["planned_only_stage_attempts"][0]["stage_id"] == 1
+    assert evidence["submitted_stage_attempt_count"] == 2
+    assert evidence["completed_stage_count"] == 2
+    assert evidence["successful_partition_count"] == 4
+    assert [stage["stage_id"] for stage in evidence["stage_attempts"]] == [0, 2]
+
+
+def test_completed_execution_validates_task_start_events():
+    from warehouse_bigdata.common.small_evidence import completed_execution
+
+    events = [json.loads(line) for line in _event_log().splitlines()]
+    payload = ("\n".join(json.dumps(event) for event in events) + "\n").encode()
+
+    evidence = completed_execution(_event_client(payload), CONFIG, "m06-run")
+    assert evidence["successful_task_count"] == 2
 
 
 @pytest.mark.parametrize(
@@ -210,6 +251,43 @@ def test_completed_execution_requires_real_stage_submission_and_executor_binding
             CONFIG,
             "m06-run",
         )
+
+
+@pytest.mark.parametrize("kind", ["SparkListenerTaskStart", "SparkListenerTaskEnd"])
+def test_completed_execution_rejects_orphan_task_event_for_planned_stage(kind):
+    from warehouse_bigdata.common.small_evidence import completed_execution
+
+    events = [json.loads(line) for line in _event_log().splitlines()]
+    job = next(event for event in events if event["Event"] == "SparkListenerJobStart")
+    job["Stage IDs"].insert(0, 1)
+    job["Stage Infos"].insert(
+        0, {"Stage ID": 1, "Stage Attempt ID": 0, "Number of Tasks": 2, "Parent IDs": []}
+    )
+    orphan = copy.deepcopy(
+        next(event for event in events if event["Event"] == "SparkListenerTaskEnd")
+    )
+    orphan["Event"] = kind
+    orphan["Stage ID"] = 1
+    orphan["Task Info"]["Task ID"] = 99
+    events.insert(-1, orphan)
+    payload = ("\n".join(json.dumps(event) for event in events) + "\n").encode()
+
+    with pytest.raises(ScopeError, match="submitted stage"):
+        completed_execution(_event_client(payload), CONFIG, "m06-run")
+
+
+def test_completed_execution_rejects_submitted_stage_without_completion():
+    from warehouse_bigdata.common.small_evidence import completed_execution
+
+    events = [
+        event
+        for event in (json.loads(line) for line in _event_log().splitlines())
+        if event["Event"] != "SparkListenerStageCompleted"
+    ]
+    payload = ("\n".join(json.dumps(event) for event in events) + "\n").encode()
+
+    with pytest.raises(ScopeError, match="stage"):
+        completed_execution(_event_client(payload), CONFIG, "m06-run")
 
 
 def test_completed_execution_rejects_a_failed_final_stage_retry():

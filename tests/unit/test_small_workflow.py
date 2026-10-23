@@ -53,6 +53,10 @@ def _task_event(events, index):
     return next(event for event in _task_events(events) if event["Task Info"]["Index"] == index)
 
 
+def _task_infos(events):
+    return [event["Task Info"] for event in events if "Task Info" in event]
+
+
 def test_immutable_scope_write_rejects_different_selection():
     from warehouse_bigdata.common.scope_evidence import read_scope, write_scope
 
@@ -232,8 +236,8 @@ def test_execution_evidence_separates_task_set_index_and_rdd_partition_id(partit
     from warehouse_bigdata.common.small_evidence import completed_execution
 
     events = _execution_events()
-    for event, partition_id in zip(_task_events(events), partition_ids, strict=True):
-        event["Task Info"]["Partition ID"] = partition_id
+    for info in _task_infos(events):
+        info["Partition ID"] = partition_ids[info["Index"]]
 
     execution = completed_execution(_execution_client(events), CONFIG, "small-j02")
     tasks = execution["stage_attempts"][0]["task_attempts"]
@@ -249,8 +253,8 @@ def test_execution_evidence_accepts_missing_rdd_partition_id_as_legacy_compatibi
     from warehouse_bigdata.common.small_evidence import completed_execution
 
     events = _execution_events()
-    for event in _task_events(events):
-        event["Task Info"].pop("Partition ID")
+    for info in _task_infos(events):
+        info.pop("Partition ID")
 
     execution = completed_execution(_execution_client(events), CONFIG, "small-j02")
     tasks = execution["stage_attempts"][0]["task_attempts"]
@@ -269,7 +273,11 @@ def test_execution_evidence_rejects_missing_task_set_index_and_incomplete_covera
 
     incomplete = _execution_events()
     task = _task_event(incomplete, 1)
-    incomplete.remove(task)
+    incomplete = [
+        event
+        for event in incomplete
+        if event.get("Task Info", {}).get("Task ID") != task["Task Info"]["Task ID"]
+    ]
     with pytest.raises(ScopeError, match="task-set index coverage"):
         completed_execution(_execution_client(incomplete), CONFIG, "small-j02")
 
@@ -315,15 +323,33 @@ def _retried_execution_events(*, conflicting_partition=False, missing_first_atte
     original = _task_event(events, 0)
     if missing_first_attempt:
         original["Task Info"]["Attempt"] = 1
+        next(
+            event
+            for event in events
+            if event["Event"] == "SparkListenerTaskStart" and event["Task Info"]["Index"] == 0
+        )["Task Info"]["Attempt"] = 1
         return events
     failed = copy.deepcopy(original)
     failed["Task Info"].update({"Task ID": 100, "Attempt": 0, "Failed": True})
     failed["Task End Reason"] = {"Reason": "FetchFailed"}
     original["Task Info"].update({"Task ID": 101, "Attempt": 1})
+    start = next(
+        event
+        for event in events
+        if event["Event"] == "SparkListenerTaskStart" and event["Task Info"]["Index"] == 0
+    )
+    start["Task Info"].update({"Task ID": 101, "Attempt": 1})
     if conflicting_partition:
         failed["Task Info"]["Partition ID"] = 11
         original["Task Info"]["Partition ID"] = 12
-    events.insert(events.index(original), failed)
+        start["Task Info"]["Partition ID"] = 12
+    failed_start = {
+        "Event": "SparkListenerTaskStart",
+        "Stage ID": failed["Stage ID"],
+        "Stage Attempt ID": failed["Stage Attempt ID"],
+        "Task Info": copy.deepcopy(failed["Task Info"]),
+    }
+    events[events.index(start) : events.index(start)] = [failed_start, failed]
     return events
 
 
@@ -373,8 +399,8 @@ def test_execution_evidence_rejects_successful_work_on_only_one_worker():
     from warehouse_bigdata.common.small_evidence import completed_execution
 
     events = _execution_events()
-    for event in _task_events(events):
-        event["Task Info"].update(Host="spark-worker-1", **{"Executor ID": "1"})
+    for info in _task_infos(events):
+        info.update(Host="spark-worker-1", **{"Executor ID": "1"})
     with pytest.raises(ScopeError, match="both named Workers"):
         completed_execution(_execution_client(events), CONFIG, "small-j02")
 
@@ -476,6 +502,17 @@ def test_execution_evidence_requires_both_workers_and_completed_standalone():
             dict(Event="SparkListenerApplicationEnd"),
         ]
     )
+    for event in list(events):
+        if event["Event"] == "SparkListenerTaskEnd":
+            events.insert(
+                events.index(event),
+                {
+                    "Event": "SparkListenerTaskStart",
+                    "Stage ID": event["Stage ID"],
+                    "Stage Attempt ID": event["Stage Attempt ID"],
+                    "Task Info": copy.deepcopy(event["Task Info"]),
+                },
+            )
     payload = ("\n".join(json.dumps(e) for e in events) + "\n").encode()
     client = SimpleNamespace(
         list_children=lambda p: [p + "/app-1"],
@@ -699,7 +736,7 @@ def test_verify_cli_rejects_missing_ml_before_submission(monkeypatch, tmp_path):
     assert calls == []
 
 
-def fake_live_commands(monkeypatch, *, preflight_status=0, measured_digest=None):
+def fake_live_commands(monkeypatch, *, preflight_status=0, measured_digest=None, evidence_status=0):
     from warehouse_bigdata.common import small_demo
 
     calls = []
@@ -714,6 +751,8 @@ def fake_live_commands(monkeypatch, *, preflight_status=0, measured_digest=None)
                 json.dumps({"execution": {"application_id": "app-1"}, "scope": scope}).encode()
             )
         status = preflight_status if "warehouse_bigdata.common.small_preflight" in args else 0
+        if "warehouse_bigdata.common.small_evidence" in args:
+            status = evidence_status
         return SimpleNamespace(wait=lambda **kwargs: status)
 
     monkeypatch.setattr(small_demo.subprocess, "Popen", popen)
@@ -777,6 +816,30 @@ def test_j02_readback_cannot_replace_a_frozen_digest(monkeypatch, tmp_path):
     report = json.loads((tmp_path / "run/report.json").read_text())
     assert report["status"] == "FAILED"
     assert "j03" not in report["stages"]
+
+
+@pytest.mark.parametrize("evidence_status", [0, 1])
+def test_recovery_resolves_only_authoritative_scope_after_successful_evidence(
+    monkeypatch, tmp_path, evidence_status
+):
+    from warehouse_bigdata.common.small_demo import run_live
+
+    selector = {**complete_selector(), "selection_digest": None}
+    identities = selector.copy()
+    calls = fake_live_commands(monkeypatch, evidence_status=evidence_status)
+    kwargs = dict(stages=["j02"], authorize=True, evidence_dir=tmp_path / "run", recover=True)
+    if evidence_status:
+        with pytest.raises(ScopeError, match="j02-evidence"):
+            run_live(selector, **kwargs)
+        assert selector == identities
+    else:
+        run_live(selector, **kwargs)
+        assert selector == {**identities, "selection_digest": evidence()["selection_digest"]}
+    assert not any("prepare-run" in command for command in calls)
+    submissions = [command for command in calls if "scripts/spark-submit.sh" in command]
+    assert len(submissions) == 1
+    assert "warehouse_bigdata/jobs/normalize_sales_daily.py" in submissions[0]
+    assert "demo_sample" in submissions[0]
 
 
 def test_full_chain_integration_readback_rejects_partial_report(monkeypatch, tmp_path):
