@@ -48,6 +48,10 @@ def sandbox(tmp_path: Path) -> dict:
                 sys.exit(int(os.environ.get("TEST_READY_STATUS", "0")))
             if "run" not in args:
                 sys.exit(0)
+            if "warehouse_bigdata.common.hdfs_publication" in args:
+                sys.exit(int(os.environ.get("TEST_PUBLICATION_STATUS", os.environ.get("TEST_RUN_STATUS", "0"))))
+            if os.environ.get("TEST_DRIVER_ONLY_STATUS"):
+                sys.exit(int(os.environ["TEST_DRIVER_ONLY_STATUS"]))
             name = args[args.index("--name") + 1]
             label = args[args.index("--label") + 1].split("=", 1)[1]
             late = os.environ.get("TEST_LATE_CREATE") == "1"

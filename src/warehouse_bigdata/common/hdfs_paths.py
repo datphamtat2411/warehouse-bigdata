@@ -129,6 +129,25 @@ def render_run_manifest_path(base_path: str, pipeline_run_id: str) -> str:
     )
 
 
+def validate_feature_version(feature_version: str) -> str:
+    """Require an explicit bounded feature-semantic identity safe for canonical paths."""
+    if not isinstance(feature_version, str) or not _SAFE_IDENTIFIER.fullmatch(feature_version):
+        raise HdfsPathError("feature_version must be a bounded safe identifier")
+    return feature_version
+
+
+def render_forecast_features_path(
+    base_path: str, source_snapshot_id: str, feature_version: str,
+) -> str:
+    """Render the frozen v1 feature artifact without creating publication ancestors."""
+    validate_source_snapshot_id(source_snapshot_id)
+    validate_feature_version(feature_version)
+    return render_hdfs_artifact_path(
+        base_path, "forecast_features", source_snapshot_id=source_snapshot_id,
+        feature_version=feature_version,
+    )
+
+
 def render_normalization_chunks_path(staging_path: str) -> str:
     """Render the bounded normalized chunk parent under one staging attempt."""
     return _join_staging(staging_path, "chunks")

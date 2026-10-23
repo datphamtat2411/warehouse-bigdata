@@ -403,6 +403,97 @@ def _run(
     )
 
 
+@pytest.fixture(scope="module")
+def j04_upstream_bundle(spark, tmp_path_factory):
+    """Actual J03 output with explicit J02 quality and owner-sealed metadata."""
+    from warehouse_bigdata.processing import enrichment_analytics_snapshot as module
+
+    patch = pytest.MonkeyPatch()
+    hdfs = _LocalHdfs(tmp_path_factory.mktemp("j04-upstream"))
+    config = HDFSConfig("hdfs://test-namenode:8020", BASE_PATH)
+    _prepare_inputs(spark, hdfs, config, patch)
+    result = _run(spark, hdfs, config)
+    assert result.status == "VALIDATED", result.failure_details
+    j02_path = render_run_manifest_path(BASE_PATH, UPSTREAM_RUN_ID)
+    j02 = json.loads(hdfs.read_remote(j02_path))
+    quality_path = render_staging_path(BASE_PATH, UPSTREAM_RUN_ID) + "/quality_report.json"
+    j02["quality_report_uri"] = str(hdfs._local(quality_path))
+    hdfs._local(j02_path).write_text(json.dumps(j02))
+    hdfs.upload_bytes(json.dumps({
+        "status": "VALIDATED", "source_version": SOURCE_VERSION,
+        "source_snapshot_id": SOURCE_SNAPSHOT_ID, "pipeline_run_id": UPSTREAM_RUN_ID,
+        "raw_path": result.raw_path, "curated_path": result.sales_daily_path,
+        "measured": {"row_count": 4, "unit_sales_total": 6, "zero_sales_count": 2},
+    }).encode(), quality_path)
+    patch.setattr(module, "_require_sealed_input", lambda *args: None)
+    yield hdfs, config
+    patch.undo()
+
+
+def test_j04_public_reader_returns_verified_ordered_sales_and_evidence(spark, j04_upstream_bundle):
+    from warehouse_bigdata.processing import enrichment_analytics_snapshot as module
+
+    hdfs, config = j04_upstream_bundle
+    frame, evidence = module.read_validated_sales_enriched_snapshot(
+        spark, source_version=SOURCE_VERSION, source_snapshot_id=SOURCE_SNAPSHOT_ID,
+        pipeline_run_id=PIPELINE_RUN_ID, hdfs_config=config, client=hdfs,
+    )
+    assert frame.count() == 4
+    assert tuple(frame.columns) == module.SALES_ENRICHED.field_names
+    assert evidence["pipeline_run_id"] == PIPELINE_RUN_ID
+    assert evidence["upstream_pipeline_run_id"] == UPSTREAM_RUN_ID
+    assert evidence["metadata_digests"]
+
+
+@pytest.mark.parametrize("corruption", [
+    "marker", "quality", "dataset", "bundle", "producer", "raw", "j02", "type", "source",
+])
+def test_j04_public_reader_rejects_incomplete_or_cross_bound_upstream(
+    spark, j04_upstream_bundle, monkeypatch, corruption,
+):
+    from warehouse_bigdata.processing import enrichment_analytics_snapshot as module
+
+    hdfs, config = j04_upstream_bundle
+    quality = render_enrichment_quality_path(render_staging_path(BASE_PATH, PIPELINE_RUN_ID))
+    dataset = render_enrichment_dataset_manifest_path(
+        render_curated_sales_enriched_path(BASE_PATH, SOURCE_SNAPSHOT_ID))
+    paths = {
+        "marker": render_run_manifest_path(BASE_PATH, PIPELINE_RUN_ID),
+        "quality": quality, "dataset": dataset,
+        "bundle": render_enrichment_dataset_manifest_path(
+            render_curated_store_daily_sales_path(BASE_PATH, SOURCE_SNAPSHOT_ID)),
+        "producer": dataset, "source": dataset, "type": dataset,
+        "raw": quality, "j02": quality,
+    }
+    target = paths[corruption]
+    original = hdfs.read_remote
+
+    def read(path):
+        if path != target:
+            return original(path)
+        if corruption in {"marker", "quality", "dataset", "bundle"}:
+            raise FileNotFoundError(path)
+        document = json.loads(original(path))
+        if corruption == "producer":
+            document["pipeline_run_id"] = "wrong-producer"
+        elif corruption == "source":
+            document["source_version"] = "sha256:" + "f" * 64
+        elif corruption == "type":
+            document["physical_schema"]["unit_sales"] = "int"
+        elif corruption == "raw":
+            document["raw_path"] = "/wrong/raw"
+        elif corruption == "j02":
+            document["input"]["manifest_pipeline_run_id"] = "wrong-j02"
+        return json.dumps(document).encode()
+
+    monkeypatch.setattr(hdfs, "read_remote", read)
+    with pytest.raises(module.EnrichmentAnalyticsSnapshotError):
+        module.read_validated_sales_enriched_snapshot(
+            spark, source_version=SOURCE_VERSION, source_snapshot_id=SOURCE_SNAPSHOT_ID,
+            pipeline_run_id=PIPELINE_RUN_ID, hdfs_config=config, client=hdfs,
+        )
+
+
 def test_output_paths_are_snapshot_scoped_and_candidates_remain_run_scoped() -> None:
     staging = render_staging_path(BASE_PATH, PIPELINE_RUN_ID)
 

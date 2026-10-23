@@ -127,7 +127,7 @@ def test_m04_namespace_permissions_without_spark_or_m5():
         assert report == {
             "status": "READY",
             "hdfs_user": "spark",
-            "denied_mutations": 20,
+            "denied_mutations": 24,
             "staging_write_rename_delete": True,
         }
         print(json.dumps(report))

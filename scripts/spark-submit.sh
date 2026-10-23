@@ -16,11 +16,15 @@ if [[ $# == 1 && $1 == --help ]]; then
     exit 0
 fi
 arguments=("$@")
+has_shuffle=0
+has_aqe=0
 while [[ $# -gt 0 && $1 != -- ]]; do
     if [[ $1 != --conf || $# -lt 2 || $2 != *=* ]]; then
         usage >&2
         exit 2
     fi
+    [[ $2 == spark.sql.shuffle.partitions=* ]] && has_shuffle=1
+    [[ $2 == spark.sql.adaptive.enabled=* ]] && has_aqe=1
     shift 2
 done
 if [[ $# -lt 2 || $1 != -- || -z $2 ]]; then
@@ -28,8 +32,11 @@ if [[ $# -lt 2 || $1 != -- || -z $2 ]]; then
     exit 2
 fi
 publication_run_id=
+feature_job=0
+recovery_binding=()
+[[ $2 == warehouse_bigdata/jobs/build_forecast_features.py ]] && feature_job=1
 case $2 in
-    warehouse_bigdata/jobs/normalize_sales_daily.py|warehouse_bigdata/jobs/enrich_analytics.py)
+    warehouse_bigdata/jobs/normalize_sales_daily.py|warehouse_bigdata/jobs/enrich_analytics.py|warehouse_bigdata/jobs/build_forecast_features.py)
         shift 2
         while [[ $# -gt 0 ]]; do
             case $1 in
@@ -41,6 +48,17 @@ case $2 in
                     [[ -z $publication_run_id ]] || { usage >&2; exit 2; }
                     publication_run_id=${1#*=}
                     shift ;;
+                --source-version|--source-snapshot-id|--upstream-pipeline-run-id|--feature-version)
+                    [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+                    if (( feature_job )); then
+                        recovery_binding+=("$1" "$2")
+                    fi
+                    shift 2 ;;
+                --source-version=*|--source-snapshot-id=*|--upstream-pipeline-run-id=*|--feature-version=*)
+                    if (( feature_job )); then
+                        recovery_binding+=("$1")
+                    fi
+                    shift ;;
                 *) shift ;;
             esac
         done
@@ -49,6 +67,12 @@ case $2 in
         }
         ;;
 esac
+if (( feature_job )); then
+    defaults=()
+    (( has_shuffle )) || defaults+=(--conf spark.sql.shuffle.partitions=16)
+    (( has_aqe )) || defaults+=(--conf spark.sql.adaptive.enabled=true)
+    arguments=("${defaults[@]}" "${arguments[@]}")
+fi
 
 image=warehouse-bigdata-spark-submit:3.5.7-python3.11.17
 compose=(docker compose -f "$repository/infrastructure/compose.yaml" --profile spark-submit)
@@ -140,7 +164,19 @@ publish_m04() {
 }
 # Recover a previously claimed candidate before Spark attempts to reconstruct staging.
 if [[ -n $publication_run_id ]]; then
-    publish_m04 --recover
+    if (( feature_job )); then
+        if publish_m04 --skip-completed-driver "${recovery_binding[@]}" --recover; then
+            :
+        else
+            recovery_status=$?
+            if (( recovery_status == 10 )); then
+                exit 0
+            fi
+            exit "$recovery_status"
+        fi
+    else
+        publish_m04 --recover
+    fi
 fi
 
 "${compose[@]}" run --rm --no-deps -T --pull never \

@@ -19,9 +19,10 @@ class HdfsNamespaceError(RuntimeError):
 
 
 def publication_parents(config: HDFSConfig) -> tuple[str, ...]:
-    """The four Contract v1 dataset parents and run-manifest publication directory."""
+    """Contract v1 curated, run-manifest, and feature publication parents."""
     base = config.base_path
-    return (*(f"{base}/curated/{name}" for name in DATASET_NAMES), f"{base}/manifests/runs")
+    return (*(f"{base}/curated/{name}" for name in DATASET_NAMES), f"{base}/manifests/runs",
+            f"{base}/features/demand_forecasting")
 
 
 def require_owner(client) -> None:
@@ -47,8 +48,29 @@ def _shared_directories(config: HDFSConfig) -> tuple[str, ...]:
         *publication_parents(config)[:4],
         f"{base}/manifests",
         publication_parents(config)[4],
+        f"{base}/features",
+        publication_parents(config)[5],
         f"{base}/staging",
     )
+
+
+def prepare_feature_publication_parent(client, config: HDFSConfig, final: str) -> None:
+    """Owner-create only the requested source parent; never repair an unsafe existing one."""
+    require_owner(client)
+    parent = str(PurePosixPath(final).parent)
+    shared = config.base_path + "/features/demand_forecasting"
+    if str(PurePosixPath(parent).parent) != shared:
+        raise HdfsNamespaceError("feature publication parent is outside the canonical namespace")
+    if client.path_status(parent) is None:
+        try:
+            client.mkdir_exclusive(parent)
+        except Exception:
+            if client.path_status(parent) is None:
+                raise
+    status = _directory(client, parent, "rwx")
+    _protected(client, parent, status, "rwx")
+    if not client.can_access(parent, "rwx"):
+        raise _failure(client, parent, "rwx", "owner access denied")
 
 
 def _directory(client, path: str, permission: str) -> dict:
