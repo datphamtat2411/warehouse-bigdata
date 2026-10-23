@@ -7,7 +7,9 @@ authors = [
     { name = "Pham Tat Dat", email = "datphamtat19@gmail.com" }
 ]
 requires-python = ">=3.11,<3.12"
-dependencies = []
+dependencies = [
+    "numpy>=1.26.4,<2",
+]
 
 [project.scripts]
 warehouse-bigdata = "warehouse_bigdata.cli:main"

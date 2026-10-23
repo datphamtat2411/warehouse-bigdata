@@ -149,7 +149,8 @@ def test_owner_provisioning_is_minimal_and_idempotent_and_preserves_existing_dat
     assert client.entries == first
     assert client.calls == []
     assert all(client.entries[path] == entry for path, entry in before.items())
-    assert len(publication_parents(CONFIG)) == 6
+    assert len(publication_parents(CONFIG)) == 7
+    assert CONFIG.base_path + "/models" in publication_parents(CONFIG)
     assert CONFIG.base_path + "/features/demand_forecasting" in publication_parents(CONFIG)
     client.identity = "spark"
     validate_publication_namespace(client, CONFIG)

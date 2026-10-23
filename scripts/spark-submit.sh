@@ -33,10 +33,15 @@ if [[ $# -lt 2 || $1 != -- || -z $2 ]]; then
 fi
 publication_run_id=
 feature_job=0
+model_job=0
 recovery_binding=()
 [[ $2 == warehouse_bigdata/jobs/build_forecast_features.py ]] && feature_job=1
+if [[ $2 == warehouse_bigdata/jobs/train_forecast_model.py ]]; then
+    feature_job=1
+    model_job=1
+fi
 case $2 in
-    warehouse_bigdata/jobs/normalize_sales_daily.py|warehouse_bigdata/jobs/enrich_analytics.py|warehouse_bigdata/jobs/build_forecast_features.py)
+    warehouse_bigdata/jobs/normalize_sales_daily.py|warehouse_bigdata/jobs/enrich_analytics.py|warehouse_bigdata/jobs/build_forecast_features.py|warehouse_bigdata/jobs/train_forecast_model.py)
         shift 2
         while [[ $# -gt 0 ]]; do
             case $1 in
@@ -59,6 +64,17 @@ case $2 in
                         recovery_binding+=("$1")
                     fi
                     shift ;;
+                --model-run-id|--training-cap|--sampling-seed|--resource-justification|--pilot-evidence-uri|--hdfs-uri|--spark-master|--event-log-dir)
+                    [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+                    if (( model_job )); then
+                        recovery_binding+=("$1" "$2")
+                    fi
+                    shift 2 ;;
+                --model-run-id=*|--training-cap=*|--sampling-seed=*|--resource-justification=*|--pilot-evidence-uri=*|--hdfs-uri=*|--spark-master=*|--event-log-dir=*)
+                    if (( model_job )); then
+                        recovery_binding+=("$1")
+                    fi
+                    shift ;;
                 *) shift ;;
             esac
         done
@@ -67,6 +83,20 @@ case $2 in
         }
         ;;
 esac
+if (( model_job )); then
+    # Freeze effective sampling defaults as well as explicitly supplied values.
+    has_cap=0
+    has_seed=0
+    has_model=0
+    for value in "${recovery_binding[@]}"; do
+        [[ $value == --training-cap || $value == --training-cap=* ]] && has_cap=1
+        [[ $value == --sampling-seed || $value == --sampling-seed=* ]] && has_seed=1
+        [[ $value == --model-run-id || $value == --model-run-id=* ]] && has_model=1
+    done
+    (( has_model )) || { printf 'J05 requires --model-run-id.\n' >&2; exit 2; }
+    (( has_cap )) || recovery_binding+=(--training-cap 150000)
+    (( has_seed )) || recovery_binding+=(--sampling-seed 42)
+fi
 if (( feature_job )); then
     defaults=()
     (( has_shuffle )) || defaults+=(--conf spark.sql.shuffle.partitions=16)
@@ -173,8 +203,10 @@ publish_m04() {
     wait "$run_pid" || publication_status=$?
     run_pid=
     if (( feature_job && publication_status != 0 && publication_status != 10 )); then
-        printf 'J04 owner publication failed/interrupted (status %s). Preserve frozen HDFS evidence; retry this launcher with the same run ID %s and binding arguments for owner recovery.\n' \
-            "$publication_status" "$publication_run_id" >&2
+        local job_label=J04
+        (( model_job )) && job_label=J05
+        printf '%s owner publication failed/interrupted (status %s). Preserve frozen HDFS evidence; retry this launcher with the same run ID %s and binding arguments for owner recovery.\n' \
+            "$job_label" "$publication_status" "$publication_run_id" >&2
     fi
     return "$publication_status"
 }

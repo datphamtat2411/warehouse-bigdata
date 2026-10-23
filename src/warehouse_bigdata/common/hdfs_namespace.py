@@ -25,6 +25,7 @@ def publication_parents(config: HDFSConfig) -> tuple[str, ...]:
         *(f"{base}/curated/{name}" for name in DATASET_NAMES),
         f"{base}/manifests/runs",
         f"{base}/features/demand_forecasting",
+        f"{base}/models",
     )
 
 
@@ -53,6 +54,7 @@ def _shared_directories(config: HDFSConfig) -> tuple[str, ...]:
         publication_parents(config)[4],
         f"{base}/features",
         publication_parents(config)[5],
+        f"{base}/models",
         f"{base}/staging",
     )
 

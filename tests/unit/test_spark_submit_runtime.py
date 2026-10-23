@@ -312,6 +312,38 @@ def test_j04_frozen_recovery_skips_driver_and_retains_exact_binding(sandbox):
     assert "historical_v1" in runs(sandbox)[0]
 
 
+@pytest.mark.parametrize("status", [0, 10, 17])
+def test_m06_launcher_owner_recovery_binding_and_failure_status(sandbox, status):
+    sandbox["env"]["TEST_PUBLICATION_STATUS"] = str(status)
+    binding = ["--pipeline-run-id", "j05-001", "--model-run-id", "rf-001",
+               "--source-version", "sha256:" + "a" * 64, "--source-snapshot-id", "snapshot",
+               "--upstream-pipeline-run-id", "j04-001", "--feature-version", "historical_v1",
+               "--training-cap", "10000", "--sampling-seed", "42",
+               "--resource-justification", "initial pilot", "--hdfs-uri", "hdfs://hdfs-namenode:8020",
+               "--spark-master", "spark://spark-master:7077"]
+    result = invoke(sandbox, "--", "warehouse_bigdata/jobs/train_forecast_model.py", *binding)
+    assert result.returncode == (0 if status == 10 else status), result.stderr
+    publication = [call for call in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" in call]
+    assert publication
+    recovery = publication[0]
+    assert "--skip-completed-driver" in recovery
+    for value in binding:
+        assert value in recovery
+    assert all(call[call.index("--user") + 1] == "1000:100" for call in publication)
+    drivers = [call for call in runs(sandbox) if call not in publication]
+    assert len(drivers) == (1 if status == 0 else 0)
+    assert_cluster_untouched(sandbox)
+
+
+def test_m06_launcher_driver_failure_never_promotes(sandbox):
+    sandbox["env"]["TEST_DRIVER_ONLY_STATUS"] = "23"
+    result = invoke(sandbox, "--", "warehouse_bigdata/jobs/train_forecast_model.py",
+                    "--pipeline-run-id", "failed-001", "--model-run-id", "rf-failed")
+    assert result.returncode == 23
+    publication = [call for call in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" in call]
+    assert len(publication) == 1 and "--recover" in publication[0]
+
+
 @pytest.mark.parametrize(
     "job", ["build_forecast_features", "normalize_sales_daily", "enrich_analytics"]
 )

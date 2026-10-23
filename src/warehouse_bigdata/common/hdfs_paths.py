@@ -157,6 +157,18 @@ def render_normalization_chunks_path(staging_path: str) -> str:
     return _join_staging(staging_path, "chunks")
 
 
+def validate_model_run_id(model_run_id: str) -> str:
+    """Require an explicit immutable model identity safe for its Contract v1 path."""
+    if not isinstance(model_run_id, str) or not _SAFE_IDENTIFIER.fullmatch(model_run_id):
+        raise HdfsPathError("model_run_id must be a bounded safe identifier")
+    return model_run_id
+
+
+def render_model_artifact_path(base_path: str, model_run_id: str) -> str:
+    validate_model_run_id(model_run_id)
+    return render_hdfs_artifact_path(base_path, "model_artifact", model_run_id=model_run_id)
+
+
 def render_normalization_chunk_path(staging_path: str, day_start: int, day_end: int) -> str:
     """Render one deterministic day-range Parquet chunk path."""
     _validate_day_range(day_start, day_end)

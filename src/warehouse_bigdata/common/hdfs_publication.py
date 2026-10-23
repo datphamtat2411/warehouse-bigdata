@@ -112,6 +112,10 @@ def _request_path(config: HDFSConfig, run_id: str) -> str:
 
 
 def _outputs(config, manifest):
+    if manifest.get("contract_name") == "model_manifest":
+        from warehouse_bigdata.forecasting.model_artifacts import validate_model_request
+
+        return validate_model_request(config, manifest)
     run_id = manifest["pipeline_run_id"]
     snapshot = manifest["source_snapshot_id"]
     staging = render_staging_path(config.base_path, run_id)
@@ -160,6 +164,8 @@ def _outputs(config, manifest):
 
 
 def _same_manifest(first, second):
+    if first.get("contract_name") == "model_manifest" or second.get("contract_name") == "model_manifest":
+        return first == second
     same = all(
         first.get(field) == second.get(field)
         for field in (
@@ -344,6 +350,10 @@ def finalize_publication(client, config, *, pipeline_run_id: str) -> str:
     manifest = request["manifest"]
     if request.get("version") != 1 or manifest.get("pipeline_run_id") != pipeline_run_id:
         raise HdfsNamespaceError("publication request identity/version mismatch")
+    if manifest.get("contract_name") == "model_manifest":
+        from warehouse_bigdata.forecasting.model_artifacts import finalize_model_publication
+
+        return finalize_model_publication(client, config, pipeline_run_id=pipeline_run_id, manifest=manifest)
     outputs = _outputs(config, manifest)
     is_feature = json.loads(manifest["output_dataset_names"]) == ["forecast_features"]
     # J04 exact-path NameNode checks distinguish absence from access denial and
@@ -440,8 +450,16 @@ def main() -> None:
         "source-snapshot-id",
         "upstream-pipeline-run-id",
         "feature-version",
+        "model-run-id",
+        "hdfs-uri",
+        "spark-master",
+        "resource-justification",
+        "pilot-evidence-uri",
+        "event-log-dir",
     ):
         parser.add_argument("--" + name)
+    parser.add_argument("--training-cap", type=int)
+    parser.add_argument("--sampling-seed", type=int)
     args = parser.parse_args()
     config = load_hdfs_config()
     client = HdfsCliClient()
@@ -451,23 +469,43 @@ def main() -> None:
     if args.skip_completed_driver:
         request = _json(client, _request_path(config, args.pipeline_run_id))
         manifest = request["manifest"]
-        if json.loads(manifest["output_dataset_names"]) != ["forecast_features"]:
+        is_model = manifest.get("contract_name") == "model_manifest"
+        if not is_model and json.loads(manifest["output_dataset_names"]) != ["forecast_features"]:
             raise HdfsNamespaceError("J04 recovery run belongs to another job")
+        if is_model != (args.model_run_id is not None):
+            raise HdfsNamespaceError("recovery job conflicts with frozen execution")
         binding = _json(
             client,
             render_staging_path(config.base_path, args.pipeline_run_id) + "/input_binding.json",
         )
+        if is_model and any(getattr(args, key) is None for key in (
+            "source_version", "source_snapshot_id", "upstream_pipeline_run_id", "feature_version",
+            "model_run_id", "hdfs_uri", "spark_master", "training_cap", "sampling_seed",
+        )):
+            raise HdfsNamespaceError("J05 owner recovery requires complete explicit input/configuration binding")
         for key in (
             "source_version",
             "source_snapshot_id",
             "upstream_pipeline_run_id",
             "feature_version",
+            *( ("model_run_id",) if is_model else () ),
         ):
             value = getattr(args, key)
             if value is not None and value != binding.get(key):
                 raise HdfsNamespaceError(
                     "J04 recovery arguments conflict with frozen input: " + key
                 )
+        if is_model:
+            effective = binding.get("effective_configuration", {})
+            training = effective.get("training", {})
+            expected = {"hdfs_uri": effective.get("hdfs_uri"), "spark_master": effective.get("spark_master"),
+                        "training_cap": training.get("cap"), "sampling_seed": training.get("sampling_seed"),
+                        "resource_justification": training.get("resource_justification"),
+                        "pilot_evidence_uri": training.get("pilot_evidence_uri"),
+                        "event_log_dir": effective.get("runtime", {}).get("spark.eventLog.dir")}
+            for key, value in expected.items():
+                if getattr(args, key) != value:
+                    raise HdfsNamespaceError("J05 recovery configuration conflicts with frozen input: " + key)
     status = finalize_publication(client, config, pipeline_run_id=args.pipeline_run_id)
     if not args.recover:
         print(f"status={status}")
