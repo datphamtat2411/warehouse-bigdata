@@ -19,6 +19,7 @@ from tests.unit.test_enrichment_analytics_snapshot import (
 from tests.unit.test_hdfs_namespace import CONFIG, PermissionHdfs
 from tests.unit.test_hdfs_raw_ingestion import _run_manifest
 from tests.unit.test_historical_features import _frame, _rows
+from tests.unit.test_historical_features import spark as spark
 from warehouse_bigdata.common.hdfs_namespace import (
     HdfsNamespaceError,
     provision_publication_namespace,
