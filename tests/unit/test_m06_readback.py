@@ -315,3 +315,18 @@ def test_forecast_contract_rejects_lineage_mutation(field):
             candidate_series=1,
             excluded_series=0,
         )
+
+
+def test_explicit_historical_forecast_validation_preserves_forward_defaults():
+    from datetime import timedelta
+    from warehouse_bigdata.forecasting.acceptance import validate_forecast_rows
+
+    rows = _forecast_rows()
+    issue = date(2016, 4, 24)
+    for row in rows:
+        row.update(issue_date=issue, forecast_date=issue + timedelta(days=row['horizon']),
+                   run_type='test')
+    assert validate_forecast_rows(rows, selector={}, candidate_series=1, excluded_series=0,
+        issue_date=issue, run_type='test')['row_count'] == 7
+    with pytest.raises(ScopeError):
+        validate_forecast_rows(rows, selector={}, candidate_series=1, excluded_series=0)

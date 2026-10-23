@@ -214,3 +214,138 @@ def test_physical_schema_rejected():
     frame = SimpleNamespace(columns=["wrong"], schema=[])
     with pytest.raises(ValueError, match="schema"):
         inputs.require_forecast_schema(frame)
+
+
+def historical_rows():
+    from warehouse_bigdata.forecasting.evaluation import EvaluationContext, ORIGINS
+
+    rows = fixture_rows()
+    rows['selector'].update(test_evaluation_run_id='test-eval', test_pipeline_run_id='test-run',
+                            validation_evaluation_run_id='validation-eval',
+                            validation_pipeline_run_id='validation-run')
+    context = EvaluationContext('test-eval', 'model', 'small-snapshot', 'features-v1', 'test')
+    origin = date(2011, 1, 29) + timedelta(days=1912)
+    for row in rows['forecast_rows']:
+        row.update(issue_date=origin, forecast_date=origin + timedelta(days=row['horizon']),
+                   run_type='test', forecast_run_id=context.forecast_id(1913))
+    for row in rows['history_rows']:
+        row['date'] -= timedelta(days=28)
+    rows['eligibility_rows'] = [dict(**p, source_snapshot_id='small-snapshot',
+        feature_version='features-v1', issue_date=origin,
+        status='ELIGIBLE' if n < 2 else 'EXCLUDED',
+        reason_codes=[] if n < 2 else ['INCOMPLETE_HISTORY'])
+        for n, p in enumerate(rows['scope']['selected_series'])]
+    rows['binding'] = dict(scope=rows['scope'], origin_forecasts=context.origin_forecasts,
+                          freeze=dict(origins={k: list(v) for k, v in ORIGINS.items()}))
+    for name in ('cohort_rows', 'coverage_rows'):
+        rows.pop(name)
+    return rows
+
+
+def test_historical_binding_selects_origin_identity_and_history_exclusions():
+    rows = historical_rows()
+    result = inputs.bind_historical_inputs(**rows)
+    assert result.selector['forecast_run_id'].endswith('d1913')
+    assert result.predictions[0].issue_date == date(2016, 4, 24)
+    rows['history_rows'].pop()
+    result = inputs.bind_historical_inputs(**rows)
+    assert len(result.eligible_pairs) == 1
+    assert any(e.stage == 'HISTORY' for e in result.exclusions)
+
+
+@pytest.mark.parametrize('mutation', [
+    lambda r: r['binding']['freeze']['origins'].update(test=[1920]),
+    lambda r: r['binding']['origin_forecasts'].update({'1913': 'wrong'}),
+    lambda r: r['binding'].update(scope={}),
+    lambda r: r['forecast_rows'][0].update(forecast_run_id='forecast'),
+    lambda r: r['history_rows'].append(r['history_rows'][0]),
+    lambda r: r['history_rows'][0].update(date=DAY),
+    lambda r: r['eligibility_rows'].append(r['eligibility_rows'][0]),
+])
+def test_historical_conflicts_fail(mutation):
+    rows = historical_rows()
+    mutation(rows)
+    with pytest.raises(ValueError):
+        inputs.bind_historical_inputs(**rows)
+
+
+def test_historical_incomplete_forecast_is_explicit_exclusion():
+    rows = historical_rows()
+    rows['forecast_rows'].pop()
+    result = inputs.bind_historical_inputs(**rows)
+    assert len(result.eligible_pairs) == 1
+    assert any('INCOMPLETE_FORECAST' in e.reason_codes for e in result.exclusions)
+
+
+def test_historical_preflight_precedes_reads(monkeypatch):
+    rows = historical_rows()
+    monkeypatch.setattr(inputs, 'load_small_artifacts', lambda: rows['selector'])
+    gate = Mock(side_effect=ValueError('non-VALIDATED'))
+    monkeypatch.setattr(inputs, 'validate_small_publications', gate)
+    spark = Mock()
+    with pytest.raises(ValueError, match='non-VALIDATED'):
+        inputs.read_historical_inputs(spark, client=Mock(), config=Mock())
+    assert gate.call_args.kwargs['through'] == 'test'
+    spark.read.parquet.assert_not_called()
+
+
+def test_historical_reader_uses_only_prediction_artifacts(monkeypatch):
+    rows = historical_rows()
+    monkeypatch.setattr(inputs, 'load_small_artifacts', lambda: rows['selector'])
+    monkeypatch.setattr(inputs, 'validate_small_publications', Mock())
+    monkeypatch.setattr(inputs, 'read_scope', lambda *a, **k: rows['scope'])
+    monkeypatch.setattr(inputs, 'read_json', lambda *a: rows['binding'])
+    monkeypatch.setattr(inputs, 'require_forecast_schema', Mock())
+    evidence = dict(scope=rows['scope'], source_snapshot_id='small-snapshot',
+        source_version=rows['selector']['source_version'], pipeline_run_id='j03-run')
+    history = Mock(return_value=(rows['history_rows'], evidence))
+    monkeypatch.setattr(inputs, 'read_history', history)
+    names = dict(forecast_daily='forecast_rows', eligibility='eligibility_rows',
+                 rf_exceptions='exception_rows')
+    monkeypatch.setattr(inputs, 'collect_bounded', lambda frame, *a: rows[names[frame]])
+    spark = Mock()
+    spark.conf.get.return_value = 'UTC'
+    spark.read.parquet.side_effect = lambda p: p.rsplit('/', 1)[-1]
+    result = inputs.read_historical_inputs(spark, client=Mock(),
+        config=SimpleNamespace(uri='hdfs://test', base_path='/warehouse'))
+    paths = [c.args[0] for c in spark.read.parquet.call_args_list]
+    assert len(paths) == 3 and all('/origins/d_1913/' in p for p in paths)
+    assert history.call_args.kwargs['issue_date'] == date(2016, 4, 24)
+    assert result.upstream_evidence['test_binding']
+
+
+@pytest.mark.parametrize('field,maximum', [('forecast_rows', 700), ('history_rows', 700),
+                                        ('eligibility_rows', 100), ('exception_rows', 10000)])
+def test_historical_bounds(field, maximum):
+    rows = historical_rows()
+    rows[field] = rows[field][:1] * (maximum + 1)
+    with pytest.raises(ValueError, match=str(maximum)):
+        inputs.bind_historical_inputs(**rows)
+
+
+def test_historical_missing_environment(monkeypatch):
+    monkeypatch.delenv('WAREHOUSE_SMALL_ARTIFACTS', raising=False)
+    with pytest.raises(ValueError, match='WAREHOUSE_SMALL_ARTIFACTS'):
+        inputs.read_historical_inputs(Mock(), client=Mock(), config=Mock())
+
+
+def test_post_freeze_label_reader_uses_original_selector_and_exact_window(monkeypatch):
+    from warehouse_bigdata.optimization.policy_evaluation import freeze_policy_decisions
+    from warehouse_bigdata.common.hdfs_publication import document_digest
+
+    rows = historical_rows()
+    evidence = dict(scope=rows['scope'], source_snapshot_id='small-snapshot',
+        source_version=rows['selector']['source_version'], pipeline_run_id='j03-run')
+    rows['upstream_evidence']['j03'] = document_digest(evidence)
+    bound = inputs.bind_historical_inputs(**rows)
+    batch = freeze_policy_decisions(bound, proposed_decision_run_id='proposed',
+                                    baseline_decision_run_id='baseline')
+    gate = Mock()
+    monkeypatch.setattr(inputs, 'validate_small_publications', gate)
+    read = Mock(return_value=([], evidence))
+    monkeypatch.setattr(inputs, '_read_sales_window', read)
+    assert inputs.read_historical_labels(Mock(), frozen=batch, client=Mock(), config=Mock()) == []
+    assert gate.call_args.args[0]['forecast_run_id'] == 'forecast'
+    assert read.call_args.kwargs['start'] == date(2016, 4, 25)
+    assert read.call_args.kwargs['end'] == date(2016, 5, 1)
+    assert read.call_args.kwargs['label'] == 'labels'

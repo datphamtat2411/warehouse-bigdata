@@ -17,6 +17,10 @@ from .replenishment import (
     ReplenishmentRecommendation,
     calculate_replenishment,
 )
+from .policy_evaluation import (
+    FrozenPolicyDecisions, PolicyEvaluationError, PolicyEvaluationResult,
+    evaluate_frozen_policies, freeze_policy_decisions,
+)
 
 __all__ = [
     "EQUAL_SHARE_V1", "SHORTAGE_FIRST_PROPORTIONAL_V1", "AllocationBatchResult",
@@ -24,4 +28,6 @@ __all__ = [
     "InventoryPosition", "ReplenishmentError", "ReplenishmentRecommendation",
     "allocate_equal_share_v1", "allocate_shortage_first_proportional_v1",
     "calculate_replenishment",
+    "FrozenPolicyDecisions", "PolicyEvaluationError", "PolicyEvaluationResult",
+    "evaluate_frozen_policies", "freeze_policy_decisions",
 ]
