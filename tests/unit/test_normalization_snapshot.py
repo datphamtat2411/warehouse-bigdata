@@ -21,10 +21,18 @@ from warehouse_bigdata.common.hdfs_paths import (
     render_run_manifest_path,
     render_staging_path,
 )
+from warehouse_bigdata.contracts.dataset_scope import (
+    DEMO_SAMPLE,
+    DEPARTMENTS,
+    STORES,
+    select_scope,
+)
 from warehouse_bigdata.ingestion.hdfs_raw import ValidatedHdfsRawSnapshot
 from warehouse_bigdata.processing.normalization_snapshot import (
     NormalizationSnapshotConfig,
     NormalizationSnapshotError,
+    _prepare_scoped_wide,
+    _reconcile_filtered_wide,
     build_chunk_plan,
     run_normalization_snapshot,
     validate_chunk_coverage,
@@ -116,6 +124,55 @@ def _small_sales_frame(spark: SparkSession):
                 *("0" for _ in range(1_939)),
             )
         )
+    return spark.createDataFrame(rows, StructType(fields))
+
+
+def _demo_scope() -> dict[str, object]:
+    identities = []
+    for item_number in range(1, 11):
+        department = DEPARTMENTS[(item_number - 1) % len(DEPARTMENTS)]
+        category = department.rsplit("_", 1)[0]
+        item_id = f"item_{item_number}"
+        for store_id in STORES:
+            identities.append(
+                {
+                    "id": f"{item_id}_{store_id}",
+                    "item_id": item_id,
+                    "dept_id": department,
+                    "cat_id": category,
+                    "store_id": store_id,
+                    "state_id": store_id[:2],
+                }
+            )
+    return select_scope(
+        identities,
+        source_version=SOURCE_VERSION,
+        source_snapshot_id="snapshot-wide-test",
+        dataset_scope=DEMO_SAMPLE,
+    )
+
+
+def _demo_wide_sales_frame(spark: SparkSession):
+    metadata = ("id", "item_id", "dept_id", "cat_id", "store_id", "state_id")
+    days = tuple(f"d_{day}" for day in range(1, 1_942))
+    fields = [StructField(field, StringType(), True) for field in (*metadata, *days)]
+    rows = []
+    for item_number in range(1, 11):
+        department = DEPARTMENTS[(item_number - 1) % len(DEPARTMENTS)]
+        category = department.rsplit("_", 1)[0]
+        item_id = f"item_{item_number}"
+        for store_id in STORES:
+            rows.append(
+                (
+                    f"{item_id}_{store_id}",
+                    item_id,
+                    department,
+                    category,
+                    store_id,
+                    store_id[:2],
+                    *("0" for _ in days),
+                )
+            )
     return spark.createDataFrame(rows, StructType(fields))
 
 
@@ -298,6 +355,71 @@ def test_snapshot_config_supports_bounded_calibration_scope() -> None:
     assert (
         build_chunk_plan(config, "/data/warehouse/staging/pipeline_run_id=run-1")[-1].day_end == 128
     )
+
+
+def test_filtered_wide_reconciliation_checks_exact_schema_keys_rows_and_all_days(
+    spark: SparkSession,
+) -> None:
+    selected = _demo_wide_sales_frame(spark)
+
+    _reconcile_filtered_wide(selected, selected, _demo_scope())
+
+
+def test_filtered_wide_reconciliation_rejects_a_corrupted_last_daily_value(
+    spark: SparkSession,
+) -> None:
+    from pyspark.sql import functions as F
+
+    selected = _demo_wide_sales_frame(spark)
+    corrupted = selected.withColumn(
+        "d_1941",
+        F.when(F.col("id") == "item_1_CA_1", F.lit("1")).otherwise(F.col("d_1941")),
+    )
+
+    with pytest.raises(NormalizationSnapshotError, match="reconciliation"):
+        _reconcile_filtered_wide(selected, corrupted, _demo_scope())
+
+
+def test_incomplete_filtered_wide_checkpoint_is_rejected_without_rebuild(
+    spark: SparkSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from warehouse_bigdata.processing import normalization_snapshot as module
+
+    hdfs_root = tmp_path / "hdfs"
+    hdfs_root.mkdir()
+    hdfs = _LocalHdfs(hdfs_root)
+    hdfs_config = HDFSConfig("hdfs://test-namenode:8020", BASE_PATH)
+    staging_path = render_staging_path(BASE_PATH, "incomplete-wide")
+    root = staging_path + "/filtered_wide"
+    hdfs.mkdir_parents(root)
+    scope = _demo_scope()
+    hdfs.upload_bytes(json.dumps(scope).encode("utf-8"), staging_path + "/_scope.json")
+    hdfs.upload_bytes(
+        json.dumps(
+            {
+                "selection_digest": scope["selection_digest"],
+                "schema": _small_sales_frame(spark).schema.simpleString(),
+                "files": [],
+            }
+        ).encode("utf-8"),
+        root + "/_wide_manifest.json",
+    )
+    monkeypatch.setattr(module, "_hdfs_uri", lambda _uri, path: str(hdfs.root / path.lstrip("/")))
+
+    with pytest.raises(NormalizationSnapshotError, match="filtered-wide checkpoint"):
+        _prepare_scoped_wide(
+            spark,
+            hdfs,
+            hdfs_config,
+            _small_sales_frame(spark),
+            staging_path=staging_path,
+            source_version=SOURCE_VERSION,
+            source_snapshot_id="snapshot-wide-test",
+            dataset_scope=DEMO_SAMPLE,
+        )
+    assert (hdfs_root / root.lstrip("/") / "_wide_manifest.json").exists()
 
 
 def test_snapshot_persists_revalidates_promotes_and_reuses_without_duplicate_data(

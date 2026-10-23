@@ -329,10 +329,12 @@ Rationale:
 **Standard M5 Small execution:** resolve the frozen ten-SKU selection from validated source
 identities, then filter to 100 item-store rows **before unpivoting**. Materialize and independently
 validate a run-owned filtered-wide Parquet checkpoint containing all 1,941 string day fields.
-Chunk actions read that bounded checkpoint rather than reparsing the full CSV. Selection,
-checkpoint schema and fresh file checksums must agree on retry; incomplete checkpoints
-are preserved and require a new run ID. Source metadata selection and filtered-wide
-materialization still read the original source; raw integrity checks remain enabled.
+The independent exact comparison uses identity fields plus bounded day-column groups rather
+than one full-width Catalyst set-operation plan. Chunk actions read that bounded checkpoint
+rather than reparsing the full CSV. Selection, checkpoint schema and fresh file checksums
+must agree on retry; incomplete checkpoints are preserved and require a new run ID. Source
+metadata selection and filtered-wide materialization still read the original source; raw
+integrity checks remain enabled.
 
 The proposed **128-day** plan requires `ceil(1941 / 128) = 16` chunks. Chunk paths are distinct, and a failed chunk may be retried **without appending duplicated rows** to a shared directory.
 

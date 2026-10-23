@@ -68,8 +68,9 @@ and bounded occupied-stratum evidence; this is a read bound, not a reserved allo
 
 - **J02:** validate original immutable raw source; filter to selected 100 wide rows
   before any expansion. Persist a run-owned `filtered_wide` checkpoint with all 1,941
-  original string day fields, independently compare it with the selected source,
-  and record schema/selection/file checksums. Retry uses that validated checkpoint.
+  original string day fields, independently compare every cell with the selected source
+  in bounded identity/day-column groups, and record schema/selection/file checksums.
+  Retry uses that validated checkpoint.
   Bounded 128-day chunks retain quality, unit/zero totals, keys/calendar alignment,
   persisted schema validation and recovery. Final demo compaction uses four partitions.
 - **J03:** read the VALIDATED J02 snapshot, preserve all 194,100 records and population,

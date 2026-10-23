@@ -37,7 +37,12 @@ from warehouse_bigdata.common.scope_evidence import (
     read_scope,
     write_scope,
 )
-from warehouse_bigdata.contracts.dataset_scope import DEMO_SAMPLE, require_scope_execution
+from warehouse_bigdata.contracts.dataset_scope import (
+    DEMO_SAMPLE,
+    HISTORICAL_DAYS,
+    IDENTITY_FIELDS,
+    require_scope_execution,
+)
 from warehouse_bigdata.contracts.datasets import SALES_DAILY
 from warehouse_bigdata.contracts.manifests import FAILED, PIPELINE_RUN_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import ContractValidationError, validate_manifest
@@ -77,6 +82,7 @@ _COMPACTION_BUCKET_FIELD = "_day_bucket"
 _COMPACTION_DAYS_PER_BUCKET = 128
 _COMPACTION_PARTITION_COUNT = 16
 _MAX_RECORDS_PER_FILE = 1_000_000
+_WIDE_RECONCILIATION_DAYS_PER_GROUP = 128
 
 
 class NormalizationSnapshotError(RuntimeError):
@@ -659,18 +665,32 @@ def _prepare_scoped_wide(
     uri = _hdfs_uri(hdfs_config.uri, root)
     binding_path = root + "/_wide_manifest.json"
     if _exists(hdfs, root):
+        if not hdfs.is_directory(root):
+            raise NormalizationSnapshotError(
+                "incomplete filtered-wide checkpoint; preserve it and use a new run ID"
+            )
         if not _exists(hdfs, binding_path):
             # Preserve incomplete run-owned state; a new attempt is safe and explicit.
             raise NormalizationSnapshotError(
                 "incomplete filtered-wide checkpoint; preserve it and use a new run ID"
             )
         binding = _read_json(hdfs, binding_path, "filtered-wide checkpoint")
-        if binding.get("selection_digest") != scope["selection_digest"]:
+        inventory = _wide_inventory(hdfs, root)
+        if (
+            binding.get("schema_version") != "filtered-wide-v1"
+            or binding.get("selection_digest") != scope["selection_digest"]
+            or binding.get("scope_digest") != document_digest(scope)
+        ):
             raise NormalizationSnapshotError("filtered-wide checkpoint selection mismatch")
-        frame = spark.read.parquet(uri)
-        if binding.get("schema") != frame.schema.simpleString() or binding.get(
-            "files"
-        ) != _wide_inventory(hdfs, root):
+        if binding.get("files") != inventory:
+            raise NormalizationSnapshotError("filtered-wide checkpoint integrity mismatch")
+        try:
+            frame = spark.read.parquet(uri)
+        except Exception as error:
+            raise NormalizationSnapshotError(
+                "filtered-wide checkpoint cannot be read"
+            ) from error
+        if binding.get("schema") != frame.schema.simpleString():
             raise NormalizationSnapshotError("filtered-wide checkpoint integrity mismatch")
     else:
         selected = filter_selected_wide(sales_wide, scope)
@@ -682,11 +702,10 @@ def _prepare_scoped_wide(
             uri
         )
         frame = spark.read.parquet(uri)
-        if frame.exceptAll(selected).unionByName(selected.exceptAll(frame)).limit(1).count():
-            raise NormalizationSnapshotError(
-                "filtered-wide independent source reconciliation failed"
-            )
-        selected.unpersist()
+        try:
+            _reconcile_filtered_wide(selected, frame, scope)
+        finally:
+            selected.unpersist()
         _write_json_once(
             hdfs,
             binding_path,
@@ -700,6 +719,53 @@ def _prepare_scoped_wide(
         )
     validate_scope_population(frame, scope, wide=True)
     return frame, scope
+
+
+def _reconcile_filtered_wide(selected, persisted, scope: Mapping[str, object]) -> None:
+    """Compare every selected wide cell without building one full-width set plan.
+
+    The identity columns make each selected row unique. Daily columns are compared in
+    bounded groups so the exact comparison remains distributed for ``full_m5`` while
+    avoiding a Catalyst set operation over all 1,941 daily fields at once.
+    """
+    expected_columns = (*IDENTITY_FIELDS, *_day_keys(HISTORICAL_DAYS))
+    if tuple(selected.columns) != expected_columns or tuple(persisted.columns) != expected_columns:
+        raise NormalizationSnapshotError("filtered-wide checkpoint schema differs from source")
+    if selected.schema != persisted.schema:
+        raise NormalizationSnapshotError("filtered-wide checkpoint schema differs from source")
+
+    expected_series_count = scope.get("selected_series_count")
+    if type(expected_series_count) is not int or expected_series_count < 1:
+        raise NormalizationSnapshotError("filtered-wide selection has invalid series cardinality")
+    selected_count = selected.count()
+    persisted_count = persisted.count()
+    if selected_count != expected_series_count or persisted_count != expected_series_count:
+        raise NormalizationSnapshotError(
+            "filtered-wide source/checkpoint row count differs from selection"
+        )
+    _validate_wide_identity_uniqueness(selected, "selected source")
+    _validate_wide_identity_uniqueness(persisted, "filtered-wide checkpoint")
+
+    day_keys = _day_keys(HISTORICAL_DAYS)
+    for start in range(0, len(day_keys), _WIDE_RECONCILIATION_DAYS_PER_GROUP):
+        columns = (
+            *IDENTITY_FIELDS,
+            *day_keys[start : start + _WIDE_RECONCILIATION_DAYS_PER_GROUP],
+        )
+        left = selected.select(*columns).exceptAll(persisted.select(*columns)).limit(1).count()
+        right = persisted.select(*columns).exceptAll(selected.select(*columns)).limit(1).count()
+        if left or right:
+            raise NormalizationSnapshotError(
+                "filtered-wide independent source reconciliation failed"
+            )
+
+
+def _validate_wide_identity_uniqueness(frame, label: str) -> None:
+    from pyspark.sql import functions as F
+
+    for fields in (("id",), ("item_id", "store_id")):
+        if frame.groupBy(*fields).count().where(F.col("count") != 1).limit(1).count():
+            raise NormalizationSnapshotError(f"{label} contains duplicate wide identities")
 
 
 def _validate_scope_config(config, dataset_scope):
