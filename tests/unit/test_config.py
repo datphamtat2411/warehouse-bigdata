@@ -41,7 +41,11 @@ ALL_VARIABLES = {
     "WAREHOUSE_M5_SOURCE_DIR",
     "WAREHOUSE_M5_SOURCE_URL",
     "WAREHOUSE_M5_DOWNLOADED_AT_UTC",
+    "WAREHOUSE_M04_PERFORMANCE",
     "WAREHOUSE_M04_SOURCE_VERSION",
+    "WAREHOUSE_M05_SOURCE_VERSION",
+    "WAREHOUSE_M05_SOURCE_SNAPSHOT_ID",
+    "WAREHOUSE_M05_UPSTREAM_PIPELINE_RUN_ID",
 }
 
 
@@ -366,11 +370,20 @@ def test_env_example_contains_exact_supported_variables() -> None:
     assert RUNTIME_VARIABLES <= values.keys()
     assert values["WAREHOUSE_HDFS_URI"] == ""
     assert values["WAREHOUSE_HDFS_BASE_PATH"] == "/data/warehouse"
+    assert values["WAREHOUSE_SPARK_MASTER_URL"] == ""
+    assert values["WAREHOUSE_CLICKHOUSE_HOST"] == ""
+    assert values["WAREHOUSE_CLICKHOUSE_PORT"] == ""
+    assert values["WAREHOUSE_CLICKHOUSE_DATABASE"] == ""
+    assert values["WAREHOUSE_CLICKHOUSE_USER"] == ""
     assert values["WAREHOUSE_CLICKHOUSE_PASSWORD"] == ""
     assert values["WAREHOUSE_M5_SOURCE_DIR"] == ""
     assert values["WAREHOUSE_M5_SOURCE_URL"] == ""
     assert values["WAREHOUSE_M5_DOWNLOADED_AT_UTC"] == ""
+    assert values["WAREHOUSE_M04_PERFORMANCE"] == "0"
     assert values["WAREHOUSE_M04_SOURCE_VERSION"] == ""
+    assert values["WAREHOUSE_M05_SOURCE_VERSION"] == ""
+    assert values["WAREHOUSE_M05_SOURCE_SNAPSHOT_ID"] == ""
+    assert values["WAREHOUSE_M05_UPSTREAM_PIPELINE_RUN_ID"] == ""
 
 
 def test_local_env_is_ignored_while_the_example_remains_trackable() -> None:

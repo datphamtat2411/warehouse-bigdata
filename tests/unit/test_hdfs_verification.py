@@ -334,7 +334,9 @@ def test_collection_gates_disruptions_before_any_fixture_can_run() -> None:
 
 
 def test_maintenance_window_opt_in_rejects_parallel_collection() -> None:
-    item = SimpleNamespace(get_closest_marker=lambda name: object())
+    item = SimpleNamespace(
+        get_closest_marker=lambda name: object() if name == "hdfs_disruptive" else None
+    )
     config = SimpleNamespace(
         getoption=lambda name, default=None: True if name == "--run-hdfs-disruptions" else 2
     )

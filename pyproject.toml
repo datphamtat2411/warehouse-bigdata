@@ -28,6 +28,8 @@ addopts = '--import-mode=importlib -m "not integration"'
 markers = [
     "integration: opt-in checks against existing running services",
     "m04_smoke: reduced-history real-M5 acceptance requiring --run-m04-smoke",
+    "m05_published: read-only J04 publication acceptance requiring --run-m05-published",
+    "m05_lifecycle: live J04 publication and recovery requiring --run-m05-lifecycle",
     "hdfs_disruptive: serial HDFS lifecycle/failure checks requiring an explicit maintenance window",
 ]
 

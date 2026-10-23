@@ -45,6 +45,7 @@ def source_selection():
     return tuple(os.environ[key] for key in SOURCE_KEYS)
 
 
+@pytest.mark.m05_published
 def test_published_feature_snapshot(tmp_path):
     """Verify the old publication independently, without attempting current-code reuse."""
     source, snapshot, upstream = source_selection()
@@ -64,6 +65,7 @@ def test_published_feature_snapshot(tmp_path):
     print(f"J04 published-only evidence: {path}")
 
 
+@pytest.mark.m05_lifecycle
 def test_live_feature_snapshot_lifecycle(tmp_path):
     """Fresh publication → full readback → same-code live reuse → owner-only recovery."""
     source, snapshot, upstream = source_selection()

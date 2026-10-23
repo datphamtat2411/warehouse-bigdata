@@ -48,16 +48,17 @@ def parallel_execution(config: pytest.Config) -> bool:
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     enabled = config.getoption("--run-hdfs-disruptions")
     for item in items:
-        if item.path.name == "test_feature_snapshot.py":
-            option = (
-                "--run-m05-published"
-                if item.name == "test_published_feature_snapshot"
-                else "--run-m05-lifecycle"
-            )
-            if not config.getoption(option):
-                item.add_marker(pytest.mark.skip(reason=f"Live J04 acceptance requires {option}."))
-            elif parallel_execution(config):
-                raise pytest.UsageError("Live J04 acceptance requires serial execution.")
+        for marker, option in (
+            ("m05_published", "--run-m05-published"),
+            ("m05_lifecycle", "--run-m05-lifecycle"),
+        ):
+            if item.get_closest_marker(marker) is not None:
+                if not config.getoption(option):
+                    item.add_marker(
+                        pytest.mark.skip(reason=f"Live J04 acceptance requires {option}.")
+                    )
+                elif parallel_execution(config):
+                    raise pytest.UsageError("Live J04 acceptance requires serial execution.")
         if item.get_closest_marker("m04_smoke") is not None and not config.getoption(
             "--run-m04-smoke"
         ):
