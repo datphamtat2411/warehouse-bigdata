@@ -26,6 +26,15 @@ JOBS = dict(
     validation="evaluate_forecasts",
     test="evaluate_forecasts",
 )
+APPLICATION_NAMES = dict(
+    j02="warehouse-sales-daily-",
+    j03="warehouse-enrich-analytics-",
+    j04="warehouse-build-forecast-features-",
+    j05="warehouse-train-forecast-model-",
+    j06="warehouse-forecast-daily-",
+    validation="warehouse-evaluate-forecasts-",
+    test="warehouse-evaluate-forecasts-",
+)
 COMPOSE = ["docker", "compose", "-f", "infrastructure/compose.yaml", "--profile", "spark-submit"]
 HDFS = "hdfs://hdfs-namenode:8020"
 MASTER = "spark://spark-master:7077"
@@ -117,6 +126,33 @@ def stage_arguments(selector, stage):
     return arguments
 
 
+def run_bounded_command(root, args, stem, *, timeout=240):
+    """Run one bounded command while retaining exact argv and raw stdout/stderr."""
+    root = Path(root)
+    (root / (stem + ".command.json")).write_text(json.dumps(args, indent=2) + "\n")
+    started = time.perf_counter()
+    with (
+        (root / (stem + ".stdout")).open("wb") as out,
+        (root / (stem + ".stderr")).open("wb") as err,
+    ):
+        process = subprocess.Popen(args, stdout=out, stderr=err)
+        try:
+            returncode = process.wait(timeout=timeout)
+        except BaseException:
+            # Let the existing launcher perform its ownership-scoped cleanup.
+            process.send_signal(signal.SIGTERM)
+            try:
+                process.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=15)
+            raise
+    elapsed = time.perf_counter() - started
+    if returncode:
+        raise ScopeError(f"{stem} failed (exit {returncode}); preserve evidence at {root}")
+    return elapsed
+
+
 def run_live(selector, *, stages, authorize, evidence_dir, recover=False):
     """Run only explicitly listed stages once. No ingestion or implicit upstream work."""
     if authorize is not True:
@@ -141,37 +177,18 @@ def run_live(selector, *, stages, authorize, evidence_dir, recover=False):
         "stages": {},
     }
 
-    def command(args, stem, timeout=240):
-        (root / (stem + ".command.json")).write_text(json.dumps(args, indent=2) + "\n")
-        started = time.perf_counter()
-        with (
-            (root / (stem + ".stdout")).open("wb") as out,
-            (root / (stem + ".stderr")).open("wb") as err,
-        ):
-            process = subprocess.Popen(args, stdout=out, stderr=err)
-            try:
-                returncode = process.wait(timeout=timeout)
-            except BaseException:
-                # Let the existing launcher perform its ownership-scoped cleanup.
-                process.send_signal(signal.SIGTERM)
-                try:
-                    process.wait(timeout=60)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=15)
-                raise
-        elapsed = time.perf_counter() - started
-        if returncode:
-            raise ScopeError(f"{stem} failed (exit {returncode}); preserve evidence at {root}")
-        return elapsed
-
     try:
-        command(["bash", "scripts/spark-cluster.sh", "check"], "cluster")
-        command([*COMPOSE, "ps", "--format", "json"], "containers")
-        command(["docker", "stats", "--no-stream", "--format", "{{json .}}"], "resources-before")
+        run_bounded_command(root, ["bash", "scripts/spark-cluster.sh", "check"], "cluster")
+        run_bounded_command(root, [*COMPOSE, "ps", "--format", "json"], "containers")
+        run_bounded_command(
+            root,
+            ["docker", "stats", "--no-stream", "--format", "{{json .}}"],
+            "resources-before",
+        )
         for stage in stages:
             run = selector[RUN_KEYS[stage]]
-            command(
+            run_bounded_command(
+                root,
                 owner_command(
                     "warehouse_bigdata.common.small_preflight",
                     "--stage",
@@ -182,7 +199,8 @@ def run_live(selector, *, stages, authorize, evidence_dir, recover=False):
                 stage + "-preflight",
             )
             if not recover:
-                command(
+                run_bounded_command(
+                    root,
                     owner_command(
                         "warehouse_bigdata.common.hdfs_namespace",
                         "prepare-run",
@@ -192,7 +210,8 @@ def run_live(selector, *, stages, authorize, evidence_dir, recover=False):
                     ),
                     stage + "-prepare",
                 )
-            elapsed = command(
+            elapsed = run_bounded_command(
+                root,
                 [
                     "bash",
                     "scripts/spark-submit.sh",
@@ -206,11 +225,18 @@ def run_live(selector, *, stages, authorize, evidence_dir, recover=False):
                 timeout=1800,
             )
             report["stages"][stage] = {"elapsed_seconds": elapsed, "pipeline_run_id": run}
-            command(
+            run_bounded_command(
+                root,
                 owner_command(
                     "warehouse_bigdata.common.small_evidence",
                     "--pipeline-run-id",
                     run,
+                    "--expected-application-name",
+                    APPLICATION_NAMES[stage] + run,
+                    "--expected-master",
+                    MASTER,
+                    "--expected-event-log-dir",
+                    f"{HDFS}/data/warehouse/staging/pipeline_run_id={run}/events",
                     *(
                         ["--source-snapshot-id", selector["source_snapshot_id"]]
                         if stage == "j02"
@@ -231,7 +257,11 @@ def run_live(selector, *, stages, authorize, evidence_dir, recover=False):
                 if selector["selection_digest"] is None:
                     selector["selection_digest"] = scope["selection_digest"]
             (root / "report.json").write_text(json.dumps(report, sort_keys=True, indent=2) + "\n")
-        command(["docker", "stats", "--no-stream", "--format", "{{json .}}"], "resources-after")
+        run_bounded_command(
+            root,
+            ["docker", "stats", "--no-stream", "--format", "{{json .}}"],
+            "resources-after",
+        )
         report["status"] = "EXECUTED_PENDING_INDEPENDENT_READBACK"
     except BaseException as error:
         report.update(status="FAILED", failure=f"{type(error).__name__}: {error}")

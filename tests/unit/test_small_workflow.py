@@ -209,34 +209,105 @@ def test_execution_evidence_requires_both_workers_and_completed_standalone():
     from warehouse_bigdata.common.small_evidence import completed_execution
 
     events = [
-        dict(Event="SparkListenerApplicationStart", **{"App ID": "app-test"}),
-        dict(Event="SparkListenerApplicationEnd"),
+        dict(Event="SparkListenerLogStart", **{"Spark Version": "3.5.7"}),
+        dict(
+            Event="SparkListenerApplicationStart",
+            **{"App Name": "test", "App ID": "app-test"},
+        ),
         dict(
             Event="SparkListenerEnvironmentUpdate",
             **{"Spark Properties": {"spark.master": "spark://spark-master:7077"}},
         ),
+        *[
+            dict(
+                Event="SparkListenerExecutorAdded",
+                **{
+                    "Executor ID": str(index + 1),
+                    "Executor Info": {"Host": host, "Total Cores": 1},
+                },
+            )
+            for index, host in enumerate(("spark-worker-1", "spark-worker-2"))
+        ],
+        dict(
+            Event="SparkListenerJobStart",
+            **{
+                "Job ID": 1,
+                "Stage IDs": [1],
+                "Stage Infos": [{"Stage ID": 1, "Stage Attempt ID": 0, "Number of Tasks": 2}],
+            },
+        ),
+        dict(
+            Event="SparkListenerStageSubmitted",
+            **{
+                "Stage Info": {"Stage ID": 1, "Stage Attempt ID": 0, "Number of Tasks": 2},
+                "Properties": {},
+            },
+        ),
     ]
-    for host in ("spark-worker-1", "spark-worker-2"):
+    for index, host in enumerate(("spark-worker-1", "spark-worker-2")):
         events.append(
             dict(
                 Event="SparkListenerTaskEnd",
                 **{
                     "Stage ID": 1,
+                    "Stage Attempt ID": 0,
                     "Task End Reason": {"Reason": "Success"},
-                    "Task Info": {"Host": host},
-                    "Task Metrics": {"Disk Bytes Spilled": 12},
+                    "Task Info": {
+                        "Task ID": index,
+                        "Index": index,
+                        "Partition ID": index,
+                        "Attempt": 0,
+                        "Launch Time": 1,
+                        "Finish Time": 11,
+                        "Host": host,
+                        "Executor ID": str(index + 1),
+                        "Failed": False,
+                        "Killed": False,
+                    },
+                    "Task Metrics": {
+                        "Executor Run Time": 10,
+                        "JVM GC Time": 1,
+                        "Memory Bytes Spilled": 2,
+                        "Disk Bytes Spilled": 12,
+                        "Input Metrics": {"Bytes Read": 4},
+                        "Output Metrics": {"Bytes Written": 5},
+                        "Shuffle Read Metrics": {
+                            "Remote Bytes Read": 6,
+                            "Local Bytes Read": 7,
+                        },
+                        "Shuffle Write Metrics": {"Shuffle Bytes Written": 8},
+                    },
                 },
             )
         )
-    payload = "\n".join(json.dumps(e) for e in events).encode()
+    events.extend(
+        [
+            dict(
+                Event="SparkListenerStageCompleted",
+                **{
+                    "Stage Info": {
+                        "Stage ID": 1,
+                        "Stage Attempt ID": 0,
+                        "Number of Tasks": 2,
+                    }
+                },
+            ),
+            dict(
+                Event="SparkListenerJobEnd",
+                **{"Job ID": 1, "Job Result": {"Result": "JobSucceeded"}},
+            ),
+            dict(Event="SparkListenerApplicationEnd"),
+        ]
+    )
+    payload = ("\n".join(json.dumps(e) for e in events) + "\n").encode()
     client = SimpleNamespace(
         list_children=lambda p: [p + "/app-1"],
         stat=lambda p: SimpleNamespace(size_bytes=len(payload)),
         read_remote=lambda p: payload,
     )
     assert len(completed_execution(client, CONFIG, "small-j02")["workers"]) == 2
-    payload = "\n".join(json.dumps(e) for e in events[:-1]).encode()
-    with pytest.raises(ScopeError, match="both"):
+    payload = ("\n".join(json.dumps(e) for e in events[:-1]) + "\n").encode()
+    with pytest.raises(ScopeError, match="ApplicationEnd"):
         completed_execution(client, CONFIG, "small-j02")
 
 
@@ -295,6 +366,7 @@ def test_readback_reports_exact_verified_extent(monkeypatch, through):
     from tests.unit.test_hdfs_namespace import CONFIG
     from warehouse_bigdata.common import small_preflight
     from warehouse_bigdata.forecasting import (
+        acceptance,
         evaluation,
         evaluation_artifacts,
         feature_input,
@@ -364,6 +436,23 @@ def test_readback_reports_exact_verified_extent(monkeypatch, through):
         evaluation_artifacts, "validate_evaluation_evidence", lambda *args, **kwargs: None
     )
     monkeypatch.setattr(evaluation, "validate_metrics", lambda *args: None)
+    monkeypatch.setattr(
+        acceptance,
+        "verify_ml_artifacts",
+        lambda *args, **kwargs: {
+            key: ({"row_count": 2800} if key == "features" else {})
+            for key, stage in (
+                ("features", "j04"),
+                ("model", "j05"),
+                ("forecast", "j06"),
+                ("validation", "validation"),
+                ("test", "test"),
+            )
+            if kwargs["through"] in ("j04", "j05", "j06", "validation", "test")
+            and ["j04", "j05", "j06", "validation", "test"].index(stage)
+            <= ["j04", "j05", "j06", "validation", "test"].index(kwargs["through"])
+        },
+    )
     client = SimpleNamespace(read_remote=lambda path: b'{"created_at":"2026-01-01T00:00:00Z"}')
     spark = SimpleNamespace(
         read=SimpleNamespace(parquet=lambda path: frame), createDataFrame=lambda *args: frame

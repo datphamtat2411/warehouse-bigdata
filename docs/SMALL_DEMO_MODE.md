@@ -6,8 +6,9 @@ M5 Small is the standard **real-M5** population for development, integration,
 distributed acceptance, evaluation, performance measurement, future publication and
 dashboards. Its identifier is `demo_sample`. It reduces computation while retaining
 real observations, complete history, distributed Spark/HDFS, quality gates and provenance.
-The code implements J02–J06 and chronological evaluation. Live acceptance of this new
-profile is **pending**; no runtime/accuracy result is implied by this guide.
+The code implements J02–J06 and chronological evaluation. M06 acceptance is a separate
+explicitly authorized operation; this guide records no runtime/accuracy result until that
+operation is executed.
 
 ## 2. Original M5 vs M5 Small
 
@@ -251,7 +252,51 @@ Do not use pytest-xdist or overlap Spark acceptance sessions. The final full-cha
 readback requires all selected downstream artifacts. A partial run is not a passing
 complete-chain acceptance. Missing inputs remain blockers.
 
-## 12. Performance Measurement
+## 12. M06 Distributed Acceptance and Handoff
+
+M06 has one real-cluster entry point. It is serial, requires `--run-small-acceptance`,
+and never starts infrastructure or regenerates J01–J05 inputs. The selector must be
+the frozen `demo_sample` selector through `test`; J03/J04 must retain all 1,941 days
+and the selected 194,100 observed rows. The accepted execution stages are only
+`j06`, `validation`, and `test`.
+
+The empty `WAREHOUSE_SMALL_STAGES` value verifies existing selected outputs only.
+When stages are listed, the coordinator verifies the complete J02/J03/J04/J05/model
+chain first, validates already published downstream outputs, and submits only absent
+outputs from the explicitly listed stages. Missing unlisted output, a conflicting
+immutable identity, or an incompatible validation freeze is a blocker. A 30-day
+smoke artifact is never a valid M06 input.
+
+Run only in a separately authorized, prepared session:
+
+```bash
+bash scripts/load-env.sh env WAREHOUSE_SMALL_STAGES="j06 validation test" uv run --locked pytest -q -m integration --run-small-acceptance tests/integration/test_m06_acceptance.py
+```
+
+The coordinator writes a unique `artifacts/m06-acceptance/<acceptance_run_id>/`
+bundle. It retains commands, raw logs, resource snapshots, producer event-log
+evidence, a fresh readback application, model reload/probe results, persisted
+forecast and paired-metric reconciliation, and targeted HDFS DataNode/block
+placement checks. Successful task participation must be attributable to both
+configured Workers; failed, retried, incomplete, truncated, idle, or single-Worker
+evidence blocks acceptance. Point-in-time resource samples are labeled as such and
+are not peak-memory measurements.
+
+Report states are `NOT_RUN`, `BLOCKED`, `FAILED`, and `PASSED`. `PASSED` requires
+all gates, including fresh checksums, schema/lineage identity, seven-day forecast
+coverage and exclusions, four-origin chronological pairing, 48 metric rows per
+phase, successful readback execution on both Workers, and HDFS integrity. A
+partial readback or successful process exit without the `SMALL_READBACK` report is
+not success. Preserve partial evidence for recovery; recovery may retry the same
+frozen downstream request but does not refit the model or alter upstream IDs.
+
+The handoff identifies the validated forecast and metric paths, exact selector
+lineage and digest, seven-day totals, coverage/exclusions, Contract v1 schemas and
+fresh checksums. M06 does not assign a publication ID, update an approved pointer,
+or approve serving. J07/J08 may consume the handoff only after their own approval
+and publication gates.
+
+## 13. Performance Measurement
 
 The serial runner writes unique `artifacts/small-demo/<uuid>/` command, stdout/stderr,
 actual per-stage wall times, completed-event evidence and Docker resource samples.
@@ -273,7 +318,7 @@ docker compose -f infrastructure/compose.yaml --profile spark-submit run --rm --
   -m warehouse_bigdata.common.small_evidence --pipeline-run-id "${RUN_ID:?set a completed small run ID}"
 ```
 
-## 13. Failure Recovery
+## 14. Failure Recovery
 
 - Preserve failed staging, event logs and immutable IDs. Never append or overwrite to
   make counts agree. Missing validated upstream data is a blocker, not a rebuild request.
@@ -294,7 +339,7 @@ docker compose -f infrastructure/compose.yaml --profile spark-submit run --rm --
 - No operation here recreates HDFS volumes, resets Docker infrastructure, or repairs
   shared permissions recursively.
 
-## 14. Full-M5 Safety Guard
+## 15. Full-M5 Safety Guard
 
 J02 defaults to `demo_sample`. `full_m5` requires **both** explicit
 `--dataset-scope full_m5` and `--confirm-large-workload`, plus separate user authorization.
@@ -303,7 +348,7 @@ full upstream requires the same explicit two flags. Reduced-history operational 
 arguments are rejected. Optional full algorithms/source constants stay testable offline.
 No supported routine test, startup or demonstration invokes a full-M5 reshape.
 
-## 15. Known Limitations
+## 16. Known Limitations
 
 The ten-item cohort is not a catalog-wide accuracy/generalization sample. All metrics
 must identify `demo_sample`. No real Walmart inventory, physical multi-host resilience,
@@ -311,7 +356,7 @@ operational savings or ClickHouse high availability is established by a local si
 ClickHouse/UI/inventory implementation is outside this profile change. Live small-chain
 acceptance, actual runtime/accuracy, and the under-30-minute objective remain pending.
 
-## 16. Instructions for Future Agents
+## 17. Instructions for Future Agents
 
 Read `AGENTS.md`; route documents by the task. Reuse canonical VALIDATED small artifacts,
 verify selection/publication/source identity, and generate safe `demo_sample` commands.
