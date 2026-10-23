@@ -687,9 +687,7 @@ def _prepare_scoped_wide(
         try:
             frame = spark.read.parquet(uri)
         except Exception as error:
-            raise NormalizationSnapshotError(
-                "filtered-wide checkpoint cannot be read"
-            ) from error
+            raise NormalizationSnapshotError("filtered-wide checkpoint cannot be read") from error
         if binding.get("schema") != frame.schema.simpleString():
             raise NormalizationSnapshotError("filtered-wide checkpoint integrity mismatch")
     else:
