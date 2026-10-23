@@ -26,13 +26,22 @@ from typing import TYPE_CHECKING, Final
 
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
-    ArrayType, BooleanType, DateType, DoubleType, IntegerType, StringType,
-    StructField, StructType,
+    ArrayType,
+    BooleanType,
+    DateType,
+    DoubleType,
+    IntegerType,
+    StringType,
+    StructField,
+    StructType,
 )
 
 from warehouse_bigdata.contracts.datasets import FORECAST_FEATURES, SALES_ENRICHED
 from warehouse_bigdata.forecasting.features import (
-    LAG_DAYS, LOOKBACK_DAYS, MEAN_DAYS, calendar_features,
+    LAG_DAYS,
+    LOOKBACK_DAYS,
+    MEAN_DAYS,
+    calendar_features,
 )
 
 if TYPE_CHECKING:

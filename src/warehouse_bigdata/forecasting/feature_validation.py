@@ -11,6 +11,7 @@ from warehouse_bigdata.forecasting.features import TEST_DAYS, TRAIN_DAYS, VALIDA
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame
+
     from warehouse_bigdata.forecasting.features import HistoricalFeatureResult
 
 

@@ -6,12 +6,13 @@ import pytest
 from pyspark import StorageLevel
 from pyspark.sql import functions as F
 
-from tests.unit.test_historical_features import _frame, _rows, spark  # noqa: F401
-from warehouse_bigdata.forecasting.features import build_historical_features
+from tests.unit.test_historical_features import _frame, _rows
+from tests.unit.test_historical_features import spark as spark
 from warehouse_bigdata.forecasting.feature_validation import (
     FeatureValidationError,
     validate_persisted_feature_snapshot,
 )
+from warehouse_bigdata.forecasting.features import build_historical_features
 
 
 @pytest.fixture(scope="module")

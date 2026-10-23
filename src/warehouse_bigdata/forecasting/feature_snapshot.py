@@ -30,6 +30,11 @@ from warehouse_bigdata.common.hdfs_runtime import create_hdfs_cli_client
 from warehouse_bigdata.contracts.datasets import FORECAST_FEATURES
 from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import validate_manifest
+from warehouse_bigdata.forecasting.feature_validation import (
+    SCOPED_KEY,
+    typed_feature_schema,
+    validate_persisted_feature_snapshot,
+)
 from warehouse_bigdata.forecasting.features import (
     LAG_DAYS,
     LOOKBACK_DAYS,
@@ -39,17 +44,12 @@ from warehouse_bigdata.forecasting.features import (
     VALIDATION_DAYS,
     build_historical_features,
 )
-from warehouse_bigdata.forecasting.feature_validation import (
-    SCOPED_KEY,
-    typed_feature_schema,
-    validate_persisted_feature_snapshot,
-)
 from warehouse_bigdata.processing.enrichment_analytics_snapshot import (
     read_validated_sales_enriched_snapshot,
 )
 
 if TYPE_CHECKING:
-    from pyspark.sql import DataFrame, SparkSession
+    from pyspark.sql import SparkSession
 
 _PRODUCER = "warehouse-bigdata:feature-snapshot"
 _BINDING_VERSION = "feature-input-binding-v1"

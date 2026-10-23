@@ -24,8 +24,14 @@ os.environ.setdefault("SPARK_LOCAL_IP", "127.0.0.1")
 from pyspark.sql import SparkSession  # noqa: E402
 from pyspark.sql import functions as F  # noqa: E402
 from pyspark.sql.types import (  # noqa: E402
-    BooleanType, DateType, DoubleType, IntegerType, LongType, StringType,
-    StructField, StructType,
+    BooleanType,
+    DateType,
+    DoubleType,
+    IntegerType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
 )
 
 ORIGIN = date(2011, 1, 29)
