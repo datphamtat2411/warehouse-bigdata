@@ -20,6 +20,11 @@ from warehouse_bigdata.common.hdfs_paths import (
     render_run_manifest_path,
     render_staging_path,
 )
+from warehouse_bigdata.common.scope_evidence import (
+    authorize_upstream,
+    read_scope,
+    validate_scope_binding,
+)
 from warehouse_bigdata.contracts.datasets import (
     CATEGORY_MONTHLY_SALES,
     SALES_DAILY,
@@ -31,8 +36,8 @@ from warehouse_bigdata.contracts.validation import ContractValidationError, vali
 from warehouse_bigdata.ingestion.m5_source import (
     REFERENCE_CALENDAR_DAYS,
     REFERENCE_EVALUATION_DAYS,
-    REFERENCE_EVALUATION_SERIES,
 )
+from warehouse_bigdata.processing.m5_selection import validate_scope_population
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
@@ -98,11 +103,13 @@ def run_m04_verification(
     output_paths: Mapping[str, str],
     hdfs_config: HDFSConfig,
     client: HdfsCliClient,
-    expected_series_count: int = REFERENCE_EVALUATION_SERIES,
+    expected_series_count: int = 100,
     expected_day_count: int = REFERENCE_EVALUATION_DAYS,
     normalization_run_id: str | None = None,
     enrichment_run_id: str | None = None,
     hash_output_files: bool = False,
+    dataset_scope: str | None = None,
+    confirm_large_workload: bool = False,
 ) -> M04VerificationResult:
     """Reread raw CSV and persisted Parquet using only distributed scalar checks."""
     _validate_arguments(
@@ -114,6 +121,21 @@ def run_m04_verification(
         expected_day_count,
     )
     started_at = time.perf_counter()
+    scope = authorize_upstream(
+        read_scope(
+            client,
+            output_paths["sales_daily"],
+            source_version=source_version,
+            source_snapshot_id=source_snapshot_id,
+        ),
+        dataset_scope=dataset_scope,
+        confirm_large_workload=confirm_large_workload,
+    )
+    if expected_series_count != scope["selected_series_count"] or expected_day_count != 1941:
+        raise M04VerificationError("verification cardinality differs from frozen scope")
+    for path in output_paths.values():
+        if read_scope(client, path) != scope:
+            raise M04VerificationError("output scope selection mismatch")
     timings: dict[str, float] = {}
     raw_uri = _hdfs_uri(hdfs_config, raw_path)
     selected_days = tuple(f"d_{day}" for day in range(1, expected_day_count + 1))
@@ -132,6 +154,9 @@ def run_m04_verification(
         source_version=source_version,
         source_snapshot_id=source_snapshot_id,
     )
+    for marker in (normalization_manifest, enrichment_manifest):
+        if marker is not None:
+            validate_scope_binding(marker, scope)
     _validate_pipeline_manifest_outputs(
         client,
         hdfs_config,
@@ -172,8 +197,15 @@ def run_m04_verification(
     reader = spark.read.option("header", True).option("inferSchema", False)
     phase_started = time.perf_counter()
     sales_wide = reader.csv(f"{raw_uri}/sales_train_evaluation.csv")
+    sales_wide = sales_wide.where(F.col("item_id").isin(scope["selected_item_ids"]))
+    from pyspark import StorageLevel
+
+    sales_wide = sales_wide.persist(StorageLevel.DISK_ONLY)
     calendar = reader.csv(f"{raw_uri}/calendar.csv")
     sell_prices = reader.csv(f"{raw_uri}/sell_prices.csv")
+    sell_prices = sell_prices.where(F.col("item_id").isin(scope["selected_item_ids"])).persist(
+        StorageLevel.DISK_ONLY
+    )
     _check_schema(
         sales_wide,
         _SALES_METADATA + tuple(f"d_{day}" for day in range(1, REFERENCE_EVALUATION_DAYS + 1)),
@@ -226,6 +258,27 @@ def run_m04_verification(
 
     phase_started = time.perf_counter()
     sales_daily = _read_parquet(spark, _hdfs_uri(hdfs_config, output_paths["sales_daily"]))
+    sales_daily = sales_daily.persist(StorageLevel.DISK_ONLY)
+    validate_scope_population(sales_daily, scope, complete_history=True)
+    # Independent cell-level reconciliation, bounded to 128 days per plan. Totals
+    # alone cannot detect values exchanged between otherwise valid daily keys.
+    for start in range(1, expected_day_count + 1, 128):
+        days = [f"d_{d}" for d in range(start, min(start + 128, expected_day_count + 1))]
+        expected = (
+            sales_wide.select("item_id", "store_id", *days)
+            .unpivot(["item_id", "store_id"], days, "day_key", "unit_sales")
+            .select(
+                "item_id",
+                "store_id",
+                "day_key",
+                F.col("unit_sales").cast("long").alias("unit_sales"),
+            )
+        )
+        actual = sales_daily.where(F.col("day_key").isin(days)).select(
+            "item_id", "store_id", "day_key", "unit_sales"
+        )
+        if expected.exceptAll(actual).unionByName(actual.exceptAll(expected)).limit(1).count():
+            raise M04VerificationError("selected wide/daily value reconciliation failed")
     _check_schema(
         sales_daily,
         SALES_DAILY.field_names,
@@ -571,6 +624,8 @@ def run_m04_verification(
         include_hashes=hash_output_files,
     )
     timings["storage_audit_seconds"] = time.perf_counter() - phase_started
+    for frame in (sales_daily, sell_prices, sales_wide):
+        frame.unpersist()
     timings["total_seconds"] = time.perf_counter() - started_at
     return M04VerificationResult(
         status="VALIDATED",

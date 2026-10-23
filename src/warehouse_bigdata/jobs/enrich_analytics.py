@@ -8,6 +8,7 @@ import json
 from warehouse_bigdata.common.config import load_hdfs_config, load_spark_config
 from warehouse_bigdata.common.hdfs_namespace import validate_publication_namespace
 from warehouse_bigdata.common.hdfs_permissions import prepare_spark_run_permissions
+from warehouse_bigdata.common.scope_evidence import SCOPED_METADATA_LIMIT
 from warehouse_bigdata.common.spark_hdfs_client import SparkHdfsCliClient
 from warehouse_bigdata.processing.enrichment_analytics_snapshot import (
     EnrichmentAnalyticsSnapshotResult,
@@ -23,11 +24,13 @@ def run_enrich_analytics(
     hdfs_uri: str,
     spark_master: str,
     event_log_dir: str | None = None,
+    dataset_scope: str | None = None,
+    confirm_large_workload: bool = False,
 ) -> EnrichmentAnalyticsSnapshotResult:
     """Run one explicitly identified J03 attempt on HDFS/Spark."""
     hdfs_config = load_hdfs_config({"WAREHOUSE_HDFS_URI": hdfs_uri})
     spark_config = load_spark_config({"WAREHOUSE_SPARK_MASTER_URL": spark_master})
-    hdfs = SparkHdfsCliClient()
+    hdfs = SparkHdfsCliClient(metadata_limit=SCOPED_METADATA_LIMIT)
     validate_publication_namespace(hdfs, hdfs_config)
     prepare_spark_run_permissions(
         hdfs,
@@ -64,6 +67,8 @@ def run_enrich_analytics(
             spark_master=spark_config.master_url,
             client=hdfs,
             defer_publication=True,
+            dataset_scope=dataset_scope,
+            confirm_large_workload=confirm_large_workload,
         )
     finally:
         spark.stop()
@@ -77,6 +82,8 @@ def main() -> None:
     parser.add_argument("--hdfs-uri", required=True, metavar="HDFS_URI")
     parser.add_argument("--spark-master", required=True, metavar="SPARK_URI")
     parser.add_argument("--event-log-dir", metavar="HDFS_URI")
+    parser.add_argument("--dataset-scope", choices=("demo_sample", "full_m5"))
+    parser.add_argument("--confirm-large-workload", action="store_true")
     args = parser.parse_args()
     result = run_enrich_analytics(
         source_version=args.source_version,
@@ -85,6 +92,8 @@ def main() -> None:
         hdfs_uri=args.hdfs_uri,
         spark_master=args.spark_master,
         event_log_dir=args.event_log_dir,
+        dataset_scope=args.dataset_scope,
+        confirm_large_workload=args.confirm_large_workload,
     )
     print(f"candidate_status={result.status}")
     print(f"source_version={result.source_version}")

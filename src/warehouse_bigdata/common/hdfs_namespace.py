@@ -187,13 +187,115 @@ def validate_publication_namespace(client, config: HDFSConfig, *, probe_writes=F
     }
 
 
+def prepare_run_staging(client, config: HDFSConfig, *, pipeline_run_id: str, events=False):
+    """Owner-create exactly one empty run and ACL; refuse unsafe existing state."""
+    from warehouse_bigdata.common.hdfs_paths import render_staging_path
+    from warehouse_bigdata.common.hdfs_permissions import prepare_spark_run_permissions
+
+    require_owner(client)
+    validate_publication_namespace(client, config)
+    root = render_staging_path(config.base_path, pipeline_run_id)
+    status = client.path_status(root)
+    if status is not None:
+        if status["type"] != "DIRECTORY" or status["owner"] != HDFS_OWNER:
+            raise HdfsNamespaceError("existing staging is not a hadoop-owned directory: " + root)
+        if int(status["permission"], 8) & 0o002:
+            raise HdfsNamespaceError("existing staging is world-writable: " + root)
+        children = set(client.list_children(root))
+        if children - {root + "/events"}:
+            raise HdfsNamespaceError(
+                "existing staging contains execution evidence; use owner recovery: " + root
+            )
+        if root + "/events" in children and client.list_children(root + "/events"):
+            raise HdfsNamespaceError("existing event directory is not empty: " + root)
+        acl = client.get_acl(root)
+        if any(
+            line.strip().startswith(("group::", "default:group::", "other::", "default:other::"))
+            and "w" in line.split(":")[-1]
+            for line in acl.splitlines()
+        ):
+            raise HdfsNamespaceError("existing staging has shared write ACLs: " + root)
+        if any(
+            line.strip().startswith(("user:", "default:user:", "group:", "default:group:"))
+            and not line.strip().startswith(
+                (
+                    "user::",
+                    "default:user::",
+                    "user:spark:",
+                    "default:user:spark:",
+                    "group::",
+                    "default:group::",
+                )
+            )
+            for line in acl.splitlines()
+        ):
+            raise HdfsNamespaceError("existing staging has unrelated named ACLs: " + root)
+    else:
+        client.mkdir_exclusive(root)
+    if client.path_status(root)["owner"] != HDFS_OWNER:
+        raise HdfsNamespaceError("staging ownership verification failed: " + root)
+    event_uri = None
+    if events:
+        path = root + "/events"
+        if client.path_status(path) is None:
+            client.mkdir_exclusive(path)
+        status = client.path_status(path)
+        if status["type"] != "DIRECTORY" or status["owner"] != HDFS_OWNER:
+            raise HdfsNamespaceError("event directory ownership is unsafe: " + path)
+        if int(status["permission"], 8) & 0o002:
+            raise HdfsNamespaceError("event directory is world-writable: " + path)
+        if any(
+            line.strip().startswith(("group::", "default:group::", "other::", "default:other::"))
+            and "w" in line.split(":")[-1]
+            for line in client.get_acl(path).splitlines()
+        ):
+            raise HdfsNamespaceError("event directory has shared write ACLs: " + path)
+        if any(
+            line.strip().startswith(("user:", "default:user:", "group:", "default:group:"))
+            and not line.strip().startswith(
+                (
+                    "user::",
+                    "default:user::",
+                    "user:spark:",
+                    "default:user:spark:",
+                    "group::",
+                    "default:group::",
+                )
+            )
+            for line in client.get_acl(path).splitlines()
+        ):
+            raise HdfsNamespaceError("event directory has unrelated named ACLs: " + path)
+        event_uri = config.uri + path
+    prepare_spark_run_permissions(
+        client,
+        config,
+        pipeline_run_id=pipeline_run_id,
+        event_log_dir=event_uri,
+        verify_effective_access=False,
+    )
+    return {"status": "READY", "staging_path": root, "event_log_dir": event_uri}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("setup", "check"))
+    parser.add_argument("action", choices=("setup", "check", "prepare-run"))
+    parser.add_argument("--pipeline-run-id")
+    parser.add_argument("--events", action="store_true")
     args = parser.parse_args()
     config = load_hdfs_config()
     client = HdfsCliClient()
     require_owner(client)
+    if args.action == "prepare-run":
+        if not args.pipeline_run_id:
+            parser.error("prepare-run requires --pipeline-run-id")
+        print(
+            json.dumps(
+                prepare_run_staging(
+                    client, config, pipeline_run_id=args.pipeline_run_id, events=args.events
+                )
+            )
+        )
+        return
     if client.safe_mode() != "Safe mode is OFF":
         raise HdfsNamespaceError("NameNode is not write-ready: safe mode must be OFF")
     client.report()

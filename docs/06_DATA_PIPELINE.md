@@ -293,7 +293,7 @@ An empty running HDFS service does **not** satisfy the storage requirement. A re
 
 ---
 
-## 6. J02 — Wide-to-Long Normalization at Full Scale
+## 6. J02 — Scope-Aware Wide-to-Long Normalization
 
 ### 6.1. Why this transformation exists
 
@@ -326,7 +326,13 @@ Rationale:
 - Allows measured adjustments in chunk size (`64`, `128`, or `256` days) according to memory and runtime.
 - Avoids `collect()` / `toPandas()` on the expanded fact table.
 
-**Cost/trade-off:** chunk processing rereads or rescans the input source for each day block. This I/O overhead is **intentional and measurable**; if it becomes dominant, test a single unpivot or another memory-safe plan and keep the best **measured** variant. Do not claim that chunking is automatically faster.
+**Standard M5 Small execution:** resolve the frozen ten-SKU selection from validated source
+identities, then filter to 100 item-store rows **before unpivoting**. Materialize and independently
+validate a run-owned filtered-wide Parquet checkpoint containing all 1,941 string day fields.
+Chunk actions read that bounded checkpoint rather than reparsing the full CSV. Selection,
+checkpoint schema and fresh file checksums must agree on retry; incomplete checkpoints
+are preserved and require a new run ID. Source metadata selection and filtered-wide
+materialization still read the original source; raw integrity checks remain enabled.
 
 The proposed **128-day** plan requires `ceil(1941 / 128) = 16` chunks. Chunk paths are distinct, and a failed chunk may be retried **without appending duplicated rows** to a shared directory.
 
@@ -334,7 +340,7 @@ The proposed **128-day** plan requires `ceil(1941 / 128) = 16` chunks. Chunk pat
 
 1. Read the canonical CSV from **HDFS**, not from a local hidden fallback.
 2. Validate required metadata columns and the exact selected day range.
-3. Require each source item–store key to be unique. Confirm the reference **30,490 series** count and record the actual result.
+3. Validate original source identities, freeze ten SKUs covering available departments and all ten stores, and filter before expansion. Require exactly **100 selected series** and persist `_scope.json` (`m5-scope-v1`). The original 30,490 series remain source/reference lineage.
 4. For each bounded day chunk, project only the six metadata fields and selected `d_*` fields.
 5. Unpivot that chunk into `day_key` + raw value.
 6. Parse and validate a nonnegative **integer** `unit_sales` value. Bad strings/nulls do not silently become zero.
@@ -361,6 +367,8 @@ wide = (
     .option("inferSchema", False)
     .csv(source_evaluation_hdfs_path)
 )
+wide = wide.where(F.col("item_id").isin(scope["selected_item_ids"]))
+# Production persists and independently validates these 100 wide rows before chunks.
 
 calendar = (
     spark.read.option("header", True)
@@ -410,13 +418,13 @@ for start_day in range(FIRST_DAY, LAST_DAY + 1, DAYS_PER_CHUNK):
 
 ### 6.5. Per-chunk and full-output invariants
 
-For any chunk covering `k` valid days with all 30,490 series retained:
+For standard M5 Small, each chunk covers `k` days of the frozen 100 series:
 
 ```text
-expected_chunk_rows = 30,490 × k
+expected_chunk_rows = 100 × k
 ```
 
-Useful smoke-test reference values:
+Optional full-mode arithmetic reference values (not active smoke workloads):
 
 | Scope | Expected rows |
 |---|---:|
@@ -428,7 +436,7 @@ Useful smoke-test reference values:
 
 For the complete normalized release, require:
 
-- **Exactly** `59,181,090` rows for the unfiltered canonical evaluation snapshot, assuming the source matches the published reference schema.
+- **Exactly 194,100** observed rows for `demo_sample` (100 series × 1,941 days). Optional explicitly authorized `full_m5` retains the 59,181,090-row reference invariant.
 - Day coverage `d_1`–`d_1941` with mapped calendar dates **2011-01-29** through **2016-05-22**.
 - Exactly one logical row per `(item_id, store_id, day_key)`; uniqueness of source series and calendar day keys should be prevalidated.
 - No unexpected null/negative/non-integer daily unit sales.
@@ -602,9 +610,14 @@ For the canonical evaluation sales input:
 
 An illustrative backtest is to issue a forecast after `d_1913` and compare predictions for `d_1914`–`d_1920`. This is an **example cutoff**, not a mandated final experimental protocol. Model selection, test-window rules, training coverage, and final evaluation metric aggregation belong in `07_MACHINE_LEARNING.md`.
 
-### 8.5. Separating full ETL from model training scope
+### 8.5. Standard small ETL and bounded model training
 
-The pipeline **must** process and profile the full canonical sales history if hardware/disk tests allow, but ML training does **not** have to consume every 59.18-million-row observation on the 16 GB host.
+The standard pipeline processes the frozen M5 Small population with complete historical
+coverage. J03 validates the J02 publication and identical scope before enrichment; joins
+must preserve 194,100 rows and existing calendar/price/aggregate semantics. J04 validates
+the same scope and persists its digest in feature bindings. Its 28-day lookback and locked
+train/validation/test boundaries remain unchanged. J05 fits at most 10,000 eligible rows.
+Full-catalog ETL is not a routine requirement even if more resources become available.
 
 If ML uses a subset:
 
@@ -617,6 +630,20 @@ If ML uses a subset:
 ---
 
 ## 9. Parquet Layout, Partitioning, and Performance Strategy
+
+Current small-profile layout uses four final J02 partitions and four J04 output partitions,
+bounded chunk checkpoints and compressed Parquet. Do not infer partition/file counts
+for historical full artifacts from these defaults. Reuse immutable VALIDATED small
+snapshots through the canonical selector rather than rebuilding missing upstream stages.
+Before submitting Spark, the Hadoop owner prepares exactly the requested run staging
+directory/events and verifies ownership and narrow Spark ACLs with
+`hdfs_namespace prepare-run`. It refuses unsafe existing state and never recursively
+changes shared namespace permissions. Publication remains owner-only claim/seal/rename.
+
+Record actual elapsed times, application IDs, completed tasks on both Workers, bytes,
+file counts, resource samples, spill and GC. The **J02–J04 under-30-minute** objective is
+unverified; J05/J06 timings are measured separately. Full versus demo artifacts use
+distinct identities and scope digests. See [SMALL_DEMO_MODE.md](SMALL_DEMO_MODE.md).
 
 ### 9.1. Storage design decisions
 
@@ -712,7 +739,9 @@ For a full published `sales_daily` fact snapshot, successful publication should 
 5. A repeated load of the same version **does not double the count**; use a new target version/table or controlled replace/rebuild, not naive `INSERT` retry.
 6. If a shard is unavailable, report incomplete/unavailable analytics instead of silently showing partial totals.
 
-**Scope honesty:** loading all 59,181,090 detailed rows into ClickHouse is a desired full-data demonstration **only if resource and disk benchmarks confirm feasibility**. If only a documented subset or aggregate is published, the manifest and dashboard must expose **exactly which population** was loaded. **Never imply a two-shard database holds all 59 million rows without evidence.**
+**Scope honesty:** publication and dashboards use `demo_sample` and its frozen selection
+digest. Counts and metrics describe that population only. Full-M5 publication is optional,
+separately authorized compatibility work, not the standard demonstration objective.
 
 Physical ClickHouse configuration, exact DDL, shard key, load protocol, and SQL verification are detailed in `09_DATABASE_DESIGN.md`.
 
@@ -777,7 +806,7 @@ from pyspark.sql import functions as F
 
 # Evaluation fact scope only; run after writing the final curated snapshot.
 actual_rows = sales_daily.count()
-assert actual_rows == 30_490 * 1_941, f"Unexpected rows: {actual_rows}"
+assert actual_rows == 100 * 1_941, f"Unexpected demo_sample rows: {actual_rows}"
 
 assert sales_daily.filter(F.col("unit_sales").isNull()).limit(1).count() == 0
 assert sales_daily.filter(F.col("unit_sales") < 0).limit(1).count() == 0
@@ -947,7 +976,7 @@ The experiment **may or may not show a speedup**; either outcome is acceptable i
 ### 15.1. Stage completion checklist
 
 - [ ] **J01:** Authorized source and manifest in HDFS; schema checks recorded.
-- [ ] **J02:** 30,490 expected series and 1,941 day columns verified; full long-form output count reconciled when matching reference snapshot.
+- [ ] **J02:** frozen 100-series selection, all 1,941 day columns and exactly 194,100 observed rows independently reconciled; scope/source/publication identity verified.
 - [ ] **J02:** Date mapping complete; zero sales preserved; no duplicate logical facts.
 - [ ] **J03:** Price join uses `(store_id, item_id, wm_yr_wk)`, preserves row count and reports missing-price coverage.
 - [ ] **J03:** At least two useful sales aggregates are persisted and reconcile to source totals.
@@ -980,7 +1009,7 @@ The acceptance criteria come from `02_SYSTEM_REQUIREMENTS.md`. This document pro
 
 | ID | Risk / choice | Proposed mitigation or decision gate |
 |---|---|---|
-| `PIPE-01` | Full 1,941-column unpivot may create a costly plan on WSL2 | Benchmark bounded unpivot at 64/128/256 days; retain measured best approach |
+| `PIPE-01` | Wide unpivot and repeated CSV parsing can create costly plans | Filter before expansion, reuse the validated filtered-wide checkpoint and measure one explicitly authorized M5 Small configuration |
 | `PIPE-02` | Chunking rereads wide CSV many times | Observe scan time; consider cached/preconverted source or single-pass approach if justified |
 | `PIPE-03` | Conversion may create many small files | Compact and profile Parquet before publication |
 | `PIPE-04` | Price table join may cause large shuffle/memory pressure | Validate keys, inspect join plans/AQE, tune partition count |

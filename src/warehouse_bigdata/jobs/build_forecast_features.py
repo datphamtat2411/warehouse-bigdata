@@ -9,6 +9,7 @@ from dataclasses import asdict
 from warehouse_bigdata.common.config import load_hdfs_config, load_spark_config
 from warehouse_bigdata.common.hdfs_namespace import validate_publication_namespace
 from warehouse_bigdata.common.hdfs_permissions import prepare_spark_run_permissions
+from warehouse_bigdata.common.scope_evidence import SCOPED_METADATA_LIMIT
 from warehouse_bigdata.common.spark_hdfs_client import SparkHdfsCliClient
 from warehouse_bigdata.forecasting.feature_snapshot import (
     FeatureSnapshotResult,
@@ -27,8 +28,10 @@ def run_build_forecast_features(
     hdfs_uri: str,
     spark_master: str,
     event_log_dir: str | None = None,
-    output_partitions: int = 16,
+    output_partitions: int = 4,
     max_records_per_file: int = 1_000_000,
+    dataset_scope: str | None = None,
+    confirm_large_workload: bool = False,
 ) -> FeatureSnapshotResult:
     """Prepare execution-scoped permissions before SparkContext; orchestrate only."""
     validate_feature_snapshot_parameters(
@@ -44,7 +47,7 @@ def run_build_forecast_features(
     spark_config = load_spark_config({"WAREHOUSE_SPARK_MASTER_URL": spark_master})
     if not spark_config.master_url.startswith("spark://"):
         raise ValueError("J04 requires an explicit Spark Standalone master")
-    hdfs = SparkHdfsCliClient()
+    hdfs = SparkHdfsCliClient(metadata_limit=SCOPED_METADATA_LIMIT)
     validate_publication_namespace(hdfs, hdfs_config)
     prepare_spark_run_permissions(
         hdfs, hdfs_config, pipeline_run_id=pipeline_run_id, event_log_dir=event_log_dir
@@ -80,6 +83,8 @@ def run_build_forecast_features(
             client=hdfs,
             output_partitions=output_partitions,
             max_records_per_file=max_records_per_file,
+            dataset_scope=dataset_scope,
+            confirm_large_workload=confirm_large_workload,
         )
     finally:
         spark.stop()
@@ -98,7 +103,9 @@ def main() -> None:
     ):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--event-log-dir")
-    parser.add_argument("--output-partitions", type=int, default=16)
+    parser.add_argument("--output-partitions", type=int, default=4)
+    parser.add_argument("--dataset-scope", choices=("demo_sample", "full_m5"))
+    parser.add_argument("--confirm-large-workload", action="store_true")
     parser.add_argument("--max-records-per-file", type=int, default=1_000_000)
     result = run_build_forecast_features(**vars(parser.parse_args()))
     print("J04_RESULT=" + json.dumps(asdict(result), sort_keys=True, separators=(",", ":")))

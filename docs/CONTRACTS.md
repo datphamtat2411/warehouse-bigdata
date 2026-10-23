@@ -102,6 +102,34 @@ redundant source-manifest lifecycle field.
 
 ## HDFS Artifact Conventions
 
+### Standard dataset scope evidence — `m5-scope-v1`
+
+Contract v1 dataset fields, schema fingerprints and strict manifest fields are unchanged.
+Every new scoped artifact carries an immutable `_scope.json` sidecar. It contains:
+`dataset_scope`, `selection_policy`, `selection_seed`, `source_version`,
+`source_snapshot_id`, sorted `selected_item_ids`, `selected_store_ids`,
+`selected_department_ids`, `selected_sku_count`, `selected_series_count`,
+`original_series_count`, `excluded_series_count`, `historical_day_count`,
+`expected_observation_count`, and `selection_digest`. Version 1 also requires
+`schema_version`, `available_department_ids`, and sorted `selected_series` identity records
+(`id`, `item_id`, `dept_id`, `cat_id`, `store_id`, `state_id`) to validate exact membership.
+
+The digest is `sha256:` plus SHA-256 of the entire sidecar **except `selection_digest`**,
+serialized with sorted keys, ASCII escaping, compact comma/colon separators, no NaN,
+and one trailing LF. Arrays/series use their canonical sorted order. Manifests bind
+`dataset_scope` and `selection_digest` inside the existing JSON
+`coverage_and_exclusion_counts` field. J04/model/forecast/evaluation bindings embed the
+identical scope object; file inventories include its sidecar. Consumers and publishers
+validate the digest, source/snapshot, exact population and upstream completion status.
+Missing scope evidence cannot imply full mode or authorize a historical smoke input.
+
+`demo_sample` requires ten SKUs × ten original stores = 100 series, all 1,941 days,
+and exactly 194,100 observations. J05 uses at most 10,000 eligible training rows. J06 and
+evaluation consume the frozen ten-SKU cohort without resampling; actual scored coverage
+may be lower, with exclusions. Full-mode reference contracts remain available only with
+explicit execution selection and authorization. Practical commands and recovery:
+[SMALL_DEMO_MODE.md](SMALL_DEMO_MODE.md).
+
 The catalog records logical locations only; it does not create HDFS directories.
 
 ```text
@@ -139,7 +167,7 @@ Holdout IDs are `m5-chronological-paired-v1-validation` and
 derived from the evaluation ID and day index, and mapped in binding/manifest evidence.
 
 Before forecasting, validation persists the unchanged T01 model/checksum/training
-selection binding, training-only T02 cohort evidence, seed, feature/source lineage,
+selection binding, frozen M5 Small cohort evidence, seed, feature/source lineage,
 code revision, origins, preprocessing and analytical policy in `input_binding.json`.
 Test explicitly selects a sealed validation evaluation and reuses its cohort; the
 model, source, code and analytical freeze must match before test scoring or label

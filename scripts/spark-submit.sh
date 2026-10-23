@@ -32,6 +32,8 @@ if [[ $# -lt 2 || $1 != -- || -z $2 ]]; then
     exit 2
 fi
 publication_run_id=
+publication_job=${2##*/}
+publication_job=${publication_job%.py}
 feature_job=0
 model_job=0
 forecast_job=0
@@ -53,6 +55,9 @@ if [[ $2 == warehouse_bigdata/jobs/evaluate_forecasts.py ]]; then
 fi
 case $2 in
     warehouse_bigdata/jobs/normalize_sales_daily.py|warehouse_bigdata/jobs/enrich_analytics.py|warehouse_bigdata/jobs/build_forecast_features.py|warehouse_bigdata/jobs/train_forecast_model.py|warehouse_bigdata/jobs/forecast_daily.py|warehouse_bigdata/jobs/evaluate_forecasts.py)
+        if (( ! feature_job )); then
+            recovery_binding+=(--job-name "$publication_job")
+        fi
         shift 2
         while [[ $# -gt 0 ]]; do
             case $1 in
@@ -66,14 +71,10 @@ case $2 in
                     shift ;;
                 --source-version|--source-snapshot-id|--upstream-pipeline-run-id|--feature-version)
                     [[ $# -ge 2 ]] || { usage >&2; exit 2; }
-                    if (( feature_job )); then
-                        recovery_binding+=("$1" "$2")
-                    fi
+                    recovery_binding+=("$1" "$2")
                     shift 2 ;;
                 --source-version=*|--source-snapshot-id=*|--upstream-pipeline-run-id=*|--feature-version=*)
-                    if (( feature_job )); then
-                        recovery_binding+=("$1")
-                    fi
+                    recovery_binding+=("$1")
                     shift ;;
                 --model-run-id|--training-cap|--sampling-seed|--resource-justification|--pilot-evidence-uri|--hdfs-uri|--spark-master|--event-log-dir|--j03-pipeline-run-id|--j04-pipeline-run-id|--forecast-run-id|--issue-date|--run-type|--seed|--evaluation-run-id|--validation-evaluation-run-id)
                     [[ $# -ge 2 ]] || { usage >&2; exit 2; }
@@ -105,7 +106,7 @@ if (( model_job )); then
         [[ $value == --model-run-id || $value == --model-run-id=* ]] && has_model=1
     done
     (( has_model )) || { printf 'J05 requires --model-run-id.\n' >&2; exit 2; }
-    (( has_cap )) || recovery_binding+=(--training-cap 150000)
+    (( has_cap )) || recovery_binding+=(--training-cap 10000)
     (( has_seed )) || recovery_binding+=(--sampling-seed 42)
 fi
 if (( feature_job )); then
@@ -232,18 +233,14 @@ publish_m04() {
 }
 # Recover a previously claimed candidate before Spark attempts to reconstruct staging.
 if [[ -n $publication_run_id ]]; then
-    if (( feature_job )); then
-        if publish_m04 --skip-completed-driver "${recovery_binding[@]}" --recover; then
-            :
-        else
-            recovery_status=$?
-            if (( recovery_status == 10 )); then
-                exit 0
-            fi
-            exit "$recovery_status"
-        fi
+    if publish_m04 --skip-completed-driver "${recovery_binding[@]}" --recover; then
+        :
     else
-        publish_m04 --recover
+        recovery_status=$?
+        if (( recovery_status == 10 )); then
+            exit 0
+        fi
+        exit "$recovery_status"
     fi
 fi
 

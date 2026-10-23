@@ -27,6 +27,11 @@ from warehouse_bigdata.common.hdfs_paths import (
     render_run_manifest_path,
     render_staging_path,
 )
+from warehouse_bigdata.common.scope_evidence import (
+    SCOPED_METADATA_LIMIT,
+    read_scope,
+    validate_scope_binding,
+)
 from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import validate_manifest
 
@@ -88,7 +93,10 @@ def file_integrity(client, root: str) -> list[dict]:
                 if (
                     status["type"] != "FILE"
                     or PurePosixPath(path).name.startswith(".")
-                    or not (path.endswith(".parquet") or PurePosixPath(path).name == "_SUCCESS")
+                    or not (
+                        path.endswith(".parquet")
+                        or PurePosixPath(path).name in {"_SUCCESS", "_scope.json"}
+                    )
                     or type(status["length"]) is not int
                     or status["length"] < 0
                 ):
@@ -164,7 +172,10 @@ def _outputs(config, manifest):
 
 
 def _same_manifest(first, second):
-    if first.get("contract_name") == "model_manifest" or second.get("contract_name") == "model_manifest":
+    if (
+        first.get("contract_name") == "model_manifest"
+        or second.get("contract_name") == "model_manifest"
+    ):
         return first == second
     same = all(
         first.get(field) == second.get(field)
@@ -233,6 +244,9 @@ def _seal(client, path):
 
 
 def _validate_sidecar(client, path, final, sidecar, manifest, config):
+    validate_scope_binding(
+        manifest, read_scope(client, path, source_version=manifest.get("source_version"))
+    )
     document = _json(client, path + "/" + sidecar)
     expected = {
         field: manifest[field]
@@ -256,6 +270,10 @@ def _validate_feature_evidence(client, config, manifest, path, *, inventory):
     coverage = json.loads(manifest["coverage_and_exclusion_counts"])
     staging = render_staging_path(config.base_path, manifest["pipeline_run_id"])
     binding = _json(client, staging + "/input_binding.json")
+    scope = read_scope(client, path)
+    validate_scope_binding(manifest, scope)
+    if binding.get("scope") != scope:
+        raise HdfsNamespaceError("feature scope differs from frozen input binding")
     quality = _json(client, staging + "/quality_report.json")
     sidecar = _json(client, path + "/_dataset_manifest.json")
     for document, key in (
@@ -349,21 +367,31 @@ def finalize_publication(client, config, *, pipeline_run_id: str) -> str:
     request = _json(client, _request_path(config, pipeline_run_id))
     manifest = request["manifest"]
     if manifest.get("contract_name") == "evaluation_manifest":
-        from warehouse_bigdata.forecasting.evaluation_artifacts import finalize_evaluation_publication
+        from warehouse_bigdata.forecasting.evaluation_artifacts import (
+            finalize_evaluation_publication,
+        )
+
         if request.get("version") != 1 or request.get("pipeline_run_id") != pipeline_run_id:
             raise HdfsNamespaceError("evaluation publication execution identity/version mismatch")
-        return finalize_evaluation_publication(client, config, pipeline_run_id=pipeline_run_id, manifest=manifest)
+        return finalize_evaluation_publication(
+            client, config, pipeline_run_id=pipeline_run_id, manifest=manifest
+        )
     if manifest.get("contract_name") == "forecast_manifest":
         from warehouse_bigdata.forecasting.forecast_artifacts import finalize_forecast_publication
+
         if request.get("version") != 1 or request.get("pipeline_run_id") != pipeline_run_id:
             raise HdfsNamespaceError("forecast publication execution identity/version mismatch")
-        return finalize_forecast_publication(client, config, pipeline_run_id=pipeline_run_id, manifest=manifest)
+        return finalize_forecast_publication(
+            client, config, pipeline_run_id=pipeline_run_id, manifest=manifest
+        )
     if request.get("version") != 1 or manifest.get("pipeline_run_id") != pipeline_run_id:
         raise HdfsNamespaceError("publication request identity/version mismatch")
     if manifest.get("contract_name") == "model_manifest":
         from warehouse_bigdata.forecasting.model_artifacts import finalize_model_publication
 
-        return finalize_model_publication(client, config, pipeline_run_id=pipeline_run_id, manifest=manifest)
+        return finalize_model_publication(
+            client, config, pipeline_run_id=pipeline_run_id, manifest=manifest
+        )
     outputs = _outputs(config, manifest)
     is_feature = json.loads(manifest["output_dataset_names"]) == ["forecast_features"]
     # J04 exact-path NameNode checks distinguish absence from access denial and
@@ -455,6 +483,7 @@ def main() -> None:
     )
     parser.add_argument("--pipeline-run-id", required=True)
     parser.add_argument("--skip-completed-driver", action="store_true")
+    parser.add_argument("--job-name", choices=("normalize_sales_daily", "enrich_analytics"))
     for name in (
         "source-version",
         "source-snapshot-id",
@@ -480,22 +509,53 @@ def main() -> None:
     parser.add_argument("--seed", type=int)
     args = parser.parse_args()
     config = load_hdfs_config()
-    client = HdfsCliClient()
+    client = HdfsCliClient(metadata_limit=SCOPED_METADATA_LIMIT)
     require_owner(client)
     if args.recover and not client.exists(_request_path(config, args.pipeline_run_id)):
         return
     if args.skip_completed_driver:
         request = _json(client, _request_path(config, args.pipeline_run_id))
         manifest = request["manifest"]
+        if manifest.get("contract_name") == PIPELINE_RUN_MANIFEST.name:
+            processing_job = {
+                ("sales_daily",): "normalize_sales_daily",
+                (
+                    "sales_enriched",
+                    "store_daily_sales",
+                    "category_monthly_sales",
+                ): "enrich_analytics",
+            }.get(tuple(json.loads(manifest["output_dataset_names"])))
+            if processing_job is not None:
+                if args.job_name != processing_job:
+                    raise HdfsNamespaceError(
+                        "processing recovery job conflicts with frozen publication binding"
+                    )
+                for key in ("source_version", "source_snapshot_id"):
+                    if getattr(args, key) is None or getattr(args, key) != manifest.get(key):
+                        raise HdfsNamespaceError(
+                            "processing recovery conflicts with frozen publication binding: " + key
+                        )
+                finalize_publication(client, config, pipeline_run_id=args.pipeline_run_id)
+                raise SystemExit(10)
         if manifest.get("contract_name") == "evaluation_manifest":
-            from warehouse_bigdata.forecasting.evaluation_artifacts import validate_evaluation_recovery
-            binding = _json(client, render_staging_path(config.base_path, args.pipeline_run_id) + "/input_binding.json")
+            from warehouse_bigdata.forecasting.evaluation_artifacts import (
+                validate_evaluation_recovery,
+            )
+
+            binding = _json(
+                client,
+                render_staging_path(config.base_path, args.pipeline_run_id) + "/input_binding.json",
+            )
             validate_evaluation_recovery(args, binding)
             finalize_publication(client, config, pipeline_run_id=args.pipeline_run_id)
             raise SystemExit(10)
         if manifest.get("contract_name") == "forecast_manifest":
             from warehouse_bigdata.forecasting.forecast_artifacts import validate_forecast_recovery
-            binding = _json(client, render_staging_path(config.base_path, args.pipeline_run_id) + "/input_binding.json")
+
+            binding = _json(
+                client,
+                render_staging_path(config.base_path, args.pipeline_run_id) + "/input_binding.json",
+            )
             validate_forecast_recovery(args, binding)
             finalize_publication(client, config, pipeline_run_id=args.pipeline_run_id)
             raise SystemExit(10)
@@ -508,17 +568,29 @@ def main() -> None:
             client,
             render_staging_path(config.base_path, args.pipeline_run_id) + "/input_binding.json",
         )
-        if is_model and any(getattr(args, key) is None for key in (
-            "source_version", "source_snapshot_id", "upstream_pipeline_run_id", "feature_version",
-            "model_run_id", "hdfs_uri", "spark_master", "training_cap", "sampling_seed",
-        )):
-            raise HdfsNamespaceError("J05 owner recovery requires complete explicit input/configuration binding")
+        if is_model and any(
+            getattr(args, key) is None
+            for key in (
+                "source_version",
+                "source_snapshot_id",
+                "upstream_pipeline_run_id",
+                "feature_version",
+                "model_run_id",
+                "hdfs_uri",
+                "spark_master",
+                "training_cap",
+                "sampling_seed",
+            )
+        ):
+            raise HdfsNamespaceError(
+                "J05 owner recovery requires complete explicit input/configuration binding"
+            )
         for key in (
             "source_version",
             "source_snapshot_id",
             "upstream_pipeline_run_id",
             "feature_version",
-            *( ("model_run_id",) if is_model else () ),
+            *(("model_run_id",) if is_model else ()),
         ):
             value = getattr(args, key)
             if value is not None and value != binding.get(key):
@@ -528,29 +600,47 @@ def main() -> None:
         if is_model:
             effective = binding.get("effective_configuration", {})
             training = effective.get("training", {})
-            expected = {"hdfs_uri": effective.get("hdfs_uri"), "spark_master": effective.get("spark_master"),
-                        "training_cap": training.get("cap"), "sampling_seed": training.get("sampling_seed"),
-                        "resource_justification": training.get("resource_justification"),
-                        "pilot_evidence_uri": training.get("pilot_evidence_uri"),
-                        "event_log_dir": effective.get("runtime", {}).get("spark.eventLog.dir")}
+            expected = {
+                "hdfs_uri": effective.get("hdfs_uri"),
+                "spark_master": effective.get("spark_master"),
+                "training_cap": training.get("cap"),
+                "sampling_seed": training.get("sampling_seed"),
+                "resource_justification": training.get("resource_justification"),
+                "pilot_evidence_uri": training.get("pilot_evidence_uri"),
+                "event_log_dir": effective.get("runtime", {}).get("spark.eventLog.dir"),
+            }
             for key, value in expected.items():
                 if getattr(args, key) != value:
-                    raise HdfsNamespaceError("J05 recovery configuration conflicts with frozen input: " + key)
+                    raise HdfsNamespaceError(
+                        "J05 recovery configuration conflicts with frozen input: " + key
+                    )
     status = finalize_publication(client, config, pipeline_run_id=args.pipeline_run_id)
     if not args.recover:
         print(f"status={status}")
         request = _json(client, _request_path(config, args.pipeline_run_id))
         if request["manifest"].get("contract_name") == "evaluation_manifest":
             from warehouse_bigdata.common.hdfs_paths import render_evaluation_output_path
-            path = render_evaluation_output_path(config.base_path, request["manifest"]["evaluation_run_id"]) + "/evaluation_manifest.json"
+
+            path = (
+                render_evaluation_output_path(
+                    config.base_path, request["manifest"]["evaluation_run_id"]
+                )
+                + "/evaluation_manifest.json"
+            )
         elif request["manifest"].get("contract_name") == "forecast_manifest":
             from warehouse_bigdata.common.hdfs_paths import render_forecast_output_path
-            path = render_forecast_output_path(config.base_path, request["manifest"]["forecast_run_id"]) + "/scoring_manifest.json"
+
+            path = (
+                render_forecast_output_path(
+                    config.base_path, request["manifest"]["forecast_run_id"]
+                )
+                + "/scoring_manifest.json"
+            )
         else:
             path = render_run_manifest_path(config.base_path, args.pipeline_run_id)
         print(f"run_manifest_path={path}")
     elif args.skip_completed_driver:
-        # Internal launcher protocol: owner recovery has completed a frozen J04
+        # Internal launcher protocol: owner recovery has completed a frozen
         # request. Do not start Spark and accidentally recompute under this ID.
         raise SystemExit(10)
 

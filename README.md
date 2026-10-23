@@ -13,9 +13,29 @@ four-scenario integration suite, and an opt-in Spark Standalone deployment with
 passing live infrastructure acceptance, a short-lived Spark submission runtime,
 and a bounded synthetic distributed Spark–HDFS acceptance that passed on
 **2026-10-21**. Local M5 source profiling, immutable raw HDFS ingestion, Contract v1
-run manifests, and an opt-in real-M5 Spark Standalone read verification are implemented;
-curated ETL, other services, model training, database publication, and the dashboard are
-not implemented yet.
+run manifests, J02/J03 curated ETL, J04 features, J05 Random Forest persistence,
+J06 recursive forecasting, and chronological evaluation are implemented in the local
+tree. Their new M5 Small profile still requires separately authorized live validation.
+Inventory processing, database publication, and the dashboard remain planned.
+
+## Standard Execution Profile — M5 Small
+
+The project uses **`demo_sample`** for all real-M5 execution: **ten deterministic
+SKUs × ten original stores × all 1,941 days = 194,100 observed-sales records**.
+The frozen population covers all seven departments in the original source. Unit tests
+use tiny synthetic fixtures. Real-M5 integration tests reuse selected VALIDATED small
+artifacts; they never regenerate upstream data. The old 30-day full-catalog smoke and
+128-day benchmark matrix are retired.
+
+Start with [the practical M5 Small runbook](docs/SMALL_DEMO_MODE.md), including setup,
+canonical artifact selection, exact J02–J06 commands, permissions, verification and
+recovery. Set `WAREHOUSE_SMALL_ARTIFACTS` to a **local JSON selector** holding immutable
+HDFS artifact IDs and the frozen selection digest.
+
+Full M5 remains a source/reference and optional compatibility scope. Heavy execution
+requires separate explicit authorization, `--dataset-scope full_m5`, and
+`--confirm-large-workload`; omitted arguments never select a full reshape. Demo metrics
+must be labelled `demo_sample`, not full-M5 accuracy or catalog-wide acceptance.
 
 ## Project Objectives
 
@@ -55,8 +75,8 @@ serving layer, and Streamlit is planned as a read-oriented presentation layer.
 |---|---|---|
 | Project runtime | Python 3.11 and `uv` | Project metadata and `uv.lock` exist |
 | Distributed storage | Hadoop HDFS 3.4.3 | Persistent one-NameNode/two-DataNode deployment and configuration loaders implemented; complete four-scenario HDFS integration suite passed |
-| Distributed processing | Apache Spark 3.5.7 | Opt-in one-Master/two-Worker deployment, qualified Python 3.11 image, client-mode submission runtime, and passing synthetic Spark–HDFS verification job; production ETL/MLlib jobs remain planned |
-| Forecasting | Spark MLlib `RandomForestRegressor` | Selected in design; no model is trained |
+| Distributed processing | Apache Spark 3.5.7 | One Master/two Workers, qualified submission runtime, J02–J04 ETL/features implemented; M5 Small live acceptance pending |
+| Forecasting | Spark MLlib `RandomForestRegressor` | Bounded training, immutable model reload, recursive forecasts and evaluation implemented; real-M5 Small execution pending |
 | Analytical serving | ClickHouse Distributed, two shards and one replica per shard | Designed only; no SQL or deployment is implemented |
 | Application | Streamlit and Plotly | Designed only; no application code is implemented |
 | Local environment | Docker Compose on Ubuntu/WSL2 | HDFS default topology and opt-in Spark profile implemented; other services remain planned |
@@ -154,10 +174,8 @@ for the execution snapshot and operational procedures.
 
 ### Planned but not implemented
 
-- M5 downloading and Spark ETL. Local profiling, immutable raw HDFS ingestion, and
-  source/run manifest generation are implemented for already-acquired CSV packages;
-  the real-M5 Spark check only verifies HDFS reads and source metadata.
-- Spark MLlib training, chronological evaluation, and seven-day forecast artifacts.
+- Automated M5 downloading. Local source profiling, raw ingestion, ETL, MLlib training,
+  recursive forecasts and evaluation are implemented; live small-profile results are pending.
 - Inventory simulation, replenishment, and constrained allocation execution.
 - ClickHouse schemas, shard publication, and analytical queries.
 - Streamlit pages, Vietnamese labels, and dashboard data access.
@@ -218,7 +236,7 @@ actual UTC acquisition time when known, otherwise JSON `null`; `profiled_at_utc`
 automatically recorded UTC time of profiling. For HDFS initialization, startup,
 smoke checks, and safe lifecycle operations, follow the
 [HDFS operations guide](infrastructure/hadoop/README.md). The combined raw-ingestion
-workflow is documented below; curated transformations remain out of scope.
+workflow is documented below; standard curated execution is in the M5 Small runbook.
 
 ### M5 Raw Ingestion And Verification
 
@@ -337,83 +355,19 @@ executed [M02 T03 acceptance](infrastructure/spark/README.md#historical-phase-2-
 passed for its bounded synthetic distributed read/write workload. Future live runs
 require their own explicit approval and current prerequisite checks.
 
-### Opt-in live M04 smoke acceptance
+### Opt-in M5 Small integration and acceptance
 
-The separate M04 smoke test uses real M5 CSV data in real HDFS and the existing
-`spark-worker-1` and `spark-worker-2`. It selects **`d_1` through `d_30` for all
-30,490 evaluation series**, expecting exactly **914,700 rows** in each of
-`sales_daily` and `sales_enriched`. These are derived observed-sales records.
-
-Run serially from the repository root against already-ready HDFS and Spark services.
-Prepare/rebuild the driver image after source changes using the explicit build command
-in the submission section above. Set `WAREHOUSE_HDFS_URI` and
-`WAREHOUSE_SPARK_MASTER_URL` to the canonical cluster endpoints in `.env`.
-
-For repeat smoke runs, set `WAREHOUSE_M04_SOURCE_VERSION=sha256:<64 lowercase hex>`
-in `.env` to the exact source version printed by a successful M5 raw ingestion.
-This reuses that immutable raw snapshot through the **production HDFS validator**:
-all raw bytes are hashed again; source manifests, provenance, integrity sidecars,
-checksums, replication, and current two-DataNode block placement are checked. The
-content-derived source version is reconciled with the manifest file hashes. Local
-CSVs and full local CSV profiling are unnecessary in this mode. Any supplied
-`WAREHOUSE_M5_SOURCE_URL` or `WAREHOUSE_M5_DOWNLOADED_AT_UTC` must match stored
-provenance; an invalid or missing selected snapshot fails without fallback.
-
-If `WAREHOUSE_M04_SOURCE_VERSION` is blank, provide `WAREHOUSE_M5_SOURCE_DIR` and
-the official `WAREHOUSE_M5_SOURCE_URL`; the existing production ingestion flow
-profiles and validates the complete original package before the reduced ETL run.
-That initial profiling remains expensive. Keep the acquisition timestamp blank
-when unknown.
-
-Explicit smoke command:
+The operational workflow is [M5 Small](docs/SMALL_DEMO_MODE.md). Integration verifies
+existing immutable publications with independent Spark reads. Lifecycle/performance
+execution is separately authorized, serial, and records actual tasks on both Workers.
 
 ```bash
-bash scripts/load-env.sh uv run --locked pytest -q -m integration --run-m04-smoke tests/integration/test_m04_smoke.py
+bash scripts/load-env.sh uv run --locked pytest -q -m integration \
+  --run-small-integration tests/integration/test_m04_processing.py
 ```
 
-Default pytest runs exclude integration tests. Even `-m integration` skips this
-smoke test unless `--run-m04-smoke` is present, before its HDFS fixture is set up.
-
-Before expensive source preparation, the harness checks run-path collisions,
-the two Workers' current readiness, the prepared image, and empty run-owned event
-directories. A small non-Spark driver probe verifies the HDFS CLI, effective Spark
-staging/event-log ACL access, writable output ancestors, and driver/archive/XML
-fingerprints against the checkout. It does not build or start cluster services.
-
-The test then calls the existing production **J02**, **J03**, and **independent M04
-verifier**. It retains physical-schema and nullability checks, complete selected-day
-and series coverage, unique keys, zero-sales preservation, calendar/price and aggregate
-reconciliation, manifest lineage, persisted Parquet rereads and SHA-256 audits, and
-successful-task evidence from **both** Workers for each of the three applications.
-Raw validation still reads the full source files; the 30-day limit bounds expanded
-sales processing, not raw-source integrity work.
-
-Every invocation uses a new `m04-smoke-snapshot-<uuid>` and distinct J02/J03/verifier
-run IDs, staging/event paths, and `artifacts/m04/smoke/<uuid>/` evidence. Reports,
-commands, full job logs, event logs, reconciliation, and hashes are retained there;
-preflight diagnostics are also recorded in the unique `artifacts/test-runs/` run.
-Existing raw snapshots and curated data are never overwritten. Smoke reports state
-`acceptance_scope=reduced-history` and `full_history_accepted=false`.
-
-**Smoke acceptance does not establish full-history correctness or retry/recovery
-acceptance.** The existing full test still processes **1,941 days / 59,181,090 rows**,
-including immutable J02/J03 retry checks, with its original command:
-
-```bash
-bash scripts/load-env.sh uv run --locked pytest -q -m integration tests/integration/test_m04_processing.py
-```
-
-The smoke test omits those two retry submissions to keep the live check smaller.
-It is a single-host, two-Worker simulation, not a benchmark, speedup claim, or
-physical multi-host fault-tolerance certification. No live M04 result is implied
-by adding this test.
-
-Focused offline regression checks (no live workloads):
-
-```bash
-uv run --locked ruff check .
-uv run --locked pytest -q tests/unit/test_m04_support.py tests/unit/test_m04_smoke.py tests/unit/test_m04_verification.py tests/unit/test_spark_job_permissions.py tests/unit/test_spark_verification.py tests/unit/test_hdfs_raw_ingestion.py
-```
+Missing artifacts fail clearly without ingestion or ETL fallback. The retired M04
+smoke artifacts and evidence remain preserved; they cannot be selected for ML.
 
 ### Opt-in HDFS integration verification
 

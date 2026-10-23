@@ -115,7 +115,7 @@ Each requirement uses the following structure: **ID → obligation → acceptanc
 **Acceptance criteria:**
 1. A repeatable Spark job executes the transformation and writes curated results (preferably Parquet) to HDFS.
 2. Data types, missing values, key validity, duplication assumptions, and invalid records are examined and summarized.
-3. For an **unfiltered full reshape** of `sales_train_evaluation.csv`, the anticipated count is **30,490 × 1,941 = 59,181,090** product–store–day observations; actual counts and deviations are documented.
+3. Standard real-M5 execution is **`demo_sample`: ten deterministic SKUs × ten stores × 1,941 days = 194,100 observed-sales records**, with all seven departments when supported and immutable selection lineage. Full M5 (30,490 × 1,941 = 59,181,090) is a source/reference and optional explicitly authorized workload, not required acceptance processing.
 4. The job records input/output counts so filtered or aggregated datasets cannot be confused with the full historical set.
 
 #### FR-04 — Provide historical sales analytics (**P0**)
@@ -146,6 +146,7 @@ Each requirement uses the following structure: **ID → obligation → acceptanc
 1. Executed code demonstrates the use of Spark MLlib's Random Forest regression implementation.
 2. Training input coverage, data period, sample/series count, parameters, and reproducibility settings are recorded.
 3. The persisted model can be loaded for inference without retraining through the UI.
+4. Standard training reuses VALIDATED M5 Small J04 features and fits at most 10,000 eligible observations with deterministic stratified sampling; infeasible strata coverage fails explicitly.
 
 #### FR-07 — Evaluate the forecasting model against a baseline (**P0**)
 
@@ -156,6 +157,7 @@ Each requirement uses the following structure: **ID → obligation → acceptanc
 2. The same evaluation set and forecasting horizon are used for the model and baseline.
 3. **MAE, RMSE, and WAPE** are reported with appropriate definitions and a safe treatment of zero denominators.
 4. The report includes measured values even if Random Forest does **not** outperform the baseline.
+5. Evaluation uses the frozen M5 Small cohort and locked rolling origins. All metrics identify `demo_sample` and cannot establish full-catalog generalization.
 
 #### FR-08 — Produce seven-day predictions (**P0**)
 

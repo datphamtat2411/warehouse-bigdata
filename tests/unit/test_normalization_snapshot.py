@@ -140,8 +140,19 @@ def _configure_snapshot_inputs(
     sales,
     calendar,
 ) -> None:
+    from tests.unit.test_m5_small import evidence
     from warehouse_bigdata.ingestion import hdfs_raw
     from warehouse_bigdata.processing import normalization_snapshot
+
+    # This fixture isolates the existing two-row publication/recovery algorithm;
+    # canonical population enforcement is tested independently in test_m5_small.
+    monkeypatch.setattr(normalization_snapshot, "_validate_scope_config", lambda *a: None)
+    monkeypatch.setattr(
+        normalization_snapshot,
+        "_prepare_scoped_wide",
+        lambda *a, **k: (sales, evidence(k["source_snapshot_id"])),
+    )
+    monkeypatch.setattr(normalization_snapshot, "validate_scope_population", lambda *a, **k: None)
 
     raw_snapshot = ValidatedHdfsRawSnapshot(
         status="VALIDATED",
@@ -556,11 +567,6 @@ def test_failed_raw_validation_publishes_failed_evidence_without_promotion(
         pipeline_run_id="normalize-failed",
         hdfs_config=hdfs_config,
         client=hdfs,
-        config=NormalizationSnapshotConfig(
-            days_per_chunk=1,
-            expected_series_count=2,
-            expected_day_count=2,
-        ),
     )
 
     assert result.status == "FAILED"

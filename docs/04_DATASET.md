@@ -130,7 +130,7 @@ The project uses `sales_train_evaluation.csv` as its canonical observed-sales in
 | Distinct products | **3,049** | Unique `item_id` catalog |
 | Stores | **10** | Four in CA, three in TX, three in WI |
 | States | **3** | `CA`, `TX`, `WI` |
-| Bottom-level series | **30,490** | 3,049 item–store combinations |
+| Bottom-level series | **30,490** | 3,049 items × ten stores |
 | Evaluation sales days | **1,941** | `d_1` to `d_1941`, inclusive |
 | Validation sales days | **1,913** | `d_1` to `d_1913`, inclusive |
 | Calendar days | **1,969** | `d_1` to `d_1969`, inclusive |
@@ -141,6 +141,25 @@ The project uses `sales_train_evaluation.csv` as its canonical observed-sales in
 | Full unfiltered daily observations | **59,181,090** | Product–store–day rows **after normalization** |
 
 **Do not state:** “59 million products,” “59 million orders,” or “59 million customer transactions.” Each long-form row corresponds to one **product at one store on one day**, including days with zero recorded sales.
+
+### 3.3. Standard executable subset — M5 Small
+
+`demo_sample` is the standard project dataset, a subset of the original real M5 source:
+**ten unique SKUs × all ten original stores = 100 series**, retaining **all 1,941 days**
+(`d_1`–`d_1941`, 2011-01-29–2016-05-22) and **194,100 observed-sales records** including zeros.
+The source characteristics in §3.2 remain reference facts, not routine execution requirements.
+
+The canonical metadata-only, seed-42 SHA-256 item ranking selects department round-robin:
+one item per available department first, then three additional selections in department
+order. Every candidate must have consistent item/category metadata and all ten original
+stores; duplicate, inconsistent or incomplete identities fail selection. All seven departments
+are covered when available (as in original M5). The exact items, stores, departments, source
+version, snapshot and selection digest are frozen in `m5-scope-v1` evidence. Downstream
+stages propagate it without independent sampling. See [SMALL_DEMO_MODE.md](SMALL_DEMO_MODE.md).
+
+The subset preserves observed values and complete time coverage; it does not establish
+catalog-wide representativeness or full-M5 model accuracy. Forecasts remain predictions,
+features derived, and inventory scenarios simulated. Full M5 requires explicit authorization.
 
 ---
 
@@ -457,7 +476,7 @@ This dataset supports a forecasting experiment, but **the ML design must address
 
 - **Prediction horizon:** seven daily unit-sales values per **eligible item–store pair**.
 - **Training population:** may be a documented subset due to the 16 GB host. Report eligible series, selected series, time period, and sampling rules.
-- **Full-data processing:** processing all 59,181,090 normalized records with Spark is a different obligation from training Random Forest on all of them. Do not equate one with the other.
+- **Scoped processing:** standard ETL uses 194,100 `demo_sample` observations and training uses at most 10,000 eligible rows after feature generation. Full-M5 expansion is optional/reference behavior; neither processing nor fitting all 59,181,090 rows is required for project acceptance.
 - **Holdout:** choose chronological historical windows with observed sales labels available for every scored date. A model fit at cutoff `t` must not use outcomes after `t`.
 - **Metrics and baseline:** defined and reported in `07_MACHINE_LEARNING.md`, using identical scored samples for fair comparison.
 - **Label ambiguity:** since M5 does not contain true on-hand inventory or lost-sales counts, model evaluation measures predictive performance on **recorded unit sales**, not recovery of hidden unmet demand.
@@ -547,7 +566,7 @@ The Kaggle package size is **not** the total project footprint. Allow additional
 - [ ] File sizes, row counts and optionally SHA-256 hashes stored in a manifest.
 - [ ] Required identifiers and all 1,941 evaluation day columns verified.
 - [ ] Product/store/department/category distinct counts measured.
-- [ ] Full unfiltered wide-to-long count reconciled to **59,181,090** if source dimensions match references.
+- [ ] Frozen M5 Small wide-to-long count reconciled to **194,100**, with original source dimensions and selection lineage recorded; optional full-mode arithmetic remains a reference check.
 - [ ] Zero-sales ratio measured; zeros preserved or transformed only under a documented policy.
 - [ ] Calendar unique keys and coverage verified (`d_1`–`d_1969`).
 - [ ] Price join key uniqueness and missing-price rate measured.

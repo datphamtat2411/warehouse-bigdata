@@ -34,6 +34,13 @@ from warehouse_bigdata.common.hdfs_paths import (
 )
 from warehouse_bigdata.common.hdfs_publication import stage_publication
 from warehouse_bigdata.common.hdfs_runtime import create_hdfs_cli_client
+from warehouse_bigdata.common.scope_evidence import (
+    authorize_upstream,
+    bind_scope,
+    read_scope,
+    validate_scope_binding,
+    write_scope,
+)
 from warehouse_bigdata.contracts.datasets import (
     CATEGORY_MONTHLY_SALES,
     SALES_DAILY,
@@ -48,6 +55,7 @@ from warehouse_bigdata.ingestion.hdfs_raw import (
     publish_run_manifest,
     validate_hdfs_raw_snapshot,
 )
+from warehouse_bigdata.processing.m5_selection import validate_scope_population
 from warehouse_bigdata.processing.sales_aggregation import (
     SalesAggregationError,
     aggregate_sales,
@@ -152,6 +160,13 @@ def _validate_existing_completion_marker(
 ) -> None:
     """Reject a run marker unless it identifies the complete immutable output bundle."""
     manifest = _read_json(hdfs, path, "J03 completion marker")
+    scope = read_scope(
+        hdfs,
+        curated_output_paths["sales_enriched"],
+        source_version=source_version,
+        source_snapshot_id=source_snapshot_id,
+    )
+    validate_scope_binding(manifest, scope)
     try:
         validate_manifest(
             PIPELINE_RUN_MANIFEST,
@@ -319,6 +334,10 @@ def read_validated_sales_enriched_snapshot(
         curated_output_paths=outputs,
         quality_path=quality_path,
     )
+    scope_root = render_curated_sales_enriched_path(hdfs_config.base_path, source_snapshot_id)
+    scope = read_scope(
+        hdfs, scope_root, source_version=source_version, source_snapshot_id=source_snapshot_id
+    )
     documents: dict[str, dict] = {}
 
     def read(path, label):
@@ -385,6 +404,8 @@ def read_validated_sales_enriched_snapshot(
     }
     manifests = {}
     for name, path in outputs.items():
+        if read_scope(hdfs, path) != scope:
+            raise EnrichmentAnalyticsSnapshotError("J03 output scope mismatch: " + name)
         _require_sealed_input(hdfs, path, hdfs_config.base_path)
         sidecar_path = render_enrichment_dataset_manifest_path(path)
         _require_sealed_input(hdfs, sidecar_path, hdfs_config.base_path)
@@ -436,6 +457,8 @@ def read_validated_sales_enriched_snapshot(
     # Follow the binding actually recorded by J03, rather than selecting another J02 run.
     daily_sidecar_path = daily_path + "/_snapshot_manifest.json"
     daily_sidecar = read(daily_sidecar_path, "J02 dataset manifest")
+    if read_scope(hdfs, daily_path) != scope:
+        raise EnrichmentAnalyticsSnapshotError("J02/J03 selection identity mismatch")
     upstream_run = daily_sidecar.get("pipeline_run_id")
     try:
         validate_pipeline_run_id(upstream_run)
@@ -524,6 +547,7 @@ def read_validated_sales_enriched_snapshot(
     ):
         raise EnrichmentAnalyticsSnapshotError("SALES_ENRICHED physical schema differs from T01")
     frame = frame.select(*SALES_ENRICHED.field_names)
+    validate_scope_population(frame, scope, complete_history=True)
     metrics = _validate_persisted_enriched_frame(
         frame,
         expected_row_count=daily_metrics.row_count,
@@ -542,6 +566,7 @@ def read_validated_sales_enriched_snapshot(
         expected_pipeline_run_id=pipeline_run_id,
     )
     return frame, {
+        "scope": scope,
         "source_version": source_version,
         "source_snapshot_id": source_snapshot_id,
         "pipeline_run_id": pipeline_run_id,
@@ -570,6 +595,8 @@ def run_enrichment_analytics_snapshot(
     client: Any | None = None,
     now: Callable[[], str] | None = None,
     defer_publication: bool = False,
+    dataset_scope: str | None = None,
+    confirm_large_workload: bool = False,
 ) -> EnrichmentAnalyticsSnapshotResult:
     """Enrich one validated SALES_DAILY snapshot and stage immutable analytics candidates."""
     validate_enrichment_analytics_identifiers(
@@ -622,11 +649,23 @@ def run_enrichment_analytics_snapshot(
     hdfs = client
     raw_path: str | None = None
     result_status = "VALIDATED"
+    retained = []
     run_manifest_path = render_run_manifest_path(hdfs_config.base_path, pipeline_run_id)
 
     try:
         hdfs = create_hdfs_cli_client(hdfs_config) if hdfs is None else hdfs
+        scope = authorize_upstream(
+            read_scope(
+                hdfs,
+                sales_daily_path,
+                source_version=source_version,
+                source_snapshot_id=source_snapshot_id,
+            ),
+            dataset_scope=dataset_scope,
+            confirm_large_workload=confirm_large_workload,
+        )
         _ensure_staging_root(hdfs, staging_path)
+        write_scope(hdfs, staging_path, scope)
         if _exists(hdfs, run_manifest_path):
             _validate_existing_completion_marker(
                 hdfs,
@@ -671,10 +710,19 @@ def run_enrichment_analytics_snapshot(
             raw_snapshot,
             source_version=source_version,
         )
+        from pyspark import StorageLevel
+        from pyspark.sql import functions as F
+
+        sell_prices = sell_prices.where(F.col("item_id").isin(scope["selected_item_ids"]))
+        for frame in (sales_daily, sell_prices):
+            frame.persist(StorageLevel.DISK_ONLY)
+            retained.append(frame)
         timings["input_read_seconds"] = time.perf_counter() - phase_started
 
         phase_started = time.perf_counter()
         enriched = enrich_sales_daily(sales_daily, calendar, sell_prices)
+        enriched.persist(StorageLevel.DISK_ONLY)
+        retained.append(enriched)
         timings["enrichment_seconds"] = time.perf_counter() - phase_started
 
         phase_started = time.perf_counter()
@@ -745,6 +793,13 @@ def run_enrichment_analytics_snapshot(
         timings["category_aggregation_seconds"] = time.perf_counter() - phase_started
 
         phase_started = time.perf_counter()
+        for name in _OUTPUT_NAMES:
+            path = (
+                curated_output_paths[name]
+                if _exists(hdfs, curated_output_paths[name])
+                else candidate_paths[name]
+            )
+            write_scope(hdfs, path, scope)
         if not defer_publication:
             for name in _OUTPUT_NAMES:
                 _promote_validated_output(
@@ -819,6 +874,7 @@ def run_enrichment_analytics_snapshot(
                 ),
             ),
         ).select(*SALES_ENRICHED.field_names)
+        validate_scope_population(persisted_enriched, scope, complete_history=True)
         enriched_quality = _basic_quality_values(
             persisted_enriched,
             total_field="unit_sales",
@@ -880,6 +936,7 @@ def run_enrichment_analytics_snapshot(
             input_metrics=input_metrics,
             output_documents=output_documents,
         )
+        summary["scope"] = scope
         _write_json_once(hdfs, quality_path, summary)
 
         metrics = EnrichmentAnalyticsMetrics(
@@ -908,6 +965,7 @@ def run_enrichment_analytics_snapshot(
             completed_at=timestamp(),
             spark_master=spark_master or spark.sparkContext.master,
         )
+        manifest = bind_scope(manifest, scope)
         if defer_publication:
             stage_publication(hdfs, hdfs_config, manifest, result_status=result_status)
             manifest_path = None
@@ -986,6 +1044,9 @@ def run_enrichment_analytics_snapshot(
             timings=dict(timings),
             failure_details=(detail,),
         )
+    finally:
+        for frame in reversed(retained):
+            frame.unpersist()
 
 
 def _read_validated_sales_daily(
@@ -1025,6 +1086,10 @@ def _read_validated_sales_daily(
         ) from error
     upstream_manifest_path = render_run_manifest_path(hdfs_config.base_path, upstream_run_id)
     upstream_manifest = _read_json(hdfs, upstream_manifest_path, "SALES_DAILY pipeline manifest")
+    scope = read_scope(
+        hdfs, sales_daily_path, source_version=source_version, source_snapshot_id=source_snapshot_id
+    )
+    validate_scope_binding(upstream_manifest, scope)
     try:
         validate_manifest(
             PIPELINE_RUN_MANIFEST,
@@ -1058,6 +1123,7 @@ def _read_validated_sales_daily(
     data_uri = _hdfs_uri(hdfs_config.uri, sales_daily_path)
     try:
         sales_daily = _read_parquet(spark, data_uri)
+        validate_scope_population(sales_daily, scope, complete_history=True)
         expected_metrics = NormalizationMetrics(
             row_count=_manifest_int(snapshot_manifest, "row_count"),
             series_count=_manifest_int(snapshot_manifest, "series_count"),

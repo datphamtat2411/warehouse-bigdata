@@ -188,7 +188,9 @@ def validate_evaluation_run_id(evaluation_run_id: str) -> str:
 
 def render_evaluation_output_path(base_path: str, evaluation_run_id: str) -> str:
     validate_evaluation_run_id(evaluation_run_id)
-    return render_hdfs_artifact_path(base_path, "evaluation_output", evaluation_run_id=evaluation_run_id)
+    return render_hdfs_artifact_path(
+        base_path, "evaluation_output", evaluation_run_id=evaluation_run_id
+    )
 
 
 def render_normalization_chunk_path(staging_path: str, day_start: int, day_end: int) -> str:

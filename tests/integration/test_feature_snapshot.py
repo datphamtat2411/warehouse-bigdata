@@ -10,13 +10,11 @@ Fresh version, current packaged revision, potentially expensive::
     uv run pytest -m integration tests/integration/test_feature_snapshot.py \
         --run-m05-lifecycle -k lifecycle
 
-Keep the three upstream fixture selectors unchanged. Optional one-shot
-WAREHOUSE_M05_PUBLISHED_FEATURE_VERSION and WAREHOUSE_M05_PUBLISHED_RUN_ID
-select a different *existing* artifact; neither selector is passed to J04.
+Both workflows consume WAREHOUSE_SMALL_ARTIFACTS. Legacy M04 smoke IDs and
+scattered M05 environment selectors are not accepted.
 """
 
 import json
-import os
 from uuid import uuid4
 
 import pytest
@@ -27,34 +25,27 @@ from tests.integration.feature_snapshot_support import (
     owner,
     submit,
 )
+from warehouse_bigdata.common.small_artifacts import load_small_artifacts
 
 pytestmark = pytest.mark.integration
-SOURCE_KEYS = (
-    "WAREHOUSE_M05_SOURCE_VERSION",
-    "WAREHOUSE_M05_SOURCE_SNAPSHOT_ID",
-    "WAREHOUSE_M05_UPSTREAM_PIPELINE_RUN_ID",
-)
-PUBLISHED_VERSION = "m05-t03-c6f64eafc80744e6ae94adb05bb84385"
-PUBLISHED_RUN = "j04-c6f64eafc80744e6ae94adb05bb84385"
 
 
 def source_selection():
-    missing = [key for key in SOURCE_KEYS if not os.environ.get(key)]
-    if missing:
-        pytest.fail("Select the validated M04 30-day fixture with: " + ", ".join(missing))
-    return tuple(os.environ[key] for key in SOURCE_KEYS)
+    selector = load_small_artifacts()
+    return tuple(
+        selector[key] for key in ("source_version", "source_snapshot_id", "j03_pipeline_run_id")
+    )
 
 
 @pytest.mark.m05_published
 def test_published_feature_snapshot(tmp_path):
     """Verify the old publication independently, without attempting current-code reuse."""
     source, snapshot, upstream = source_selection()
-    version = os.environ.get("WAREHOUSE_M05_PUBLISHED_FEATURE_VERSION", PUBLISHED_VERSION)
-    producer = os.environ.get("WAREHOUSE_M05_PUBLISHED_RUN_ID", PUBLISHED_RUN)
+    selector = load_small_artifacts()
+    version = selector["feature_version"]
+    producer = selector["j04_pipeline_run_id"]
     result = independent_probe(source, snapshot, upstream, version, producer)
     assert result["producer"] == producer, "Published selector must identify the original producer"
-    if version == PUBLISHED_VERSION:
-        assert len(result["file_integrity"]) == 34, "Existing publication inventory changed"
     evidence = {
         "publication": result,
         "live_reuse_exercised": False,
@@ -105,9 +96,14 @@ validate_publication_namespace(c, config)
 source, snapshot, upstream_run = sys.argv[1:4]
 upstream = json.loads(c.read_remote(render_run_manifest_path(config.base_path, upstream_run)))
 expected = {'status': 'VALIDATED', 'source_version': source,
-    'source_snapshot_id': snapshot, 'pipeline_run_id': upstream_run, 'row_count': 914700,
+    'source_snapshot_id': snapshot, 'pipeline_run_id': upstream_run, 'row_count': 194100,
     'producer': 'warehouse-bigdata:enrichment-analytics-snapshot-v1'}
 assert all(upstream.get(k) == v for k, v in expected.items()), ('M04 fixture', upstream)
+from warehouse_bigdata.common.scope_evidence import read_scope, validate_scope_binding
+from warehouse_bigdata.common.hdfs_paths import render_curated_sales_enriched_path
+scope = read_scope(c, render_curated_sales_enriched_path(config.base_path, snapshot))
+assert scope['dataset_scope'] == 'demo_sample' and scope['selected_series_count'] == 100
+validate_scope_binding(upstream, scope)
 for run in sys.argv[4:]:
     base = render_staging_path(config.base_path, run)
     c.mkdir_exclusive(base)

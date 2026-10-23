@@ -24,9 +24,9 @@ else:  # Mounted standalone verification script; never import packaged T01 helpe
 ROOT = Path(__file__).resolve().parents[2]
 HDFS = "hdfs://hdfs-namenode:8020"
 MASTER = "spark://spark-master:7077"
-SERIES_COUNT = 30_490
-SOURCE_COUNT = SERIES_COUNT * 30
-FEATURE_COUNT = SERIES_COUNT * 2
+SERIES_COUNT = 100
+SOURCE_COUNT = SERIES_COUNT * 1941
+FEATURE_COUNT = SERIES_COUNT * (1941 - 28)
 FIRST_DATE = date(2011, 1, 29)
 SERIES_KEY = ["item_id", "store_id"]
 # Freeze v1.0 independently of T01 and the publisher's schema helper.
@@ -271,7 +271,7 @@ def artifact_inventory(client, root):
             assert (
                 status["type"] == "FILE"
                 and not pure.name.startswith(".")
-                and (pure.suffix == ".parquet" or pure.name == "_SUCCESS")
+                and (pure.suffix == ".parquet" or pure.name in {"_SUCCESS", "_scope.json"})
                 and type(status["length"]) is int
                 and status["length"] >= 0
             ), status
@@ -369,7 +369,7 @@ def check_frozen_execution(marker, sidecar, binding, quality, request, inventory
             "eligible_count": FEATURE_COUNT,
             "excluded_count": 0,
             "lookback_only_count": SERIES_COUNT * 28,
-            "role_counts": {"train": FEATURE_COUNT, "validation": 0, "test": 0},
+            "role_counts": {"train": 185700, "validation": 2800, "test": 2800},
             "persisted_parquet_validated": True,
         },
         "Full fixture persisted coverage",
@@ -425,7 +425,7 @@ def _publication_evidence(client, config, source_version, snapshot, upstream, ve
             "row_count": SOURCE_COUNT,
             "producer": "warehouse-bigdata:enrichment-analytics-snapshot-v1",
         },
-        "Selected M04 smoke J03 completion",
+        "Selected M5 Small J03 completion",
     )
     outputs = dict(
         zip(
@@ -436,6 +436,14 @@ def _publication_evidence(client, config, source_version, snapshot, upstream, ve
     )
     assert outputs.get("sales_enriched") == config.uri + source_path, outputs
     source_sidecar = read(source_path + "/_dataset_manifest.json")
+    from warehouse_bigdata.common.scope_evidence import read_scope, validate_scope_binding
+
+    scope = read_scope(
+        client, source_path, source_version=source_version, source_snapshot_id=snapshot
+    )
+    assert scope["dataset_scope"] == "demo_sample" and scope["selected_series_count"] == 100
+    assert read_scope(client, path) == scope, "J03/J04 frozen selection mismatch"
+    validate_scope_binding(source_marker, scope)
     _require(
         source_sidecar,
         {
@@ -474,6 +482,7 @@ def _publication_evidence(client, config, source_version, snapshot, upstream, ve
     )
     marker_bytes = client.read_remote(render_run_manifest_path(config.base_path, run))
     marker = json.loads(marker_bytes)
+    validate_scope_binding(marker, scope)
     _require(
         marker,
         {
@@ -648,7 +657,7 @@ def _verify_source(source):
         or_,
         [
             *[F.col(name).isNull() for name in SALES_ENRICHED.required_field_names],
-            ~F.col("day_index").between(1, 30),
+            ~F.col("day_index").between(1, 1941),
             ~F.col("day_key").eqNullSafe(F.concat(F.lit("d_"), F.col("day_index"))),
             ~F.col("date").eqNullSafe(F.date_add(F.lit(FIRST_DATE), F.col("day_index") - 1)),
             F.col("unit_sales") < 0,
@@ -672,8 +681,14 @@ def _verify_source(source):
     )
     _require(
         summary,
-        {"row_count": SOURCE_COUNT, "days": 30, "first_day": 1, "last_day": 30, "invalid_rows": 0},
-        "Persisted source must be exactly the d_1–d_30 smoke scope",
+        {
+            "row_count": SOURCE_COUNT,
+            "days": 1941,
+            "first_day": 1,
+            "last_day": 1941,
+            "invalid_rows": 0,
+        },
+        "Persisted source must retain the complete M5 Small history",
     )
     series = source.groupBy(*SERIES_KEY).agg(
         F.count("*").alias("observations"),
@@ -686,9 +701,9 @@ def _verify_source(source):
             F.count("*").alias("series_count"),
             F.count(
                 F.when(
-                    (F.col("observations") != 30)
-                    | (F.col("dates") != 30)
-                    | (F.col("days") != 30)
+                    (F.col("observations") != 1941)
+                    | (F.col("dates") != 1941)
+                    | (F.col("days") != 1941)
                     | (F.col("departments") != 1),
                     1,
                 )
@@ -708,7 +723,7 @@ def _verify_features(source, features, snapshot, version):
 
     actual_schema = tuple((field.name, field.dataType.simpleString()) for field in features.schema)
     assert actual_schema == FEATURE_SCHEMA, f"Frozen physical feature schema: {actual_schema}"
-    targets = [FIRST_DATE + timedelta(days=day - 1) for day in (29, 30)]
+    targets = [FIRST_DATE + timedelta(days=day - 1) for day in range(29, 1942)]
     weekday = F.pmod(F.dayofweek("target_date") + 5, F.lit(7)) + 1
     invalid = reduce(
         or_,
@@ -716,7 +731,10 @@ def _verify_features(source, features, snapshot, version):
             *[F.col(name).isNull() for name, _ in FEATURE_SCHEMA if name != "last_known_price"],
             F.col("source_snapshot_id") != snapshot,
             F.col("feature_version") != version,
-            F.col("feature_role") != "train",
+            F.col("feature_role")
+            != F.when(F.col("target_date") <= F.lit(FIRST_DATE + timedelta(days=1884)), "train")
+            .when(F.col("target_date") <= F.lit(FIRST_DATE + timedelta(days=1912)), "validation")
+            .otherwise("test"),
             ~F.col("target_date").isin(targets),
             F.col("as_of_date") != F.date_sub("target_date", 1),
             F.col("day_of_week") != weekday,
@@ -743,7 +761,7 @@ def _verify_features(source, features, snapshot, version):
             F.count(F.when(invalid, 1)).alias("invalid_rows"),
             *[
                 F.count(F.when(F.col("target_date") == target, 1)).alias(f"d_{day}")
-                for day, target in zip((29, 30), targets, strict=True)
+                for day, target in zip((29, 30), targets[:2], strict=True)
             ],
             F.count(F.when(F.col("price_missing"), 1)).alias("price_missing_rows"),
         )
@@ -753,7 +771,7 @@ def _verify_features(source, features, snapshot, version):
     _require(
         summary,
         {"row_count": FEATURE_COUNT, "invalid_rows": 0, "d_29": SERIES_COUNT, "d_30": SERIES_COUNT},
-        "Published smoke feature scope/invariants",
+        "Published M5 Small feature scope/invariants",
     )
     scoped_key = [
         "source_snapshot_id",
@@ -769,10 +787,10 @@ def _verify_features(source, features, snapshot, version):
             F.count("*").alias("rows"),
             F.countDistinct("target_date").alias("dates"),
         )
-        .where("rows != 2 OR dates != 2"),
-        "Each eligible series must have two target dates",
+        .where("rows != 1913 OR dates != 1913"),
+        "Each eligible series must retain all 1913 targets",
     )
-    observed = source.where(F.col("day_index").isin(29, 30)).select(
+    observed = source.where(F.col("day_index").between(29, 1941)).select(
         *SERIES_KEY,
         F.col("date").alias("target_date"),
         F.col("dept_id").alias("source_dept"),

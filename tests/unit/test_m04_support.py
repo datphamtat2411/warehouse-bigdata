@@ -21,115 +21,15 @@ from warehouse_bigdata.common.spark_hdfs_client import SparkHdfsCliClient
 HDFS_CONFIG = HDFSConfig("hdfs://hdfs-namenode:8020", "/data/warehouse")
 
 
-def _benchmark_report(
-    statuses: dict[str, str] | None = None, *, overall_status: str | None = None
-) -> dict[str, object]:
-    statuses = statuses or {}
-    cases = [
-        {"case": label, "status": statuses.get(label, "VALIDATED")}
-        for label in m04_support.EXPECTED_BENCHMARK_CASES
-    ]
-    if overall_status is None:
-        overall_status = (
-            "VALIDATED"
-            if all(case["status"] == "VALIDATED" for case in cases)
-            else "COMPLETED_WITH_FAILURES"
-        )
-    return {"status": overall_status, "cases": cases}
-
-
-def test_benchmark_report_accepts_all_validated_cases() -> None:
-    report = _benchmark_report()
-
-    m04_support.validate_benchmark_report(report)
-
-    assert report["status"] == "VALIDATED"
-
-
-def test_benchmark_report_accepts_visible_partial_failures() -> None:
-    failed_cases = {"chunk-256", "aqe-off"}
-    report = _benchmark_report({label: "FAILED" for label in failed_cases})
-
-    m04_support.validate_benchmark_report(report)
-
-    assert report["status"] == "COMPLETED_WITH_FAILURES"
-    assert {case["case"] for case in report["cases"] if case["status"] == "FAILED"} == failed_cases
-
-
-def test_benchmark_report_rejects_all_failed_cases() -> None:
-    report = _benchmark_report({label: "FAILED" for label in m04_support.EXPECTED_BENCHMARK_CASES})
-
-    with pytest.raises(VerificationError):
-        m04_support.validate_benchmark_report(report)
-
-
-def test_benchmark_report_rejects_failed_baseline_with_successful_comparisons() -> None:
-    report = _benchmark_report({"baseline": "FAILED"})
-
-    with pytest.raises(VerificationError):
-        m04_support.validate_benchmark_report(report)
-
-
-def test_benchmark_report_rejects_successful_baseline_with_failed_comparisons() -> None:
-    report = _benchmark_report(
-        {label: "FAILED" for label in m04_support.EXPECTED_BENCHMARK_CASES if label != "baseline"}
-    )
-
-    with pytest.raises(VerificationError):
-        m04_support.validate_benchmark_report(report)
-
-
-def test_benchmark_report_rejects_missing_case() -> None:
-    report = _benchmark_report()
-    cases = report["cases"]
-    assert isinstance(cases, list)
-    cases.pop()
-
-    with pytest.raises(VerificationError):
-        m04_support.validate_benchmark_report(report)
-
-
-def test_benchmark_report_rejects_duplicate_case_identity() -> None:
-    report = _benchmark_report()
-    cases = report["cases"]
-    assert isinstance(cases, list)
-    cases[-1]["case"] = cases[0]["case"]
-
-    with pytest.raises(VerificationError):
-        m04_support.validate_benchmark_report(report)
-
-
-def test_benchmark_report_rejects_unexpected_case_identity() -> None:
-    report = _benchmark_report()
-    cases = report["cases"]
-    assert isinstance(cases, list)
-    cases[-1]["case"] = "unexpected"
-
-    with pytest.raises(VerificationError):
-        m04_support.validate_benchmark_report(report)
-
-
-@pytest.mark.parametrize(
-    ("statuses", "overall_status"),
-    [
-        ({}, "COMPLETED_WITH_FAILURES"),
-        ({"chunk-256": "FAILED"}, "VALIDATED"),
-    ],
-)
-def test_benchmark_report_rejects_inconsistent_overall_status(
-    statuses: dict[str, str], overall_status: str
-) -> None:
-    report = _benchmark_report(statuses, overall_status=overall_status)
-
-    with pytest.raises(VerificationError):
-        m04_support.validate_benchmark_report(report)
-
-
-def test_benchmark_report_rejects_unknown_case_status() -> None:
-    report = _benchmark_report({"chunk-256": "UNKNOWN"}, overall_status="COMPLETED_WITH_FAILURES")
-
-    with pytest.raises(VerificationError):
-        m04_support.validate_benchmark_report(report)
+def test_retired_heavy_runners_are_not_callable():
+    for name in (
+        "prepare_source",
+        "run_case",
+        "run_correctness",
+        "run_smoke",
+        "run_benchmark_matrix",
+    ):
+        assert not hasattr(m04_support, name)
 
 
 def test_m04_event_collection_accepts_measured_scale_with_its_own_finite_bound(
@@ -466,30 +366,3 @@ def test_retry_event_directory_reuses_one_run_namespace_without_touching_snapsho
         HDFS_CONFIG.uri + initial,
         HDFS_CONFIG.uri + retry,
     ]
-
-
-def test_run_correctness_validates_event_paths_before_source_profiling(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    events: list[str] = []
-    monkeypatch.setattr(m04_support, "load_hdfs_config", lambda: HDFS_CONFIG)
-    monkeypatch.setattr(
-        m04_support,
-        "_validate_case_event_directories",
-        lambda *args, **kwargs: events.append("paths"),
-    )
-    monkeypatch.setattr(
-        m04_support,
-        "prepare_source",
-        lambda *args, **kwargs: events.append("source") or {},
-    )
-    monkeypatch.setattr(
-        m04_support,
-        "run_case",
-        lambda *args, **kwargs: events.append("case") or {"status": "VALIDATED"},
-    )
-
-    m04_support.run_correctness(SimpleNamespace(), tmp_path)
-
-    assert events == ["paths", "source", "case"]

@@ -100,6 +100,9 @@ def test_oracle_hand_calculation_and_point_in_time(spark):
         ("month", "1"),
         ("is_weekend", "false"),
         ("rolling_mean_28", "CAST('Infinity' AS DOUBLE)"),
+        ("rolling_mean_7", "CAST('Infinity' AS DOUBLE)"),
+        ("rolling_mean_7", "CAST('-Infinity' AS DOUBLE)"),
+        ("rolling_mean_28", "CAST('NaN' AS DOUBLE)"),
     ],
 )
 def test_oracle_rejects_semantic_corruption(spark, field, value):
@@ -361,10 +364,14 @@ def test_incomplete_run_cannot_launch_driver(monkeypatch):
 def test_published_test_never_submits(monkeypatch, tmp_path):
     from tests.integration import test_feature_snapshot as acceptance
 
-    for key, value in zip(acceptance.SOURCE_KEYS, ("s", "snap", "up"), strict=True):
-        monkeypatch.setenv(key, value)
-    monkeypatch.delenv("WAREHOUSE_M05_PUBLISHED_FEATURE_VERSION", raising=False)
-    monkeypatch.delenv("WAREHOUSE_M05_PUBLISHED_RUN_ID", raising=False)
+    selected = dict(
+        source_version="s",
+        source_snapshot_id="snap",
+        j03_pipeline_run_id="up",
+        feature_version="small-version",
+        j04_pipeline_run_id="small-producer",
+    )
+    monkeypatch.setattr(acceptance, "load_small_artifacts", lambda: selected)
     monkeypatch.setattr(acceptance, "submit", lambda *a, **k: pytest.fail("Unexpected submission"))
     calls = []
 
@@ -376,9 +383,8 @@ def test_published_test_never_submits(monkeypatch, tmp_path):
     acceptance.test_published_feature_snapshot(tmp_path)
     evidence = json.loads((tmp_path / "j04-published-evidence.json").read_text())
     assert evidence["live_reuse_exercised"] is False
-    assert calls[0][3:5] == (acceptance.PUBLISHED_VERSION, acceptance.PUBLISHED_RUN)
-    monkeypatch.setenv("WAREHOUSE_M05_PUBLISHED_FEATURE_VERSION", "one-shot-version")
-    monkeypatch.setenv("WAREHOUSE_M05_PUBLISHED_RUN_ID", "one-shot-producer")
+    assert calls[0][3:5] == ("small-version", "small-producer")
+    selected.update(feature_version="one-shot-version", j04_pipeline_run_id="one-shot-producer")
     acceptance.test_published_feature_snapshot(tmp_path)
     assert calls[1][3:5] == ("one-shot-version", "one-shot-producer")
 
@@ -421,18 +427,18 @@ def frozen_documents():
             "source_version": "source",
             "source_snapshot_id": "snapshot",
             "pipeline_run_id": "upstream",
-            "row_count": 914700,
+            "row_count": 194100,
             "upstream_pipeline_run_id": "raw-run",
         },
     }
     metrics = {
-        "row_count": 60980,
-        "observed_count": 914700,
-        "candidate_count": 60980,
-        "eligible_count": 60980,
+        "row_count": 191300,
+        "observed_count": 194100,
+        "candidate_count": 191300,
+        "eligible_count": 191300,
         "excluded_count": 0,
-        "lookback_only_count": 853720,
-        "role_counts": {"train": 60980, "validation": 0, "test": 0},
+        "lookback_only_count": 2800,
+        "role_counts": {"train": 185700, "validation": 2800, "test": 2800},
         "persisted_parquet_validated": True,
         "required_field_null_counts": {
             n: 0 for n, _ in support.FEATURE_SCHEMA if n != "last_known_price"
@@ -452,7 +458,7 @@ def frozen_documents():
         **common,
         "schema_version": "feature-dataset-manifest-v1",
         "input_binding": binding,
-        "row_count": 60980,
+        "row_count": 191300,
     }
     quality = {
         **binding,
@@ -478,7 +484,7 @@ def frozen_documents():
         "schema_fingerprint": common["schema_fingerprint"],
         "status": "VALIDATED",
         "producer": "warehouse-bigdata:feature-snapshot",
-        "row_count": 60980,
+        "row_count": 191300,
         "coverage_and_exclusion_counts": json.dumps(coverage),
         "required_field_null_counts": json.dumps(metrics["required_field_null_counts"]),
     }

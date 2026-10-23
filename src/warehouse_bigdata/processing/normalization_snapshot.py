@@ -32,6 +32,12 @@ from warehouse_bigdata.common.hdfs_paths import (
 from warehouse_bigdata.common.hdfs_publication import stage_publication
 from warehouse_bigdata.common.hdfs_runtime import create_hdfs_cli_client
 from warehouse_bigdata.common.revision import get_code_revision
+from warehouse_bigdata.common.scope_evidence import (
+    bind_scope,
+    read_scope,
+    write_scope,
+)
+from warehouse_bigdata.contracts.dataset_scope import DEMO_SAMPLE, require_scope_execution
 from warehouse_bigdata.contracts.datasets import SALES_DAILY
 from warehouse_bigdata.contracts.manifests import FAILED, PIPELINE_RUN_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import ContractValidationError, validate_manifest
@@ -43,6 +49,11 @@ from warehouse_bigdata.ingestion.hdfs_raw import (
 from warehouse_bigdata.ingestion.m5_source import (
     REFERENCE_EVALUATION_DAYS,
     REFERENCE_EVALUATION_SERIES,
+)
+from warehouse_bigdata.processing.m5_selection import (
+    filter_selected_wide,
+    resolve_scope,
+    validate_scope_population,
 )
 from warehouse_bigdata.processing.sales_normalization import (
     NormalizationError,
@@ -77,7 +88,7 @@ class NormalizationSnapshotConfig:
     """Bounded full-history configuration and measured cardinality expectations."""
 
     days_per_chunk: int = 128
-    expected_series_count: int = REFERENCE_EVALUATION_SERIES
+    expected_series_count: int = 100
     expected_day_count: int = REFERENCE_EVALUATION_DAYS
     expected_row_count: int | None = None
 
@@ -237,9 +248,12 @@ def run_normalization_snapshot(
     config: NormalizationSnapshotConfig | None = None,
     now: Callable[[], str] | None = None,
     defer_publication: bool = False,
+    dataset_scope: str = DEMO_SAMPLE,
+    confirm_large_workload: bool = False,
 ) -> NormalizationSnapshotResult:
     """Normalize validated HDFS M5 sources into one immutable curated snapshot."""
     validate_normalization_identifiers(source_version, source_snapshot_id, pipeline_run_id)
+    require_scope_execution(dataset_scope, confirm_large_workload=confirm_large_workload)
     if spark_master is not None:
         if not isinstance(spark_master, str) or not spark_master.startswith("spark://"):
             raise NormalizationSnapshotError(
@@ -250,7 +264,10 @@ def run_normalization_snapshot(
             raise NormalizationSnapshotError(
                 f"Spark master mismatch: expected {spark_master!r}, received {actual_master!r}"
             )
-    selected_config = config or NormalizationSnapshotConfig()
+    selected_config = config or NormalizationSnapshotConfig(
+        expected_series_count=100 if dataset_scope == DEMO_SAMPLE else REFERENCE_EVALUATION_SERIES
+    )
+    _validate_scope_config(selected_config, dataset_scope)
     timestamp = _utc_now if now is None else now
     started_at = time.perf_counter()
     timings: dict[str, float] = {}
@@ -283,6 +300,21 @@ def run_normalization_snapshot(
 
         phase_started = time.perf_counter()
         sales_wide, calendar = _read_validated_sources(spark, hdfs_config, raw_snapshot)
+        sales_wide, scope = _prepare_scoped_wide(
+            spark,
+            hdfs,
+            hdfs_config,
+            sales_wide,
+            staging_path=staging_path,
+            source_version=source_version,
+            source_snapshot_id=source_snapshot_id,
+            dataset_scope=dataset_scope,
+        )
+        if _exists(hdfs, curated_path):
+            if read_scope(hdfs, curated_path) != scope:
+                raise NormalizationSnapshotError(
+                    "immutable curated selection differs from this run"
+                )
         timings["source_read_seconds"] = time.perf_counter() - phase_started
 
         chunk_metrics_list: list[NormalizationMetrics] = []
@@ -407,6 +439,7 @@ def run_normalization_snapshot(
                     created_at=timestamp(),
                 )
 
+            write_scope(hdfs, render_normalization_candidate_path(staging_path), scope)
             if defer_publication:
                 status = "STAGED"
             else:
@@ -454,6 +487,19 @@ def run_normalization_snapshot(
                     status = "REUSED"
 
         timings["compaction_seconds"] = time.perf_counter() - compaction_started
+        validate_scope_population(
+            _read_parquet(
+                spark,
+                _hdfs_uri(
+                    hdfs_config.uri,
+                    curated_path
+                    if _exists(hdfs, curated_path)
+                    else render_normalization_candidate_path(staging_path),
+                ),
+            ),
+            scope,
+            complete_history=True,
+        )
         _write_quality_report(
             hdfs,
             quality_path,
@@ -486,6 +532,7 @@ def run_normalization_snapshot(
             status=VALIDATED,
             code_revision=code_revision,
         )
+        manifest = bind_scope(manifest, scope)
         if defer_publication:
             stage_publication(hdfs, hdfs_config, manifest, result_status="VALIDATED")
             manifest_path = None
@@ -575,6 +622,103 @@ def _read_validated_sources(
         reader.csv(f"{raw_uri}/sales_train_evaluation.csv"),
         reader.csv(f"{raw_uri}/calendar.csv"),
     )
+
+
+def _prepare_scoped_wide(
+    spark,
+    hdfs,
+    hdfs_config,
+    sales_wide,
+    *,
+    staging_path,
+    source_version,
+    source_snapshot_id,
+    dataset_scope,
+):
+    """Freeze one filtered-wide checkpoint; chunk actions never reparse the full CSV."""
+    from warehouse_bigdata.common.hdfs_publication import document_digest
+    from warehouse_bigdata.contracts.dataset_scope import validate_scope
+
+    root = staging_path + "/filtered_wide"
+    scope_path = staging_path + "/_scope.json"
+    if _exists(hdfs, scope_path):
+        scope = read_scope(
+            hdfs, staging_path, source_version=source_version, source_snapshot_id=source_snapshot_id
+        )
+        if scope["dataset_scope"] != dataset_scope:
+            raise NormalizationSnapshotError("staging scope differs from requested execution")
+    else:
+        scope = resolve_scope(
+            sales_wide,
+            source_version=source_version,
+            source_snapshot_id=source_snapshot_id,
+            dataset_scope=dataset_scope,
+        )
+        write_scope(hdfs, staging_path, scope)
+    validate_scope(scope)
+    uri = _hdfs_uri(hdfs_config.uri, root)
+    binding_path = root + "/_wide_manifest.json"
+    if _exists(hdfs, root):
+        if not _exists(hdfs, binding_path):
+            # Preserve incomplete run-owned state; a new attempt is safe and explicit.
+            raise NormalizationSnapshotError(
+                "incomplete filtered-wide checkpoint; preserve it and use a new run ID"
+            )
+        binding = _read_json(hdfs, binding_path, "filtered-wide checkpoint")
+        if binding.get("selection_digest") != scope["selection_digest"]:
+            raise NormalizationSnapshotError("filtered-wide checkpoint selection mismatch")
+        frame = spark.read.parquet(uri)
+        if binding.get("schema") != frame.schema.simpleString() or binding.get(
+            "files"
+        ) != _wide_inventory(hdfs, root):
+            raise NormalizationSnapshotError("filtered-wide checkpoint integrity mismatch")
+    else:
+        selected = filter_selected_wide(sales_wide, scope)
+        from pyspark import StorageLevel
+
+        selected = selected.persist(StorageLevel.DISK_ONLY)
+        validate_scope_population(selected, scope, wide=True)
+        selected.coalesce(2).write.mode("errorifexists").option("compression", "snappy").parquet(
+            uri
+        )
+        frame = spark.read.parquet(uri)
+        if frame.exceptAll(selected).unionByName(selected.exceptAll(frame)).limit(1).count():
+            raise NormalizationSnapshotError(
+                "filtered-wide independent source reconciliation failed"
+            )
+        selected.unpersist()
+        _write_json_once(
+            hdfs,
+            binding_path,
+            dict(
+                schema_version="filtered-wide-v1",
+                selection_digest=scope["selection_digest"],
+                scope_digest=document_digest(scope),
+                schema=frame.schema.simpleString(),
+                files=_wide_inventory(hdfs, root),
+            ),
+        )
+    validate_scope_population(frame, scope, wide=True)
+    return frame, scope
+
+
+def _validate_scope_config(config, dataset_scope):
+    if config.expected_day_count != 1941 or config.expected_series_count != (
+        100 if dataset_scope == DEMO_SAMPLE else REFERENCE_EVALUATION_SERIES
+    ):
+        raise NormalizationSnapshotError(
+            "operational scope requires complete 1941-day demo/full population"
+        )
+
+
+def _wide_inventory(hdfs, root):
+    paths = sorted(p for p in hdfs.list_children(root) if p.endswith(".parquet"))
+    if not paths or len(paths) > 32:
+        raise NormalizationSnapshotError("filtered-wide checkpoint has invalid file layout")
+    checksums = hdfs.checksums(paths)
+    if set(checksums) != set(paths) or not all(checksums.values()):
+        raise NormalizationSnapshotError("filtered-wide checkpoint checksums incomplete")
+    return [{"path": p.rsplit("/", 1)[1], "checksum": checksums[p]} for p in paths]
 
 
 def _stage_or_verify_chunk(
@@ -1077,7 +1221,7 @@ def _materialize_candidate(
         ((F.col("day_index") - F.lit(1)) / F.lit(_COMPACTION_DAYS_PER_BUCKET)).cast("int"),
     )
     compacted = bucketed.repartition(
-        _COMPACTION_PARTITION_COUNT,
+        4 if expected_metrics.series_count == 100 else _COMPACTION_PARTITION_COUNT,
         _COMPACTION_BUCKET_FIELD,
     ).drop(_COMPACTION_BUCKET_FIELD)
     _write_parquet_once(spark, compacted, candidate_temp_uri)
@@ -1201,7 +1345,9 @@ def _write_dataset_manifest(
             "max_records_per_file": _MAX_RECORDS_PER_FILE,
             "coarse_partition": "day_index",
             "coarse_partition_bucket_days": _COMPACTION_DAYS_PER_BUCKET,
-            "coarse_partition_count": _COMPACTION_PARTITION_COUNT,
+            "coarse_partition_count": 4
+            if metrics.series_count == 100
+            else _COMPACTION_PARTITION_COUNT,
         },
         "persisted_parquet_validated": True,
         "created_at": created_at,
@@ -1259,7 +1405,9 @@ def _validate_dataset_manifest(
             "max_records_per_file": _MAX_RECORDS_PER_FILE,
             "coarse_partition": "day_index",
             "coarse_partition_bucket_days": _COMPACTION_DAYS_PER_BUCKET,
-            "coarse_partition_count": _COMPACTION_PARTITION_COUNT,
+            "coarse_partition_count": 4
+            if expected_metrics.series_count == 100
+            else _COMPACTION_PARTITION_COUNT,
         }
         or manifest.get("persisted_parquet_validated") is not True
     ):

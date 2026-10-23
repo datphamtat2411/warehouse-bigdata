@@ -111,9 +111,9 @@ The seven values and total are explicitly **forecasts**. If M5 sales were censor
 
 ### 3.3. Scope of coverage
 
-- The data pipeline processes the full canonical history subject to the verified ETL contract.
-- Model training may use a smaller, justified, reproducible subset of eligible historical rows.
-- Forecast generation should **attempt broad coverage** of item–store pairs with sufficient history and valid features, starting with a pilot population and expanding only after a measured runtime test.
+- The data pipeline processes all 1,941 days of the frozen M5 Small 100-series population.
+- Model training uses at most 10,000 reproducibly stratified eligible training observations.
+- Forecast generation attempts the same frozen ten-SKU × ten-store population, with explicit eligibility exclusions and no independent cohort expansion.
 - A forecast is not fabricated for unsupported, inactive or invalid series. Dashboard selections must expose a clear Vietnamese unsupported-coverage message.
 - Coverage (`series_total`, `series_eligible`, `series_scored`, and `series_not_scored_by_reason`) is mandatory run metadata.
 
@@ -229,11 +229,11 @@ Price may legitimately be unavailable for some lifecycle periods. Prefer `last_k
 
 **Lifecycle limitation:** Long zero-sales stretches may reflect poor demand, a product not yet offered, or unknown availability. M5 alone cannot resolve all cases. A sensitivity check may compare results with and without clearly documented inactive-series exclusions, but must never silently delete inconvenient zeros.
 
-### 6.2. Full-data ETL versus sampled ML fitting
+### 6.2. M5 Small ETL versus sampled ML fitting
 
 | Quantity | What it measures | How reported |
 |---|---|---|
-| `full_curated_rows` | All normalized daily M5 observations kept in the canonical pipeline | Expected reference: 59,181,090 for full evaluation history; verify actual count |
+| `scoped_curated_rows` | Frozen `demo_sample` observations retained for all historical days | Exactly 194,100; original full-M5 59,181,090 remains optional/reference |
 | `feature_eligible_rows` | Historical rows with sufficient lookback and required known features | Count from feature job |
 | `training_rows` | Rows actually passed to RF model fit | Count and subset manifest |
 | `validation_forecast_rows` | Seven-step predictions scored for all validation issue dates | Count and coverage |
@@ -244,7 +244,13 @@ Price may legitimately be unavailable for some lifecycle periods. Prefer `last_k
 
 ### 6.3. Representative training sample
 
-The initial **engineering target**, not an achieved or fixed benchmark, is around **100,000–300,000 training rows**, with later scaling driven by measured training time, memory use and accuracy.
+Standard real-data training uses the frozen **ten-SKU × ten-store** M5 Small population,
+with a maximum **10,000 eligible training rows** and sampling seed **42**. Preserve the
+global Spark MLlib Random Forest and fitted preprocessing/feature order. The sampler
+reserves one row per occupied store/department/year-quarter/zero-label/volume-tertile
+stratum before largest-remainder quotas. It fails with cap, occupied-stratum and eligible-row
+counts when infeasible; no strata are silently dropped. With ten items, at most 4,200
+such strata can be occupied in the locked training period, but measured counts govern.
 
 Requirements for the selected rows:
 
@@ -322,6 +328,16 @@ Do not replace the recursive inference engine with this code; it is only for tra
 ---
 
 ## 8. Time-Based Experimental Protocol
+
+All real-M5 model fitting, validation, test evaluation and forward forecasting use the
+same frozen `demo_sample` selection. Keep full history d_1–d_1941, a 28-day lookback,
+training d_29–d_1885, validation d_1886–d_1913 and test d_1914–d_1941. Preserve the
+four validation and four test origins below, paired seasonal-naïve comparison, MAE,
+RMSE, WAPE, coverage/exclusions, and model freeze before test. Seven recursive steps
+feed back preceding **unrounded** predictions, never future observed sales. Forward
+issue d_1941 has at most 700 rows and no available realized labels in this source.
+Metrics must identify `demo_sample` and cannot establish full-M5 accuracy or catalog-wide
+generalization. Scope selection uses metadata only; training strata use training labels only.
 
 ### 8.1. The locked development/test division
 
@@ -895,7 +911,7 @@ A model-run manifest should contain at least:
 3. **Price imputation availability:** Validate missingness and as-of join cardinality before applying the proposed fitted imputer.
 4. **Known future events:** Decide which exact calendar fields are legitimately known at forecast issuance; omit uncertain future event features.
 5. **Pilot RF hyperparameters:** Freeze the selected baseline from actual validation evidence, then record it in the run manifest.
-6. **Final inference population:** Decide all eligible 30,490 series versus a documented subset based on measured runtime and demo coverage.
+6. **Final inference population (decided):** frozen `demo_sample` ten SKUs × ten stores = 100 intended series. J06 does not reselect 100 unrelated SKUs; eligibility determines actual coverage, at most 700 forward rows. Optional full-mode compatibility is explicitly authorized only.
 7. **Final model release policy:** Choose between no refit or predeclared train+validation refit before opening locked test outcomes.
 8. **Physical artifact paths:** Align with approved HDFS zones and ClickHouse publication interface without duplicating source-of-truth roles.
 

@@ -1,70 +1,39 @@
-"""Explicitly gated, bounded M04 workload comparison."""
-
-from __future__ import annotations
+"""One explicitly authorized serial small workflow; no benchmark matrix."""
 
 import os
+from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
-from tests.integration.hdfs_support import HDFSVerification
-from tests.integration.m04_support import (
-    PERFORMANCE_ENV,
-    run_benchmark_matrix,
-    validate_benchmark_report,
-)
+from tests.integration.small_support import readback
+from warehouse_bigdata.common.small_artifacts import load_small_artifacts, validate_small_artifacts
+from warehouse_bigdata.common.small_demo import run_live
 
-pytestmark = pytest.mark.integration
-
-if os.environ.get(PERFORMANCE_ENV) != "1":
-    pytestmark = [
-        pytest.mark.integration,
-        pytest.mark.skip(reason=f"Set {PERFORMANCE_ENV}=1 to run the bounded benchmark matrix."),
-    ]
-elif not all(
-    (os.environ.get("WAREHOUSE_M5_SOURCE_DIR"), os.environ.get("WAREHOUSE_M5_SOURCE_URL"))
-):
-    pytestmark = [
-        pytest.mark.integration,
-        pytest.mark.skip(
-            reason="Set WAREHOUSE_M5_SOURCE_DIR and WAREHOUSE_M5_SOURCE_URL for live M04 performance."
-        ),
-    ]
+pytestmark = [pytest.mark.integration, pytest.mark.small_acceptance]
 
 
-def test_bounded_m04_benchmark_matrix_retains_measured_results(
-    tmp_path, hdfs: HDFSVerification
-) -> None:
-    report = run_benchmark_matrix(hdfs, tmp_path)
-
-    assert len(report["cases"]) == 7
-    assert report["workload"]["expected_row_count"] == 30_490 * 128
-    validate_benchmark_report(report)
-    assert all(
-        "case" in case
-        and "status" in case
-        and "elapsed_seconds" in case
-        and "configuration" in case
-        and "storage" in case
-        and "worker_metrics" in case
-        for case in report["cases"]
+def test_small_distributed_acceptance_with_actual_measurements(tmp_path):
+    stages = os.environ.get("WAREHOUSE_SMALL_STAGES", "").split()
+    if not stages:
+        pytest.fail(
+            "Set WAREHOUSE_SMALL_STAGES to explicitly authorized serial stages; existing upstream artifacts are reused"
+        )
+    selector = load_small_artifacts(allow_unresolved="j02" in stages)
+    validate_small_artifacts(selector, through="test", allow_unresolved="j02" in stages)
+    report = run_live(
+        selector,
+        stages=stages,
+        authorize=True,
+        evidence_dir=Path("artifacts/small-demo") / uuid4().hex,
     )
-    for case in report["cases"]:
-        if case["status"] != "VALIDATED":
-            assert "error" in case
-            continue
-        assert case["configuration"]["expected_row_count"] == 30_490 * 128
-        assert case["configuration"]["chunk_count"] >= 1
-        for phase in ("normalization", "enrichment", "verification"):
-            execution = case["worker_metrics"][phase]
-            assert execution["successful_tasks"] > 0
-            assert set(execution["workers"]) == {"spark-worker-1", "spark-worker-2"}
-            assert execution["execution_metrics"]["shuffle_read_bytes"] >= 0
-            assert execution["execution_metrics"]["memory_spill_bytes"] >= 0
-            assert execution["execution_metrics"]["disk_spill_bytes"] >= 0
-        for output in case["storage"].values():
-            assert output["file_count"] > 0
-            assert output["total_bytes"] > 0
-            assert (
-                output["size_distribution"]["max_bytes"] >= output["size_distribution"]["min_bytes"]
-            )
-    print("M04 benchmark report: artifacts/m04/benchmark/report.json")
+    assert report["status"] == "EXECUTED_PENDING_INDEPENDENT_READBACK"
+    for measured in report["stages"].values():
+        assert measured["elapsed_seconds"] > 0
+        assert set(measured["execution"]["workers"]) == {"spark-worker-1", "spark-worker-2"}
+    readback_report = readback(tmp_path, through="test", selector=selector)
+    assert readback_report["status"] == "VALIDATED"
+    assert readback_report["verified_through"] == "test"
+    assert readback_report["model"]["reloaded"] is True
+    for artifact in ("features", "forecast", "validation", "test"):
+        assert artifact in readback_report

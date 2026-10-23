@@ -213,7 +213,10 @@ the other's bounded filesystem. Full-history peak spill, skew, inode usage,
 concurrent-driver pressure, native-temp capacity and driver `/tmp` remain workload
 resource risks requiring measurement.
 
-### Live verification record — 2026-10-22
+### Historical live verification record — 2026-10-22 (M04 workflow retired)
+
+The M04 commands and counts below are historical evidence only. Do not rerun the
+retired 30-day workflow. Current operations use [M5 Small](../../docs/SMALL_DEMO_MODE.md).
 
 - Focused offline scratch/health/lifecycle/submission tests: **126 passed**.
   The follow-up M04 evidence/verification/smoke regressions: **160 passed**.

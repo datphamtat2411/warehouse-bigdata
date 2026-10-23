@@ -69,6 +69,7 @@ def spark():
         .appName("warehouse-bigdata-scoring-feature-tests")
         .config("spark.ui.enabled", "false")
         .config("spark.sql.shuffle.partitions", "2")
+        .config("spark.sql.session.timeZone", "UTC")
         .getOrCreate()
     )
     yield session

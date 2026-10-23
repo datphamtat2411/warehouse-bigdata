@@ -34,7 +34,7 @@ def run_verify_m04_outputs(
     pipeline_run_id: str,
     hdfs_uri: str,
     spark_master: str,
-    expected_series_count: int = 30_490,
+    expected_series_count: int = 100,
     expected_day_count: int = 1_941,
     event_log_dir: str | None = None,
 ) -> dict[str, object]:
@@ -129,7 +129,7 @@ def main() -> None:
     parser.add_argument("--pipeline-run-id", required=True, metavar="ID")
     parser.add_argument("--hdfs-uri", required=True, metavar="HDFS_URI")
     parser.add_argument("--spark-master", required=True, metavar="SPARK_URI")
-    parser.add_argument("--expected-series-count", type=int, default=30_490, metavar="COUNT")
+    parser.add_argument("--expected-series-count", type=int, default=100, metavar="COUNT")
     parser.add_argument("--expected-day-count", type=int, default=1_941, metavar="DAYS")
     parser.add_argument("--event-log-dir", metavar="HDFS_URI")
     args = parser.parse_args()

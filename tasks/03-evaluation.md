@@ -24,10 +24,10 @@ Task-specific constraints:
 - use the T01 fitted model without refitting or tuning; validation is diagnostic, and test outcomes never influence configuration, sampling or model selection;
 - each issue T predicts `T+1..T+7` without consuming actuals after T; join future labels only for scoring; later origins may use observations already known at that later issue;
 - seasonal naïve for horizon h is observed sales at `T+h-7`, never predicted or future actual sales;
-- use the T02 fixed cohort and existing eligibility rules; paired metrics use the intersection of valid outcomes and retain explicit dropped-series counts;
+- use the same frozen M5 Small ten-SKU × ten-store cohort (`demo_sample`, validated selection digest) and existing eligibility rules; paired metrics use the intersection of valid outcomes and retain explicit dropped-series counts;
 - compute MAE, RMSE and WAPE from paired aggregates, pooled (`horizon=0`) and for horizons 1–7; pooled WAPE uses sums, and a zero actual denominator yields null;
 - honor `(evaluation_run_id, holdout_id, method_id, metric_name, horizon)` uniqueness and existing model/forecast lineage; label validation and test distinctly;
-- preserve negative or inconclusive comparisons; do not claim RF superiority, actual demand, or inventory-policy improvements.
+- label all metrics `demo_sample`; preserve negative or inconclusive comparisons and never describe sample accuracy as full-M5 or catalog-wide generalization evidence.
 
 Out of scope:
 - training, tuning, alternate models, T02 inference redesign or J04 changes;

@@ -15,7 +15,7 @@ Read only the relevant sections of:
 
 Plan these capabilities:
 - load an explicitly selected, validated T01 `PipelineModel` and J03 snapshot; reject incompatible schema or lineage;
-- fix a deterministic 100-SKU × ten-store cohort using training-era information; record exclusions and selection evidence;
+- consume the frozen M5 Small ten-SKU × ten-store selection from upstream scope evidence; validate its digest without resampling. Intended population is 100 series and at most 700 daily forecast rows, with explicit eligibility exclusions;
 - reuse `prepare_as_of_history()` and `build_scoring_features()` for seven Spark-batched recursive horizons;
 - publish validated `FORECAST_DAILY` v1 Parquet, coverage/exclusions and Contract v1 `FORECAST_MANIFEST` on immutable HDFS paths.
 

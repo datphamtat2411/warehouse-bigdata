@@ -312,18 +312,68 @@ def test_j04_frozen_recovery_skips_driver_and_retains_exact_binding(sandbox):
     assert "historical_v1" in runs(sandbox)[0]
 
 
+@pytest.mark.parametrize("job", ["normalize_sales_daily", "enrich_analytics"])
+@pytest.mark.parametrize("equals", [False, True])
+def test_j02_j03_verified_recovery_never_starts_another_event_log(sandbox, job, equals):
+    sandbox["env"]["TEST_PUBLICATION_STATUS"] = "10"
+    binding = {
+        "pipeline-run-id": "frozen-001",
+        "source-version": "sha256:" + "a" * 64,
+        "source-snapshot-id": "small-snapshot",
+    }
+    arguments = [
+        value
+        for key, item in binding.items()
+        for value in ([f"--{key}={item}"] if equals else [f"--{key}", item])
+    ]
+    result = invoke(sandbox, "--", f"warehouse_bigdata/jobs/{job}.py", *arguments)
+    assert result.returncode == 0, result.stderr
+    assert len(runs(sandbox)) == 1
+    recovery = runs(sandbox)[0]
+    assert "warehouse_bigdata.common.hdfs_publication" in recovery
+    assert "--skip-completed-driver" in recovery
+    assert recovery[recovery.index("--job-name") + 1] == job
+    for key in ("source-version", "source-snapshot-id"):
+        assert (
+            f"--{key}={binding[key]}" in recovery
+            if equals
+            else recovery[recovery.index("--" + key) + 1] == binding[key]
+        )
+    assert_cluster_untouched(sandbox)
+
+
 @pytest.mark.parametrize("status", [0, 10, 17])
 def test_m06_launcher_owner_recovery_binding_and_failure_status(sandbox, status):
     sandbox["env"]["TEST_PUBLICATION_STATUS"] = str(status)
-    binding = ["--pipeline-run-id", "j05-001", "--model-run-id", "rf-001",
-               "--source-version", "sha256:" + "a" * 64, "--source-snapshot-id", "snapshot",
-               "--upstream-pipeline-run-id", "j04-001", "--feature-version", "historical_v1",
-               "--training-cap", "10000", "--sampling-seed", "42",
-               "--resource-justification", "initial pilot", "--hdfs-uri", "hdfs://hdfs-namenode:8020",
-               "--spark-master", "spark://spark-master:7077"]
+    binding = [
+        "--pipeline-run-id",
+        "j05-001",
+        "--model-run-id",
+        "rf-001",
+        "--source-version",
+        "sha256:" + "a" * 64,
+        "--source-snapshot-id",
+        "snapshot",
+        "--upstream-pipeline-run-id",
+        "j04-001",
+        "--feature-version",
+        "historical_v1",
+        "--training-cap",
+        "10000",
+        "--sampling-seed",
+        "42",
+        "--resource-justification",
+        "initial pilot",
+        "--hdfs-uri",
+        "hdfs://hdfs-namenode:8020",
+        "--spark-master",
+        "spark://spark-master:7077",
+    ]
     result = invoke(sandbox, "--", "warehouse_bigdata/jobs/train_forecast_model.py", *binding)
     assert result.returncode == (0 if status == 10 else status), result.stderr
-    publication = [call for call in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" in call]
+    publication = [
+        call for call in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" in call
+    ]
     assert publication
     recovery = publication[0]
     assert "--skip-completed-driver" in recovery
@@ -337,36 +387,79 @@ def test_m06_launcher_owner_recovery_binding_and_failure_status(sandbox, status)
 
 def test_m06_launcher_driver_failure_never_promotes(sandbox):
     sandbox["env"]["TEST_DRIVER_ONLY_STATUS"] = "23"
-    result = invoke(sandbox, "--", "warehouse_bigdata/jobs/train_forecast_model.py",
-                    "--pipeline-run-id", "failed-001", "--model-run-id", "rf-failed")
+    result = invoke(
+        sandbox,
+        "--",
+        "warehouse_bigdata/jobs/train_forecast_model.py",
+        "--pipeline-run-id",
+        "failed-001",
+        "--model-run-id",
+        "rf-failed",
+    )
     assert result.returncode == 23
-    publication = [call for call in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" in call]
+    publication = [
+        call for call in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" in call
+    ]
     assert len(publication) == 1 and "--recover" in publication[0]
 
 
 @pytest.mark.parametrize("status", [0, 10, 17])
 def test_j06_launcher_recovery_and_failure_propagation(sandbox, status):
     sandbox["env"]["TEST_PUBLICATION_STATUS"] = str(status)
-    binding = ["--pipeline-run-id", "j06", "--forecast-run-id", "forecast", "--model-run-id", "model",
-               "--source-version", "sha256:" + "a" * 64, "--source-snapshot-id", "snapshot",
-               "--j03-pipeline-run-id", "j03", "--j04-pipeline-run-id", "j04", "--feature-version", "v1",
-               "--issue-date", "2016-03-27", "--run-type", "validation", "--hdfs-uri", "hdfs://hdfs-namenode:8020",
-               "--spark-master", "spark://spark-master:7077"]
+    binding = [
+        "--pipeline-run-id",
+        "j06",
+        "--forecast-run-id",
+        "forecast",
+        "--model-run-id",
+        "model",
+        "--source-version",
+        "sha256:" + "a" * 64,
+        "--source-snapshot-id",
+        "snapshot",
+        "--j03-pipeline-run-id",
+        "j03",
+        "--j04-pipeline-run-id",
+        "j04",
+        "--feature-version",
+        "v1",
+        "--issue-date",
+        "2016-03-27",
+        "--run-type",
+        "validation",
+        "--hdfs-uri",
+        "hdfs://hdfs-namenode:8020",
+        "--spark-master",
+        "spark://spark-master:7077",
+    ]
     result = invoke(sandbox, "--", "warehouse_bigdata/jobs/forecast_daily.py", *binding)
     assert result.returncode == (0 if status == 10 else status), result.stderr
-    publication = [call for call in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" in call]
+    publication = [
+        call for call in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" in call
+    ]
     assert publication and "--skip-completed-driver" in publication[0]
     for value in binding:
         assert value in publication[0]
     assert publication[0][publication[0].index("--seed") + 1] == "42"
-    assert len([call for call in runs(sandbox) if call not in publication]) == (1 if status == 0 else 0)
+    assert len([call for call in runs(sandbox) if call not in publication]) == (
+        1 if status == 0 else 0
+    )
     assert_cluster_untouched(sandbox)
 
 
 def test_j06_launcher_failed_driver_never_publishes(sandbox):
     sandbox["env"]["TEST_DRIVER_ONLY_STATUS"] = "23"
-    result = invoke(sandbox, "--", "warehouse_bigdata/jobs/forecast_daily.py", "--pipeline-run-id", "j06",
-                    "--forecast-run-id", "forecast", "--model-run-id", "model")
+    result = invoke(
+        sandbox,
+        "--",
+        "warehouse_bigdata/jobs/forecast_daily.py",
+        "--pipeline-run-id",
+        "j06",
+        "--forecast-run-id",
+        "forecast",
+        "--model-run-id",
+        "model",
+    )
     assert result.returncode == 23
     assert len([c for c in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" in c]) == 1
 
@@ -376,11 +469,32 @@ def test_evaluation_launcher_recovery_and_failure_propagation(sandbox, status):
     sandbox["env"]["TEST_PUBLICATION_STATUS"] = str(status if status != 23 else 0)
     if status == 23:
         sandbox["env"]["TEST_DRIVER_ONLY_STATUS"] = "23"
-    binding = ["--pipeline-run-id", "evaluation-execution", "--evaluation-run-id", "evaluation",
-        "--model-run-id", "model", "--source-version", "sha256:" + "a"*64,
-        "--source-snapshot-id", "snapshot", "--j03-pipeline-run-id", "j03", "--j04-pipeline-run-id", "j04",
-        "--feature-version", "v1", "--run-type", "test", "--validation-evaluation-run-id", "frozen-validation",
-        "--hdfs-uri", "hdfs://hdfs-namenode:8020", "--spark-master", "spark://spark-master:7077"]
+    binding = [
+        "--pipeline-run-id",
+        "evaluation-execution",
+        "--evaluation-run-id",
+        "evaluation",
+        "--model-run-id",
+        "model",
+        "--source-version",
+        "sha256:" + "a" * 64,
+        "--source-snapshot-id",
+        "snapshot",
+        "--j03-pipeline-run-id",
+        "j03",
+        "--j04-pipeline-run-id",
+        "j04",
+        "--feature-version",
+        "v1",
+        "--run-type",
+        "test",
+        "--validation-evaluation-run-id",
+        "frozen-validation",
+        "--hdfs-uri",
+        "hdfs://hdfs-namenode:8020",
+        "--spark-master",
+        "spark://spark-master:7077",
+    ]
     result = invoke(sandbox, "--", "warehouse_bigdata/jobs/evaluate_forecasts.py", *binding)
     assert result.returncode == (0 if status == 10 else status), result.stderr
     publication = [c for c in runs(sandbox) if "warehouse_bigdata.common.hdfs_publication" in c]
@@ -388,7 +502,9 @@ def test_evaluation_launcher_recovery_and_failure_propagation(sandbox, status):
     assert all(value in publication[0] for value in binding)
     assert publication[0][publication[0].index("--seed") + 1] == "42"
     assert len(publication) == (2 if status == 0 else 1)
-    assert len([c for c in runs(sandbox) if c not in publication]) == (1 if status in (0, 23) else 0)
+    assert len([c for c in runs(sandbox) if c not in publication]) == (
+        1 if status in (0, 23) else 0
+    )
     assert_cluster_untouched(sandbox)
 
 

@@ -186,6 +186,11 @@ def _staged(client):
     client.mkdir_exclusive(STAGING)
     candidate = STAGING + "/candidate"
     client.mkdir_exclusive(candidate)
+    from tests.unit.test_m5_small import evidence
+    from warehouse_bigdata.common.scope_evidence import bind_scope, write_scope
+
+    scope = evidence("unique-001")
+    write_scope(client, candidate, scope)
     manifest = _run_manifest(RUN_ID, "sha256:" + "a" * 64, CONFIG.uri + MANIFEST)
     manifest.update(
         source_snapshot_id="unique-001",
@@ -208,6 +213,7 @@ def _staged(client):
     )
     client.upload_bytes(b"bounded parquet stand-in", candidate + "/part-00000.parquet")
     client.upload_bytes(b'{"status":"VALIDATED"}', STAGING + "/quality_report.json")
+    manifest = bind_scope(manifest, scope)
     stage_publication(client, CONFIG, manifest, result_status="VALIDATED")
     client.set_owner(candidate, "spark", recursive=True)
     return candidate

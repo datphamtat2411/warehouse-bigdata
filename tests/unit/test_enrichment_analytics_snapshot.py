@@ -139,8 +139,8 @@ def _sales_frame(spark: SparkSession):
         [
             (
                 "item_1",
-                "dept_1",
-                "cat_1",
+                "FOODS_1",
+                "FOODS",
                 "CA_1",
                 "CA",
                 "item_1_CA_1",
@@ -152,8 +152,8 @@ def _sales_frame(spark: SparkSession):
             ),
             (
                 "item_1",
-                "dept_1",
-                "cat_1",
+                "FOODS_1",
+                "FOODS",
                 "CA_1",
                 "CA",
                 "item_1_CA_1",
@@ -165,8 +165,8 @@ def _sales_frame(spark: SparkSession):
             ),
             (
                 "item_2",
-                "dept_2",
-                "cat_2",
+                "HOBBIES_1",
+                "HOBBIES",
                 "TX_1",
                 "TX",
                 "item_2_TX_1",
@@ -178,8 +178,8 @@ def _sales_frame(spark: SparkSession):
             ),
             (
                 "item_2",
-                "dept_2",
-                "cat_2",
+                "HOBBIES_1",
+                "HOBBIES",
                 "TX_1",
                 "TX",
                 "item_2_TX_1",
@@ -318,12 +318,33 @@ def _prepare_inputs(
     snapshot_id: str = SOURCE_SNAPSHOT_ID,
 ) -> None:
     import warehouse_bigdata.processing.enrichment_analytics_snapshot as snapshot_module
+    from warehouse_bigdata.common.scope_evidence import bind_scope, write_scope
+    from warehouse_bigdata.contracts.dataset_scope import STORES, select_scope
+
+    # Keep scoped price filtering meaningful for the actual tiny fixture items.
+    identities = [
+        dict(
+            id=f"item_{index}_{store}",
+            item_id=f"item_{index}",
+            dept_id="HOBBIES_1" if index == 2 else "FOODS_1",
+            cat_id="HOBBIES" if index == 2 else "FOODS",
+            store_id=store,
+            state_id=store[:2],
+        )
+        for index in range(1, 11)
+        for store in STORES
+    ]
+    scope = select_scope(identities, source_version=SOURCE_VERSION, source_snapshot_id=snapshot_id)
+    # Isolate the existing tiny publication lifecycle; exact canonical population
+    # rejection is covered by test_m5_small, without creating 194,100 fixture rows.
+    monkeypatch.setattr(snapshot_module, "validate_scope_population", lambda *a, **k: None)
 
     source_schema = _schema_fingerprint(tuple(_sales_schema().names))
     sales_path = render_curated_sales_daily_path(BASE_PATH, snapshot_id)
     sales_local = hdfs._local(sales_path)
     sales_local.parent.mkdir(parents=True, exist_ok=True)
     _sales_frame(spark).write.mode("errorifexists").parquet(str(sales_local))
+    write_scope(hdfs, sales_path, scope)
 
     raw_path = f"{BASE_PATH}/raw/m5/source_version={SOURCE_VERSION.replace(':', '-')}"
     raw_local = hdfs._local(raw_path)
@@ -345,6 +366,7 @@ def _prepare_inputs(
     )
     upstream_path = render_run_manifest_path(BASE_PATH, UPSTREAM_RUN_ID)
     upstream["artifact_uri"] = str(hdfs._local(upstream_path))
+    upstream = bind_scope(upstream, scope)
     hdfs.upload_bytes(
         (json.dumps(upstream, separators=(",", ":")) + "\n").encode("utf-8"),
         upstream_path,
@@ -643,6 +665,8 @@ def test_snapshot_persists_revalidates_and_promotes_all_curated_outputs(
     assert result.metrics.row_count == 4
     assert result.metrics.unit_sales_total == 6
     assert result.metrics.zero_sales_count == 2
+    assert result.metrics.matched_price_count == 2
+    assert result.metrics.missing_price_count == 2
     assert result.timings["total_seconds"] >= 0
     assert result.timings["enrichment_seconds"] >= 0
     assert result.timings["store_aggregation_seconds"] >= 0

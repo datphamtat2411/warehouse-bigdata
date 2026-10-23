@@ -238,3 +238,162 @@ def test_reused_producer_evidence_shares_one_fresh_inventory_per_verification():
     assert {
         path: data for path, data in client.files.items() if path.startswith(final + "/")
     } == before
+
+
+def processing_candidate(stage, *, client=None):
+    from tests.unit.test_hdfs_raw_ingestion import _run_manifest
+    from tests.unit.test_m5_small import evidence
+    from warehouse_bigdata.common.hdfs_namespace import provision_publication_namespace
+    from warehouse_bigdata.common.hdfs_paths import (
+        render_curated_category_monthly_sales_path,
+        render_curated_sales_daily_path,
+        render_curated_sales_enriched_path,
+        render_curated_store_daily_sales_path,
+        render_enrichment_candidate_path,
+        render_normalization_candidate_path,
+        render_run_manifest_path,
+        render_staging_path,
+    )
+    from warehouse_bigdata.common.hdfs_publication import stage_publication
+    from warehouse_bigdata.common.scope_evidence import bind_scope, write_scope
+
+    client = client or PermissionHdfs()
+    provision_publication_namespace(client, CONFIG)
+    scope = evidence()
+    run = "small-" + stage
+    staging = render_staging_path(CONFIG.base_path, run)
+    client.mkdir_exclusive(staging)
+    if stage == "j03":
+        client.mkdir_exclusive(staging + "/candidates")
+    outputs = (
+        {"sales_daily": render_curated_sales_daily_path}
+        if stage == "j02"
+        else {
+            "sales_enriched": render_curated_sales_enriched_path,
+            "store_daily_sales": render_curated_store_daily_sales_path,
+            "category_monthly_sales": render_curated_category_monthly_sales_path,
+        }
+    )
+    paths = {
+        name: render(CONFIG.base_path, scope["source_snapshot_id"])
+        for name, render in outputs.items()
+    }
+    manifest_path = render_run_manifest_path(CONFIG.base_path, run)
+    manifest = _run_manifest(run, scope["source_version"], CONFIG.uri + manifest_path)
+    manifest.update(
+        source_snapshot_id=scope["source_snapshot_id"],
+        producer="warehouse-bigdata:"
+        + ("normalization-snapshot" if stage == "j02" else "enrichment-analytics-snapshot-v1"),
+        output_dataset_names=json.dumps(list(outputs)),
+        output_dataset_uris=json.dumps([CONFIG.uri + p for p in paths.values()]),
+        quality_report_uri=CONFIG.uri + staging + "/quality_report.json",
+    )
+    for name, final in paths.items():
+        candidate = (
+            render_normalization_candidate_path(staging)
+            if stage == "j02"
+            else render_enrichment_candidate_path(staging, name)
+        )
+        client.mkdir_exclusive(candidate)
+        write_scope(client, candidate, scope)
+        sidecar = "_snapshot_manifest.json" if stage == "j02" else "_dataset_manifest.json"
+        document = {
+            key: manifest[key]
+            for key in ("status", "pipeline_run_id", "source_version", "source_snapshot_id")
+        }
+        document["artifact_uri"] = CONFIG.uri + final
+        client.upload_bytes(json.dumps(document).encode(), candidate + "/" + sidecar)
+    client.upload_bytes(b'{"status":"VALIDATED"}', staging + "/quality_report.json")
+    stage_publication(client, CONFIG, bind_scope(manifest, scope), result_status="VALIDATED")
+    return client, paths
+
+
+@pytest.mark.parametrize(
+    "stage,job", [("j02", "normalize_sales_daily"), ("j03", "enrich_analytics")]
+)
+@pytest.mark.parametrize("completed", [False, True])
+def test_processing_owner_recovery_verifies_publication_and_skips_driver(
+    monkeypatch, stage, job, completed
+):
+    import sys
+
+    from warehouse_bigdata.common import hdfs_publication as module
+
+    client, paths = processing_candidate(stage)
+    events = CONFIG.base_path + "/staging/pipeline_run_id=small-" + stage + "/events"
+    client.mkdir_exclusive(events)
+    client.upload_bytes(b"original completed application log", events + "/app-original")
+    if completed:
+        finalize_publication(client, CONFIG, pipeline_run_id="small-" + stage)
+    monkeypatch.setattr(module, "HdfsCliClient", lambda **kwargs: client)
+    monkeypatch.setattr(module, "load_hdfs_config", lambda: CONFIG)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "publisher",
+            "--recover",
+            "--skip-completed-driver",
+            "--pipeline-run-id",
+            "small-" + stage,
+            "--job-name",
+            job,
+            "--source-version",
+            "sha256:" + "a" * 64,
+            "--source-snapshot-id",
+            "small-snapshot",
+        ],
+    )
+    with pytest.raises(SystemExit) as result:
+        module.main()
+    assert result.value.code == 10
+    assert all(client.exists(path) for path in paths.values())
+    assert {
+        path: payload for path, payload in client.files.items() if path.startswith(events + "/")
+    } == {events + "/app-original": b"original completed application log"}
+
+
+@pytest.mark.parametrize(
+    "stage,job", [("j02", "normalize_sales_daily"), ("j03", "enrich_analytics")]
+)
+@pytest.mark.parametrize(
+    "conflict", ["source-version", "source-snapshot-id", "job-name", "missing-source"]
+)
+def test_processing_recovery_refuses_conflicting_binding_before_publication(
+    monkeypatch, stage, job, conflict
+):
+    import sys
+
+    from warehouse_bigdata.common import hdfs_publication as module
+
+    client, _ = processing_candidate(stage)
+    arguments = {
+        "pipeline-run-id": "small-" + stage,
+        "job-name": job,
+        "source-version": "sha256:" + "a" * 64,
+        "source-snapshot-id": "small-snapshot",
+    }
+    if conflict == "missing-source":
+        arguments.pop("source-version")
+    elif conflict == "job-name":
+        arguments[conflict] = (
+            "enrich_analytics" if job == "normalize_sales_daily" else "normalize_sales_daily"
+        )
+    else:
+        arguments[conflict] = "conflict"
+    monkeypatch.setattr(module, "HdfsCliClient", lambda **kwargs: client)
+    monkeypatch.setattr(module, "load_hdfs_config", lambda: CONFIG)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "publisher",
+            "--recover",
+            "--skip-completed-driver",
+            *[arg for key, value in arguments.items() for arg in ("--" + key, value)],
+        ],
+    )
+    before = copy.deepcopy((client.entries, client.files))
+    with pytest.raises(HdfsNamespaceError, match="conflict|binding"):
+        module.main()
+    assert (client.entries, client.files) == before

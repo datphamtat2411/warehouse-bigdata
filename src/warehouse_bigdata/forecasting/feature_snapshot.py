@@ -27,6 +27,12 @@ from warehouse_bigdata.common.hdfs_publication import (
     validate_feature_publication_evidence,
 )
 from warehouse_bigdata.common.hdfs_runtime import create_hdfs_cli_client
+from warehouse_bigdata.common.scope_evidence import (
+    authorize_upstream,
+    bind_scope,
+    read_scope,
+    write_scope,
+)
 from warehouse_bigdata.contracts.datasets import FORECAST_FEATURES
 from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import validate_manifest
@@ -88,7 +94,7 @@ def validate_feature_snapshot_parameters(
     upstream_pipeline_run_id,
     feature_version,
     pipeline_run_id,
-    output_partitions=16,
+    output_partitions=4,
     max_records_per_file=1_000_000,
 ) -> None:
     """Validate all caller identities and layout bounds before any HDFS access."""
@@ -286,7 +292,7 @@ def _manifest(config, binding, sidecar, quality, metrics, created_at, completed_
     validate_manifest(
         PIPELINE_RUN_MANIFEST, manifest, lineage_context={"required_status": VALIDATED}
     )
-    return manifest
+    return bind_scope(manifest, binding["scope"])
 
 
 def run_feature_snapshot(
@@ -299,9 +305,11 @@ def run_feature_snapshot(
     pipeline_run_id: str,
     hdfs_config: HDFSConfig,
     spark_master: str | None = None,
-    output_partitions: int = 16,
+    output_partitions: int = 4,
     max_records_per_file: int = 1_000_000,
     client: Any | None = None,
+    dataset_scope: str | None = None,
+    confirm_large_workload: bool = False,
 ) -> FeatureSnapshotResult:
     """Read a validated J03 snapshot, call T01 unchanged, and stage a frozen owner request.
 
@@ -342,6 +350,18 @@ def run_feature_snapshot(
     metrics = None
     try:
         hdfs = create_hdfs_cli_client(hdfs_config) if hdfs is None else hdfs
+        from warehouse_bigdata.common.hdfs_paths import render_curated_sales_enriched_path
+
+        scope = authorize_upstream(
+            read_scope(
+                hdfs,
+                render_curated_sales_enriched_path(hdfs_config.base_path, source_snapshot_id),
+                source_version=source_version,
+                source_snapshot_id=source_snapshot_id,
+            ),
+            dataset_scope=dataset_scope,
+            confirm_large_workload=confirm_large_workload,
+        )
         if not hdfs.is_directory(staging):
             raise FeatureSnapshotError("owner-prepared execution staging directory is required")
         for path in (
@@ -374,7 +394,11 @@ def run_feature_snapshot(
         configuration = _effective_configuration(
             spark, hdfs_config, output_partitions, max_records_per_file
         )
+        configuration.update(
+            dataset_scope=scope["dataset_scope"], selection_digest=scope["selection_digest"]
+        )
         binding = {
+            "scope": scope,
             "schema_version": _BINDING_VERSION,
             "source_version": source_version,
             "source_snapshot_id": source_snapshot_id,
@@ -425,6 +449,7 @@ def run_feature_snapshot(
                 max_records_per_file=max_records_per_file,
             )
             target = candidate
+        write_scope(hdfs, target, scope)
         timings["materialization_seconds"] = time.perf_counter() - phase
         phase = time.perf_counter()
         persisted = _read_parquet(spark, _uri(hdfs_config, target))

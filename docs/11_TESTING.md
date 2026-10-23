@@ -186,13 +186,26 @@ df -h
 | Tier | Dataset | Primary use |
 |---|---|---|
 | F0 — Handcrafted | 3–20 rows with exact expected outputs | Logic and edge cases |
-| F1 — Deterministic sample | Small multi-store, multi-day, reproducibly selected source subset | Joins, feature and SQL integration |
-| F2 — Scale slices | Explicitly selected larger subsets, e.g. 1M / 5M / 10M normalized rows **if feasible** | Scaling/throughput experiments |
-| F3 — Full M5 evaluation-history reshape | Expected 59,181,090 normalized rows, with exact source scope | Full ETL correctness and scale validation |
-| F4 — Locked chronological ML holdout | Versioned eligible series and predefined issue dates | Valid forecast/policy evaluation |
+| F1 — M5 Small integration | Existing VALIDATED `demo_sample`: ten SKUs, ten stores, 100 series, 1,941 days, 194,100 observations | Read-only artifact/schema/lineage/independent reconciliation |
+| F2 — Explicit live M5 Small acceptance | Same frozen population and selection digest; serial, separately authorized | J02–J06 execution, both Workers, HDFS, model reload, forecasts, chronological evaluation, measured timings |
+| F3 — Full M5 reference only | 3,049 SKUs / 30,490 series / 59,181,090 derived observations | Offline arithmetic/compatibility tests, not routine live acceptance |
+| F4 — Locked chronological ML holdout | Same M5 Small population and predefined issue dates | Valid forecast/policy evaluation |
 | F5 — Simulated inventory scenarios | Fixed seeds, known on-hand/central stock, fixed business-policy versions | Decision correctness and sensitivity |
 
-The dataset size labels F2 and F3 are **not claims of a completed execution**. For every measured run, retain the **actual** row count, bytes and distinct item–store series.
+Offline unit/contract tests use tiny deterministic synthetic fixtures and need no live
+Hadoop or Standalone cluster. Real-M5 integration reuses the canonical selector in
+`WAREHOUSE_SMALL_ARTIFACTS`, verifies upstream VALIDATED publication and selection
+digest, then independently reads persisted data. Missing artifacts fail clearly; tests
+never regenerate upstream data or fall back to full/30-day snapshots. Live lifecycle and
+performance checks require explicit options and serial execution. Infrastructure-only
+connectivity tests keep independent synthetic fixtures. Actual counts/bytes/tasks are
+required evidence; adding test code does not demonstrate an execution.
+
+The 30-day full-catalog M04 smoke workflow (914,700 rows) and seven-case 128-day full-catalog
+benchmark matrix are retired. Historical evidence/HDFS snapshots remain preserved.
+Their useful key, zero-sales, aggregation, immutable recovery and two-Worker assertions
+are retained in synthetic or M5 Small checks. Full-M5 computation requires separate
+authorization and both explicit full-scope selection and the large-workload confirmation.
 
 ### 4.4 Deterministic test-data policy
 
@@ -280,17 +293,17 @@ Detailed source contracts and job stages remain in [04 — Dataset](04_DATASET.m
 | DATA-07 | P0 | Check sales value parsing and domains | Finite, nonnegative integer unit-sales values; invalid values flagged |
 | DATA-08 | P0 | Check null/invalid required identifiers | No invalid published fact keys |
 
-### 5.2 Full reshape and enrichment assertions
+### 5.2 M5 Small reshape and enrichment assertions
 
-Let `source_series = 30,490`, `day_count = 1,941`. For the fully unfiltered reshape:
+Let `selected_series = 100`, `day_count = 1,941` for standard `demo_sample`:
 
 \[
-N_{\mathrm{expected}} = 30{,}490 \times 1{,}941 = 59{,}181{,}090.
+N_{\mathrm{expected}} = 100 \times 1{,}941 = 194{,}100.
 \]
 
 **Key checks:**
 
-- Row count equals `N_expected` **only** for the declared full evaluation-history reshape retaining zero-sales days.
+- Row count equals `N_expected` for the frozen M5 Small selection retaining every historical day and zero-sales record.
 - Every normalized record has a unique `(item_id, store_id, d)` key; no source day column is omitted or mapped twice.
 - Each source series appears for exactly 1,941 days in this specific full reshape.
 - `sales_units` is finite, nonnegative and integer-valued; **zero is a valid observed value**.
@@ -301,7 +314,7 @@ N_{\mathrm{expected}} = 30{,}490 \times 1{,}941 = 59{,}181{,}090.
 
 | ID | Priority | Test | Expected behavior |
 |---|---|---|---|
-| DATA-09 | P0 | Full raw-to-long normalization | Expected full count after unfiltered reshape; measured count recorded |
+| DATA-09 | P0 | Selected real-M5 raw-to-long normalization | Exactly 194,100 rows after filtering the wide source to the frozen 100 series; measured reconciliation recorded |
 | DATA-10 | P0 | Long-format uniqueness and per-series dates | No duplicate item–store–day keys; correct day coverage |
 | DATA-11 | P0 | Zero-sales preservation | Explicit zero days remain present where in source |
 | DATA-12 | P0 | Calendar join cardinality | Output row count unchanged; date fields consistent |
@@ -754,7 +767,11 @@ Recovery is considered valid only after re-running required quality gates and co
 9. **No precomputed "speedups":** derive speedup only from observed comparable runs.
 10. **Do not use a cold-cache number beside a warm-cache baseline** without a clear label.
 
-### 12.2 Benchmark matrix
+### 12.2 Performance measurements by capability
+
+The table identifies measurements, not a mandatory configuration matrix. The supported
+workflow executes one explicitly authorized M5 Small configuration, serially, and reuses
+validated upstream artifacts. No seven-configuration full-catalog experiment is required.
 
 | ID | Priority | Workload | Variables | Main measurements |
 |---|---|---|---|---|
@@ -773,12 +790,11 @@ If time is limited, prioritize PERF-01, PERF-02, PERF-04, PERF-07, PERF-08 and P
 
 ### 12.3 Input-scale tests
 
-Select reproducible data volumes and record *exact* processed counts. A valid experiment may use:
-
-- Small analytical subset (for calibration).
-- Approximately 1 million normalized records.
-- Approximately 5 million normalized records.
-- Full planned evaluation-history scope, if successfully processed.
+Use the same frozen **194,100-observation M5 Small** population for real-data performance
+measurement. Record actual bytes, tasks, file counts, elapsed time, resource samples,
+shuffle/spill/GC and failures. J05/J06 timings are separate from J02–J04. The objective
+of J02–J04 under 30 minutes on two Workers is unverified; it is not an acceptance result.
+Additional volume/configuration experiments require separate authorization.
 
 Do not claim that runtime grows linearly by assumption. Report measured runtime, byte volume, partition/file count and memory. Distinguish **data transformation expansion** (30,490 wide rows becoming up to 59,181,090 long observations) from newly acquired transactions.
 

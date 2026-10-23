@@ -61,7 +61,7 @@ def test_run_jobs_prepare_acl_before_spark_context(
         SimpleNamespace(SparkSession=SimpleNamespace(builder=builder)),
     )
     monkeypatch.setitem(sys.modules, "pyspark", ModuleType("pyspark"))
-    monkeypatch.setattr(module, "SparkHdfsCliClient", lambda: object())
+    monkeypatch.setattr(module, "SparkHdfsCliClient", lambda **kwargs: object())
     monkeypatch.setattr(module, "validate_publication_namespace", lambda *args: None)
     monkeypatch.setattr(
         module,

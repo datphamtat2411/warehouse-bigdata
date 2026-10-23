@@ -12,9 +12,20 @@ from tests.integration.conftest import pytest_collection_modifyitems
     [
         ("m05_published", "--run-m05-published"),
         ("m05_lifecycle", "--run-m05-lifecycle"),
+        ("m5_small", "--run-small-integration"),
+        ("small_acceptance", "--run-small-acceptance"),
     ],
 )
-@pytest.mark.parametrize("enabled_flag", [None, "--run-m05-published", "--run-m05-lifecycle"])
+@pytest.mark.parametrize(
+    "enabled_flag",
+    [
+        None,
+        "--run-m05-published",
+        "--run-m05-lifecycle",
+        "--run-small-integration",
+        "--run-small-acceptance",
+    ],
+)
 @pytest.mark.parametrize("parallel_mode", [None, "controller", "worker"])
 def test_m05_collection_requires_its_own_flag_and_serial_execution(
     marker: str, option: str, enabled_flag: str | None, parallel_mode: str | None
@@ -35,7 +46,7 @@ def test_m05_collection_requires_its_own_flag_and_serial_execution(
     )
 
     if enabled_flag == option and parallel_mode is not None:
-        with pytest.raises(pytest.UsageError, match="Live J04 acceptance requires serial"):
+        with pytest.raises(pytest.UsageError, match="Live small-data verification requires serial"):
             pytest_collection_modifyitems(config, [item])
         return
 

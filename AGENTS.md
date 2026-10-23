@@ -2,6 +2,32 @@
 
 Keep changes within the active task. Prefer the best justified solution, not merely the quickest one, while avoiding over-engineering, speculative abstractions, unnecessary dependencies, and unrequested features.
 
+## Current Project Dataset Policy — M5 Small
+
+**M5 Small (`demo_sample`) is the standard project execution dataset:** ten deterministic
+SKUs × all ten original stores = 100 series, with all 1,941 days (`d_1`–`d_1941`),
+producing exactly 194,100 real observed-sales records. It is a subset of original M5
+(3,049 SKUs / 30,490 series / 59,181,090 derived observations), not synthetic sales.
+
+- All real-M5 integration, distributed acceptance, evaluation, performance measurement,
+  publication and dashboard demonstrations use this frozen population and scope digest.
+- Unit/contract tests use tiny deterministic synthetic fixtures; infrastructure-only
+  connectivity tests remain independent of M5 data.
+- The 30-day full-catalog M04 smoke workflow and 128-day benchmark matrix are retired.
+  Historical HDFS snapshots and evidence must be preserved, not reused as ML inputs.
+- Full M5 is not a routine development, evaluation, acceptance or demonstration workload.
+  Heavy full-M5 execution requires explicit user authorization, explicit `full_m5`
+  selection and `--confirm-large-workload`. Omitted arguments must select safe small scope.
+- Reuse existing VALIDATED small artifacts through `WAREHOUSE_SMALL_ARTIFACTS` and
+  verify upstream publication/selection identity. Never automatically regenerate full-M5
+  snapshots for testing or regenerate upstream datasets when artifacts are missing.
+- Agent-generated commands must select the safe small-data profile; downstream scope
+  must agree with immutable upstream evidence. Never independently resample the cohort.
+- Demo metrics describe `demo_sample` only and must not be presented as full-dataset
+  accuracy, catalog-wide generalization, or full-dataset acceptance evidence.
+- Practical commands, lineage, artifact selection and recovery are defined in
+  `docs/SMALL_DEMO_MODE.md`. Consult its relevant section for execution tasks.
+
 ## Repository Boundaries
 
 This is a single Python project, not a monorepo. Follow the agreed target directory structure; create folders only when their first real implementation needs them. Do not introduce new top-level directories, services, or alternative implementations without a task-specific reason.
@@ -17,7 +43,7 @@ Keep business logic in its owning module. `jobs/` orchestrates; it does not reim
 
 ## Documentation Routing — Strict Context Budget
 
-The eleven files in `docs/` are **long design specifications**, not required background reading. **Never read all eleven, scan the entire `docs/` directory, or open complete documents by default.** Route by the active task, not by curiosity.
+The numbered files in `docs/` are **long design specifications**, not required background reading. **Never read all eleven, scan the entire `docs/` directory, or open complete documents by default.** Route by the active task, not by curiosity.
 
 | Task concern | Primary document | Supporting document, only if needed |
 |---|---|---|

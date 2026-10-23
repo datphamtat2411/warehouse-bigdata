@@ -70,7 +70,12 @@ def staged_inputs(spark, tmp_path, monkeypatch):
     staging = render_staging_path(BASE_PATH, RUN)
     hdfs.mkdir_parents(staging)
     source = _frame(spark, _rows(range(1, 32), zero=True, prices={}))
+    from tests.unit.test_m5_small import evidence as small_evidence
+
+    scope = small_evidence(SOURCE_SNAPSHOT_ID)
+    monkeypatch.setattr(module, "read_scope", lambda *a, **k: scope)
     evidence = {
+        "scope": scope,
         "source_version": SOURCE_VERSION,
         "source_snapshot_id": SOURCE_SNAPSHOT_ID,
         "pipeline_run_id": J03_RUN,
@@ -201,8 +206,14 @@ def _feature_staged(client, run_id=RUN):
     client.mkdir_exclusive(staging + "/candidates")
     candidate = staging + "/candidates/forecast_features"
     client.mkdir_exclusive(candidate)
+    from tests.unit.test_m5_small import evidence
+    from warehouse_bigdata.common.scope_evidence import bind_scope, write_scope
+
+    scope = evidence(SOURCE_SNAPSHOT_ID)
+    write_scope(client, candidate, scope)
     final = render_forecast_features_path(BASE_PATH, SOURCE_SNAPSHOT_ID, VERSION)
     binding = {
+        "scope": scope,
         "source_version": SOURCE_VERSION,
         "source_snapshot_id": SOURCE_SNAPSHOT_ID,
         "pipeline_run_id": run_id,
@@ -214,7 +225,14 @@ def _feature_staged(client, run_id=RUN):
         "upstream_evidence": {"verified": True},
     }
     client.upload_bytes(b"parquet fixture", candidate + "/part-00000.parquet")
-    integrity = [{"path": "part-00000.parquet", "size_bytes": 15, "checksum": "fixture-hash"}]
+    integrity = [
+        {
+            "path": "_scope.json",
+            "size_bytes": len(client.files[candidate + "/_scope.json"]),
+            "checksum": "fixture-hash",
+        },
+        {"path": "part-00000.parquet", "size_bytes": 15, "checksum": "fixture-hash"},
+    ]
     sidecar = {
         **binding,
         "status": "VALIDATED",
@@ -272,6 +290,7 @@ def _feature_staged(client, run_id=RUN):
         if str(PurePosixPath(child).parent) == path
     )
     client.checksums = lambda paths: {path: client.checksum(path) for path in paths}
+    manifest = bind_scope(manifest, scope)
     stage_publication(client, CONFIG, manifest, result_status="VALIDATED")
     return candidate, final, manifest
 
