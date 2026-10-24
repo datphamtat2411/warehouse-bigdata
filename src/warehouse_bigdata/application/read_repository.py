@@ -66,6 +66,12 @@ class ReadLimits:
 
 @dataclass(frozen=True)
 class ReadResult:
+    """Validated rows or a row-free failure with operation provenance.
+
+    empty means a valid filter matched nothing; incomplete means invalid grain,
+    coverage or overflow; unavailable means missing bindings or failed execution;
+    error means invalid arguments or returned identities.
+    """
     state: str
     rows: tuple = ()
     provenance: str = ''
@@ -119,6 +125,9 @@ class ClickHouseReadRepository:
             where, params = binding_filter(self.context, dataset)
         except ValueError as error:
             return ReadResult('unavailable', provenance=provenance, reason=str(error))
+        if dataset == 'inventory_policy_evaluation':
+            where += ' AND policy_id IN {approved_policy_ids:Array(String)}'
+            params['approved_policy_ids'] = list(self.context.policy_ids)
         for key, value in (filters or {}).items():
             column, operator, kind = {'start_date': ('sale_date', '>=', 'Date'),
                 'end_date': ('sale_date', '<=', 'Date')}.get(key, (key, '=', 'String'))
@@ -138,28 +147,97 @@ class ClickHouseReadRepository:
             return ReadResult('incomplete', provenance=provenance, reason='result bound exceeded')
         # Verify all returned lineage columns, even though SQL also pins them.
         for row in rows:
+            for key in ('item_id', 'store_id', 'policy_id'):
+                if key in params and row.get(key) != params[key]:
+                    return ReadResult('error', provenance=provenance, reason='identity mismatch')
+            if dataset == 'inventory_policy_evaluation':
+                binding = self.context.evaluation_binding(dataset)
+                policy = row.get('policy_id')
+                if (policy not in self.context.policy_ids or
+                        row.get('decision_run_id') != binding['decision_run_ids'].get(policy)):
+                    return ReadResult('error', provenance=provenance, reason='historical policy identity mismatch')
             for key in IDENTITIES:
                 if key in row and key in params and str(row[key]) != str(params[key]):
                     return ReadResult('error', provenance=provenance, reason='lineage mismatch')
         return ReadResult('ok' if rows else 'empty', rows, provenance)
 
-    def get_store_trend(self, store_id, start_date, end_date):
+    def _arguments(self, provenance, *, item_id=None, store_id=None, require_item=False, require_store=False):
+        if require_item and (not isinstance(item_id, str) or not item_id.strip()):
+            return ReadResult('error', provenance=provenance, reason='invalid item identifier')
+        if require_store and (not isinstance(store_id, str) or store_id not in self.context.coverage.available_stores):
+            return ReadResult('error', provenance=provenance, reason='unapproved store')
+
+    def _history_range(self, start_date, end_date):
         if not (type(start_date) is date and type(end_date) is date and
                 0 <= (end_date - start_date).days < self.limits.max_history_days):
-            return ReadResult('error', reason='invalid historical range')
+            return ReadResult('error', provenance='observed', reason='invalid historical range')
+
+    def get_store_trend(self, store_id, start_date, end_date):
+        error = self._arguments('observed', store_id=store_id, require_store=True) or self._history_range(start_date, end_date)
+        if error:
+            return error
         return self._read('store_daily_sales', dict(store_id=store_id,
             start_date=start_date, end_date=end_date), order='sale_date', provenance='observed')
 
+    def get_item_history(self, item_id, store_id, start_date, end_date):
+        """Read observed daily sales without filling absent dates or aggregating duplicates."""
+        error = self._arguments('observed', item_id=item_id, store_id=store_id,
+                                require_item=True, require_store=True) or self._history_range(start_date, end_date)
+        if error:
+            return error
+        result = self._read('sales_daily', dict(item_id=item_id, store_id=store_id,
+                            start_date=start_date, end_date=end_date), order='sale_date', provenance='observed')
+        if result.state not in {'ok', 'empty'}:
+            return result
+        seen = set()
+        for row in result.rows:
+            day, units = row.get('sale_date'), row.get('unit_sales')
+            if (type(day) is not date or not start_date <= day <= end_date or day in seen
+                    or type(units) not in (int, float) or not math.isfinite(units) or units < 0):
+                return ReadResult('incomplete', provenance='observed', reason='invalid daily observations')
+            seen.add(day)
+        return result
+
+    def _valid_forecast(self, rows):
+        return len(rows) == 7 and all(
+            type(row.get('horizon')) is int and row['horizon'] == i
+            and row.get('forecast_date') == self.context.issue_date + timedelta(days=i)
+            and row.get('forecast_status') == 'ok' and type(row.get('predicted_units')) in (int, float)
+            and math.isfinite(row['predicted_units']) and row['predicted_units'] >= 0
+            for i, row in enumerate(rows, 1))
+
+    def get_eligible_items(self, store_id, search_text, limit=50):
+        """Return literal matching pairs only after bounded seven-day coverage validation."""
+        error = self._arguments('predicted', store_id=store_id, require_store=True)
+        if error:
+            return error
+        if not isinstance(search_text, str) or type(limit) is not int or not 1 <= limit <= 50:
+            return ReadResult('error', provenance='predicted', reason='invalid catalog arguments')
+        result = self._read('forecast_daily', dict(store_id=store_id), order='item_id, horizon', provenance='predicted')
+        if result.state not in {'ok', 'empty'}:
+            return result
+        groups = {}
+        for row in result.rows:
+            item = row.get('item_id')
+            if not isinstance(item, str) or not item.strip():
+                return ReadResult('error', provenance='predicted', reason='invalid returned item identifier')
+            if search_text.casefold() in item.casefold():
+                groups.setdefault(item, []).append(row)
+        for rows in groups.values():
+            if not self._valid_forecast(sorted(rows, key=lambda r: r.get('horizon') if type(r.get('horizon')) is int else -1)):
+                return ReadResult('incomplete', provenance='predicted', reason='seven-day coverage missing')
+        rows = tuple(dict(item_id=item, store_id=store_id) for item in sorted(groups)[:limit])
+        return ReadResult('ok' if rows else 'empty', rows, 'predicted')
+
     def get_forecast_series(self, item_id, store_id):
+        error = self._arguments('predicted', item_id=item_id, store_id=store_id, require_item=True, require_store=True)
+        if error:
+            return error
         result = self._read('forecast_daily', dict(item_id=item_id, store_id=store_id),
                             order='horizon', provenance='predicted')
         if result.state not in {'ok', 'empty'}:
             return result
-        valid = len(result.rows) == 7 and all(
-            row.get('horizon') == i and row.get('forecast_date') == self.context.issue_date + timedelta(days=i)
-            and row.get('forecast_status') == 'ok' and isinstance(row.get('predicted_units'), (int, float))
-            and math.isfinite(row['predicted_units']) and row['predicted_units'] >= 0
-            for i, row in enumerate(result.rows, 1))
+        valid = self._valid_forecast(result.rows)
         return result if valid else ReadResult('incomplete', provenance='predicted', reason='seven-day coverage missing')
 
     def get_forecast_metrics(self):
@@ -173,14 +251,23 @@ class ClickHouseReadRepository:
                 if len(result.rows) > 1 else result)
 
     def get_replenishment(self, item_id, store_id):
+        error = self._arguments('calculated', item_id=item_id, store_id=store_id, require_item=True, require_store=True)
+        if error:
+            return error
         return self._one('replenishment_recommendations', dict(item_id=item_id, store_id=store_id), 'calculated')
 
     def get_central_supply(self, item_id):
+        error = self._arguments('simulated', item_id=item_id, require_item=True)
+        if error:
+            return error
         return self._one('central_supply_scenario', dict(item_id=item_id), 'simulated')
 
     def get_allocation(self, item_id, policy_id):
+        error = self._arguments('calculated', item_id=item_id, require_item=True)
+        if error:
+            return error
         if policy_id not in self.context.policy_ids:
-            return ReadResult('error', reason='unapproved policy')
+            return ReadResult('error', provenance='calculated', reason='unapproved policy')
         result = self._read('allocation_recommendations', dict(item_id=item_id, policy_id=policy_id))
         if result.state in {'ok', 'empty'} and (len(result.rows) != len(self.context.coverage.available_stores)
                 or {r['store_id'] for r in result.rows} != set(self.context.coverage.available_stores)):
@@ -188,6 +275,9 @@ class ClickHouseReadRepository:
         return result
 
     def get_policy_evaluation(self, item_id):
+        error = self._arguments('evaluated', item_id=item_id, require_item=True)
+        if error:
+            return error
         result = self._read('inventory_policy_evaluation', dict(item_id=item_id), provenance='evaluated')
         return (ReadResult('unavailable', provenance='evaluated', reason='historical policy outcomes missing')
                 if result.state == 'empty' else result)
