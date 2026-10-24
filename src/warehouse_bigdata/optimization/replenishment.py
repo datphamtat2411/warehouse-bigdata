@@ -41,8 +41,13 @@ def _prediction(value: object) -> None:
 
 
 def _lineage(record: object) -> tuple:
-    return (record.source_snapshot_id, record.forecast_run_id, record.model_run_id,
-            record.feature_version, record.issue_date)
+    return (
+        record.source_snapshot_id,
+        record.forecast_run_id,
+        record.model_run_id,
+        record.feature_version,
+        record.issue_date,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,8 +64,14 @@ class ForecastPrediction:
     feature_version: str
 
     def __post_init__(self) -> None:
-        for name in ("item_id", "store_id", "forecast_run_id", "model_run_id",
-                     "source_snapshot_id", "feature_version"):
+        for name in (
+            "item_id",
+            "store_id",
+            "forecast_run_id",
+            "model_run_id",
+            "source_snapshot_id",
+            "feature_version",
+        ):
             _identifier(getattr(self, name), name)
         _date(self.issue_date)
         if type(self.horizon) is not int or self.horizon not in range(1, 8):
@@ -115,32 +126,52 @@ class ReplenishmentRecommendation:
     origin_label: str = "calculated_simulated_replenishment_recommendation"
 
     def __post_init__(self) -> None:
-        for name in ("item_id", "store_id", "scenario_id", "source_snapshot_id",
-                     "forecast_run_id", "model_run_id", "feature_version"):
+        for name in (
+            "item_id",
+            "store_id",
+            "scenario_id",
+            "source_snapshot_id",
+            "forecast_run_id",
+            "model_run_id",
+            "feature_version",
+        ):
             _identifier(getattr(self, name), name)
         _date(self.issue_date)
         _prediction(self.forecast_7d_units)
-        for name in ("planning_demand_units", "opening_stock_units", "safety_stock_units",
-                     "target_stock_units", "critical_need_units", "safety_need_units",
-                     "request_units"):
+        for name in (
+            "planning_demand_units",
+            "opening_stock_units",
+            "safety_stock_units",
+            "target_stock_units",
+            "critical_need_units",
+            "safety_need_units",
+            "request_units",
+        ):
             _quantity(getattr(self, name), name)
         demand = math.ceil(self.forecast_7d_units)
         target = demand + self.safety_stock_units
         request = max(0, target - self.opening_stock_units)
         critical = max(0, demand - self.opening_stock_units)
-        if (self.planning_demand_units != demand or self.target_stock_units != target
-                or self.request_units != request or self.critical_need_units != critical
-                or self.safety_need_units != request - critical
-                or type(self.forecast_shortage_flag) is not bool
-                or self.forecast_shortage_flag != (self.opening_stock_units < demand)):
+        if (
+            self.planning_demand_units != demand
+            or self.target_stock_units != target
+            or self.request_units != request
+            or self.critical_need_units != critical
+            or self.safety_need_units != request - critical
+            or type(self.forecast_shortage_flag) is not bool
+            or self.forecast_shortage_flag != (self.opening_stock_units < demand)
+        ):
             raise ReplenishmentError("invalid replenishment equations")
-        if (self.policy_version != "replenishment_v1" or self.origin_label !=
-                "calculated_simulated_replenishment_recommendation"):
+        if (
+            self.policy_version != "replenishment_v1"
+            or self.origin_label != "calculated_simulated_replenishment_recommendation"
+        ):
             raise ReplenishmentError("invalid replenishment policy or provenance")
 
 
 def calculate_replenishment(
-    predictions: Iterable[ForecastPrediction], inventory: Iterable[InventoryPosition],
+    predictions: Iterable[ForecastPrediction],
+    inventory: Iterable[InventoryPosition],
 ) -> tuple[ReplenishmentRecommendation, ...]:
     """Require exact cohort membership; sum unrounded predictions before ceiling."""
     try:
@@ -171,8 +202,11 @@ def calculate_replenishment(
         position.__post_init__()
         if scenario is None:
             scenario = position.scenario_id
-        if (position.scenario_id != scenario or position.source_snapshot_id != lineage[0]
-                or position.issue_date != lineage[-1]):
+        if (
+            position.scenario_id != scenario
+            or position.source_snapshot_id != lineage[0]
+            or position.issue_date != lineage[-1]
+        ):
             raise ReplenishmentError("inventory cohort lineage mismatch")
         key = (position.item_id, position.store_id)
         if key in stocks:
@@ -194,14 +228,25 @@ def calculate_replenishment(
         target = demand + stock.safety_stock_units
         critical = max(0, demand - stock.opening_stock_units)
         request = max(0, target - stock.opening_stock_units)
-        results.append(ReplenishmentRecommendation(
-            item_id=stock.item_id, store_id=stock.store_id, issue_date=stock.issue_date,
-            scenario_id=stock.scenario_id, source_snapshot_id=stock.source_snapshot_id,
-            forecast_run_id=lineage[1], model_run_id=lineage[2], feature_version=lineage[3],
-            forecast_7d_units=total, planning_demand_units=demand,
-            opening_stock_units=stock.opening_stock_units,
-            safety_stock_units=stock.safety_stock_units, target_stock_units=target,
-            critical_need_units=critical, safety_need_units=request - critical,
-            request_units=request, forecast_shortage_flag=stock.opening_stock_units < demand,
-        ))
+        results.append(
+            ReplenishmentRecommendation(
+                item_id=stock.item_id,
+                store_id=stock.store_id,
+                issue_date=stock.issue_date,
+                scenario_id=stock.scenario_id,
+                source_snapshot_id=stock.source_snapshot_id,
+                forecast_run_id=lineage[1],
+                model_run_id=lineage[2],
+                feature_version=lineage[3],
+                forecast_7d_units=total,
+                planning_demand_units=demand,
+                opening_stock_units=stock.opening_stock_units,
+                safety_stock_units=stock.safety_stock_units,
+                target_stock_units=target,
+                critical_need_units=critical,
+                safety_need_units=request - critical,
+                request_units=request,
+                forecast_shortage_flag=stock.opening_stock_units < demand,
+            )
+        )
     return tuple(results)

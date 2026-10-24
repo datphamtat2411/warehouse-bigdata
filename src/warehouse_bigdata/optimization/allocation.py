@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from datetime import date
 
 from .replenishment import (
-    ReplenishmentError, ReplenishmentRecommendation, _date, _identifier, _lineage, _quantity,
+    ReplenishmentError,
+    ReplenishmentRecommendation,
+    _date,
+    _identifier,
+    _lineage,
+    _quantity,
 )
 
 SHORTAGE_FIRST_PROPORTIONAL_V1 = "shortage_first_proportional_v1"
@@ -62,23 +67,38 @@ class AllocationRecommendation:
 
     def __post_init__(self) -> None:
         try:
-            for name in ("item_id", "store_id", "scenario_id", "source_snapshot_id",
-                         "forecast_run_id", "model_run_id", "feature_version",
-                         "source_warehouse_id"):
+            for name in (
+                "item_id",
+                "store_id",
+                "scenario_id",
+                "source_snapshot_id",
+                "forecast_run_id",
+                "model_run_id",
+                "feature_version",
+                "source_warehouse_id",
+            ):
                 _identifier(getattr(self, name), name)
             _date(self.issue_date)
             for name in ("requested_units", "allocated_units", "unmet_request_units"):
                 _quantity(getattr(self, name), name)
-            if (self.allocated_units > self.requested_units or self.unmet_request_units !=
-                    self.requested_units - self.allocated_units):
+            if (
+                self.allocated_units > self.requested_units
+                or self.unmet_request_units != self.requested_units - self.allocated_units
+            ):
                 raise AllocationError("invalid allocation equations")
             if self.policy_key == SHORTAGE_FIRST_PROPORTIONAL_V1:
                 _quantity(self.critical_allocated_units, "critical_allocated_units")
                 _quantity(self.safety_allocated_units, "safety_allocated_units")
-                if self.critical_allocated_units + self.safety_allocated_units != self.allocated_units:
+                if (
+                    self.critical_allocated_units + self.safety_allocated_units
+                    != self.allocated_units
+                ):
                     raise AllocationError("stage allocations must sum to total")
             elif self.policy_key == EQUAL_SHARE_V1:
-                if self.critical_allocated_units is not None or self.safety_allocated_units is not None:
+                if (
+                    self.critical_allocated_units is not None
+                    or self.safety_allocated_units is not None
+                ):
                     raise AllocationError("equal-share stage allocations must be None")
             else:
                 raise AllocationError("unsupported allocation policy")
@@ -96,8 +116,11 @@ class AllocationBatchResult:
     central_remainders: tuple[tuple[str, int], ...]
 
     def __post_init__(self) -> None:
-        if (type(self.recommendations) is not tuple or not self.recommendations
-                or type(self.central_remainders) is not tuple):
+        if (
+            type(self.recommendations) is not tuple
+            or not self.recommendations
+            or type(self.central_remainders) is not tuple
+        ):
             raise AllocationError("batch requires nonempty immutable results")
         keys = []
         identities = set()
@@ -205,8 +228,10 @@ def _allocate(requests, central_supply, policy_id: str) -> AllocationBatchResult
         capacity = supply.central_available_units
         if policy_id == "shortage_first_proportional":
             critical = _apportion({s: r.critical_need_units for s, r in stores.items()}, capacity)
-            safety = _apportion({s: r.safety_need_units for s, r in stores.items()},
-                                capacity - sum(critical.values()))
+            safety = _apportion(
+                {s: r.safety_need_units for s, r in stores.items()},
+                capacity - sum(critical.values()),
+            )
             allocated = {s: critical[s] + safety[s] for s in stores}
         else:
             critical = safety = dict.fromkeys(stores, None)
@@ -221,27 +246,40 @@ def _allocate(requests, central_supply, policy_id: str) -> AllocationBatchResult
                 or safety[store] > request.safety_need_units
             ):
                 raise AllocationError("stage allocation exceeds need")
-            rows.append(AllocationRecommendation(
-                item_id=item, store_id=store, issue_date=request.issue_date,
-                scenario_id=request.scenario_id, source_snapshot_id=request.source_snapshot_id,
-                forecast_run_id=request.forecast_run_id, model_run_id=request.model_run_id,
-                feature_version=request.feature_version, source_warehouse_id=supply.source_warehouse_id,
-                policy_id=policy_id, policy_version="v1", requested_units=request.request_units,
-                critical_allocated_units=critical[store], safety_allocated_units=safety[store],
-                allocated_units=allocated[store], unmet_request_units=request.request_units - allocated[store],
-            ))
+            rows.append(
+                AllocationRecommendation(
+                    item_id=item,
+                    store_id=store,
+                    issue_date=request.issue_date,
+                    scenario_id=request.scenario_id,
+                    source_snapshot_id=request.source_snapshot_id,
+                    forecast_run_id=request.forecast_run_id,
+                    model_run_id=request.model_run_id,
+                    feature_version=request.feature_version,
+                    source_warehouse_id=supply.source_warehouse_id,
+                    policy_id=policy_id,
+                    policy_version="v1",
+                    requested_units=request.request_units,
+                    critical_allocated_units=critical[store],
+                    safety_allocated_units=safety[store],
+                    allocated_units=allocated[store],
+                    unmet_request_units=request.request_units - allocated[store],
+                )
+            )
     return AllocationBatchResult(tuple(rows), tuple(remainders))
 
 
 def allocate_shortage_first_proportional_v1(
-    requests: Iterable[ReplenishmentRecommendation], central_supply: Iterable[CentralSupply],
+    requests: Iterable[ReplenishmentRecommendation],
+    central_supply: Iterable[CentralSupply],
 ) -> AllocationBatchResult:
     """Apportion critical demand first, then safety, with exact remainder ties."""
     return _allocate(requests, central_supply, "shortage_first_proportional")
 
 
 def allocate_equal_share_v1(
-    requests: Iterable[ReplenishmentRecommendation], central_supply: Iterable[CentralSupply],
+    requests: Iterable[ReplenishmentRecommendation],
+    central_supply: Iterable[CentralSupply],
 ) -> AllocationBatchResult:
     """Allocate capped equal shares, with ascending store IDs for residual units."""
     return _allocate(requests, central_supply, "equal_share")

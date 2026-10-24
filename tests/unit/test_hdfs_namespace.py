@@ -171,11 +171,11 @@ def test_j06_forecast_namespace_is_owner_provisioned_and_spark_readonly():
 def test_j07_decision_parent_is_protected():
     client = PermissionHdfs()
     provision_publication_namespace(client, CONFIG)
-    path = CONFIG.base_path + '/outputs/decisions'
+    path = CONFIG.base_path + "/outputs/decisions"
     assert path in publication_parents(CONFIG)
-    client.identity = 'spark'
-    assert not client.can_access(path, 'w')
-    client.entries[path]['permission'] = '777'
+    client.identity = "spark"
+    assert not client.can_access(path, "w")
+    client.entries[path]["permission"] = "777"
     with pytest.raises(HdfsNamespaceError):
         validate_publication_namespace(client, CONFIG)
 

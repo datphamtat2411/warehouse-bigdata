@@ -292,8 +292,15 @@ def validate_model_metadata(
     )
 
 
-def validate_forecast_rows(rows, *, selector, candidate_series, excluded_series,
-                           issue_date=EXPECTED_ISSUE_DATE, run_type="forward_demo"):
+def validate_forecast_rows(
+    rows,
+    *,
+    selector,
+    candidate_series,
+    excluded_series,
+    issue_date=EXPECTED_ISSUE_DATE,
+    run_type="forward_demo",
+):
     """Validate Contract v1 J06 rows, dates, lineage, and complete-series coverage."""
 
     records = [_mapping(row) for row in rows]
@@ -304,10 +311,7 @@ def validate_forecast_rows(rows, *, selector, candidate_series, excluded_series,
     if any(None in key for key in values) or len(values) != len(set(values)):
         _fail("forecast rows contain duplicate or null Contract v1 keys")
     for row in records:
-        if (
-            row.get("issue_date") != issue_date
-            and row.get("issue_date") != issue_date.isoformat()
-        ):
+        if row.get("issue_date") != issue_date and row.get("issue_date") != issue_date.isoformat():
             _fail(f"{run_type} requires issue date {issue_date.isoformat()}")
         if row.get("run_type") != run_type:
             _fail(f"forecast run type is not {run_type}")

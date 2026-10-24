@@ -2,31 +2,45 @@ from dataclasses import replace
 
 import pytest
 
+from tests.unit.test_decision_inputs import DAY, fixture_rows
 from warehouse_bigdata.contracts.datasets import (
-    INVENTORY_SCENARIO, CENTRAL_SUPPLY_SCENARIO,
-    REPLENISHMENT_RECOMMENDATIONS, ALLOCATION_RECOMMENDATIONS,
+    ALLOCATION_RECOMMENDATIONS,
+    CENTRAL_SUPPLY_SCENARIO,
+    INVENTORY_SCENARIO,
+    REPLENISHMENT_RECOMMENDATIONS,
 )
 from warehouse_bigdata.contracts.validation import validate_dataset
 from warehouse_bigdata.optimization import decision_batch as batch
 from warehouse_bigdata.optimization.decision_inputs import bind_decision_inputs
-from tests.unit.test_decision_inputs import DAY, fixture_rows
 
 
 def build(rows=None, run="decision-03"):
-    return batch.build_decision_batch(bind_decision_inputs(**(rows or fixture_rows())),
-                                      decision_run_id=run)
+    return batch.build_decision_batch(
+        bind_decision_inputs(**(rows or fixture_rows())), decision_run_id=run
+    )
 
 
 def test_contract_mapping_identity_and_supply_constraints():
     result = build()
-    for contract, rows in zip((INVENTORY_SCENARIO, CENTRAL_SUPPLY_SCENARIO,
-            REPLENISHMENT_RECOMMENDATIONS, ALLOCATION_RECOMMENDATIONS),
-            (result.inventory_rows, result.central_supply_rows,
-             result.replenishment_rows, result.allocation_rows), strict=True):
+    for contract, rows in zip(
+        (
+            INVENTORY_SCENARIO,
+            CENTRAL_SUPPLY_SCENARIO,
+            REPLENISHMENT_RECOMMENDATIONS,
+            ALLOCATION_RECOMMENDATIONS,
+        ),
+        (
+            result.inventory_rows,
+            result.central_supply_rows,
+            result.replenishment_rows,
+            result.allocation_rows,
+        ),
+        strict=True,
+    ):
         validate_dataset(contract, rows)
         assert all(tuple(row) == contract.field_names for row in rows)
     assert len(result.inventory_rows) == len(result.allocation_rows) == 2
-    supply, = result.central_supply_rows
+    (supply,) = result.central_supply_rows
     assert supply["central_available_units"] == 28
     assert sum(r["allocated_units"] for r in result.allocation_rows) == 28
     for row in result.allocation_rows:
@@ -75,8 +89,14 @@ def test_independent_per_sku_capacity():
     assert len(result.central_supply_rows) == 2
     for supply in result.central_supply_rows:
         assert supply["central_available_units"] == 14
-        assert sum(r["allocated_units"] for r in result.allocation_rows
-                   if r["item_id"] == supply["item_id"]) == 14
+        assert (
+            sum(
+                r["allocated_units"]
+                for r in result.allocation_rows
+                if r["item_id"] == supply["item_id"]
+            )
+            == 14
+        )
 
 
 @pytest.mark.parametrize("run", [None, "", " ", "../bad", "x" * 300])
@@ -89,8 +109,10 @@ def test_builder_rechecks_input_lineage():
     data = bind_decision_inputs(**fixture_rows())
     prediction = replace(data.predictions[0], model_run_id="wrong")
     with pytest.raises(ValueError):
-        batch.build_decision_batch(replace(data, predictions=(prediction,) + data.predictions[1:]),
-                                   decision_run_id="decision")
+        batch.build_decision_batch(
+            replace(data, predictions=(prediction,) + data.predictions[1:]),
+            decision_run_id="decision",
+        )
 
 
 @pytest.mark.parametrize("change", ["membership", "capacity", "request", "lineage"])
@@ -101,8 +123,12 @@ def test_cross_dataset_validation_rejects_inconsistent_rows(change):
         rows.pop()
     elif change == "capacity":
         for row in rows:
-            row.update(allocated_units=row["requested_units"], unmet_request_units=0,
-                       critical_allocated_units=row["requested_units"], safety_allocated_units=0)
+            row.update(
+                allocated_units=row["requested_units"],
+                unmet_request_units=0,
+                critical_allocated_units=row["requested_units"],
+                safety_allocated_units=0,
+            )
     elif change == "request":
         rows[0]["requested_units"] += 1
         rows[0]["unmet_request_units"] += 1
@@ -110,16 +136,23 @@ def test_cross_dataset_validation_rejects_inconsistent_rows(change):
         rows[0]["decision_run_id"] = "wrong"
     with pytest.raises(ValueError):
         batch.validate_decision_datasets(
-            inputs=bind_decision_inputs(**fixture_rows()), decision_run_id="decision-03",
-            inventory_rows=result.inventory_rows, central_supply_rows=result.central_supply_rows,
-            replenishment_rows=result.replenishment_rows, allocation_rows=rows)
+            inputs=bind_decision_inputs(**fixture_rows()),
+            decision_run_id="decision-03",
+            inventory_rows=result.inventory_rows,
+            central_supply_rows=result.central_supply_rows,
+            replenishment_rows=result.replenishment_rows,
+            allocation_rows=rows,
+        )
 
 
 def test_no_policy_selection_or_publication_side_effects(monkeypatch, capsys):
     from warehouse_bigdata.jobs import inventory_decision_batch as job
+
     result = build()
     spark = object()
-    monkeypatch.setattr(job, "read_decision_inputs", lambda *a, **k: bind_decision_inputs(**fixture_rows()))
+    monkeypatch.setattr(
+        job, "read_decision_inputs", lambda *a, **k: bind_decision_inputs(**fixture_rows())
+    )
     summary = job.run(spark, decision_run_id="decision-03", client=object(), config=object())
     assert summary["row_counts"]["allocation_recommendations"] == len(result.allocation_rows)
     assert summary["issue_date"] == DAY.isoformat()

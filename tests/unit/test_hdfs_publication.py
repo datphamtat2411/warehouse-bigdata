@@ -19,20 +19,30 @@ from warehouse_bigdata.common.hdfs_publication import (
 )
 
 
-@pytest.mark.parametrize('policy', [False, True])
+@pytest.mark.parametrize("policy", [False, True])
 def test_evaluation_dispatch_preserves_forecast_owner(policy, monkeypatch):
     from warehouse_bigdata.common import hdfs_publication as publication
     from warehouse_bigdata.forecasting import evaluation_artifacts as forecast
     from warehouse_bigdata.optimization import inventory_artifacts as inventory
+
     client = PermissionHdfs()
     from warehouse_bigdata.common.hdfs_namespace import provision_publication_namespace
+
     provision_publication_namespace(client, CONFIG)
-    manifest = dict(contract_name='evaluation_manifest', producer=(inventory.EVALUATION_PRODUCER
-        if policy else 'warehouse-bigdata:evaluate-forecasts'))
-    monkeypatch.setattr(publication, '_json', lambda *a: dict(version=1, pipeline_run_id='run', manifest=manifest))
-    monkeypatch.setattr(inventory, 'finalize_inventory_publication', lambda *a, **k: 'POLICY')
-    monkeypatch.setattr(forecast, 'finalize_evaluation_publication', lambda *a, **k: 'FORECAST')
-    assert finalize_publication(client, CONFIG, pipeline_run_id='run') == ('POLICY' if policy else 'FORECAST')
+    manifest = dict(
+        contract_name="evaluation_manifest",
+        producer=(
+            inventory.EVALUATION_PRODUCER if policy else "warehouse-bigdata:evaluate-forecasts"
+        ),
+    )
+    monkeypatch.setattr(
+        publication, "_json", lambda *a: dict(version=1, pipeline_run_id="run", manifest=manifest)
+    )
+    monkeypatch.setattr(inventory, "finalize_inventory_publication", lambda *a, **k: "POLICY")
+    monkeypatch.setattr(forecast, "finalize_evaluation_publication", lambda *a, **k: "FORECAST")
+    assert finalize_publication(client, CONFIG, pipeline_run_id="run") == (
+        "POLICY" if policy else "FORECAST"
+    )
 
 
 def test_34_file_inventory_preserves_every_actual_checksum_with_one_cli(monkeypatch):

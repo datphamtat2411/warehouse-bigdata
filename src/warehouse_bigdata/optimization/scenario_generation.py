@@ -12,7 +12,7 @@ import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, timedelta
-from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, localcontext
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, localcontext
 
 from warehouse_bigdata.contracts.datasets import CENTRAL_SUPPLY_SCENARIO, INVENTORY_SCENARIO
 from warehouse_bigdata.contracts.validation import validate_record
@@ -145,7 +145,9 @@ def generate_historical_scaled(
         "selection_digest": selection_digest,
         "issue_date": issue_date.isoformat(),
         "lookback_dates": [day.isoformat() for day in dates],
-        "eligible_population": [dict(item_id=item, store_id=store) for item, store in ordered_pairs],
+        "eligible_population": [
+            dict(item_id=item, store_id=store) for item, store in ordered_pairs
+        ],
         "observed_sales": [
             dict(item_id=item, store_id=store, date=day.isoformat(), unit_sales=units)
             for (item, store, day), units in sorted(observations.items())
@@ -160,8 +162,9 @@ def generate_historical_scaled(
         "source_warehouse_id": _WAREHOUSE,
         "scenario_seed": None,
     }
-    canonical = json.dumps(document, sort_keys=True, ensure_ascii=True,
-                           separators=(",", ":"), allow_nan=False)
+    canonical = json.dumps(
+        document, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False
+    )
     # Match the repository canonical-byte convention, including its final newline.
     digest = hashlib.sha256((canonical + "\n").encode("utf-8")).hexdigest()
     scenario_id = "historical_scaled:" + digest
@@ -189,32 +192,39 @@ def generate_historical_scaled(
     with localcontext() as context:
         context.prec = max(28, len(str(max(item_totals.values()))) + 4)
         for (item, store), total in totals.items():
-            inventory_rows.append({
-                "scenario_id": scenario_id,
-                "scenario_version": _VERSION,
-                "scenario_type": "historical_scaled",
-                "source_snapshot_id": source_snapshot_id,
-                "issue_date": issue_date.isoformat(),
-                "item_id": item,
-                "store_id": store,
-                "opening_stock_units": int((Decimal(total) * _ALPHA).to_integral_value(
-                    rounding=ROUND_FLOOR)),
-                "safety_stock_units": int((Decimal(total) * _GAMMA).to_integral_value(
-                    rounding=ROUND_CEILING)),
-                "parameter_digest": metadata["parameter_digest"],
-                "origin_label": _ORIGIN,
-                "scenario_seed": None,
-            })
+            inventory_rows.append(
+                {
+                    "scenario_id": scenario_id,
+                    "scenario_version": _VERSION,
+                    "scenario_type": "historical_scaled",
+                    "source_snapshot_id": source_snapshot_id,
+                    "issue_date": issue_date.isoformat(),
+                    "item_id": item,
+                    "store_id": store,
+                    "opening_stock_units": int(
+                        (Decimal(total) * _ALPHA).to_integral_value(rounding=ROUND_FLOOR)
+                    ),
+                    "safety_stock_units": int(
+                        (Decimal(total) * _GAMMA).to_integral_value(rounding=ROUND_CEILING)
+                    ),
+                    "parameter_digest": metadata["parameter_digest"],
+                    "origin_label": _ORIGIN,
+                    "scenario_seed": None,
+                }
+            )
         for item, total in sorted(item_totals.items()):
-            central_rows.append({
-                "scenario_id": scenario_id,
-                "issue_date": issue_date.isoformat(),
-                "item_id": item,
-                "source_warehouse_id": _WAREHOUSE,
-                "central_available_units": int((Decimal(total) * _BETA).to_integral_value(
-                    rounding=ROUND_FLOOR)),
-                "origin_label": _ORIGIN,
-            })
+            central_rows.append(
+                {
+                    "scenario_id": scenario_id,
+                    "issue_date": issue_date.isoformat(),
+                    "item_id": item,
+                    "source_warehouse_id": _WAREHOUSE,
+                    "central_available_units": int(
+                        (Decimal(total) * _BETA).to_integral_value(rounding=ROUND_FLOOR)
+                    ),
+                    "origin_label": _ORIGIN,
+                }
+            )
 
     for contract, rows, quantities in (
         (INVENTORY_SCENARIO, inventory_rows, ("opening_stock_units", "safety_stock_units")),
@@ -231,6 +241,8 @@ def generate_historical_scaled(
                 raise ScenarioGenerationError("historical_scaled must have a null scenario_seed")
             for field in quantities:
                 _quantity(row[field], field)
-    if len(central_rows) != len(item_totals) or {r["item_id"] for r in central_rows} != set(item_totals):
+    if len(central_rows) != len(item_totals) or {r["item_id"] for r in central_rows} != set(
+        item_totals
+    ):
         raise ScenarioGenerationError("central supply requires exactly one row per item")
     return GeneratedScenario(tuple(inventory_rows), tuple(central_rows), metadata)

@@ -370,7 +370,9 @@ def finalize_publication(client, config, *, pipeline_run_id: str) -> str:
         manifest.get("contract_name") == "evaluation_manifest"
         and manifest.get("producer") == "warehouse-bigdata:inventory-policy-evaluation"
     ):
-        from warehouse_bigdata.optimization.inventory_artifacts import finalize_inventory_publication
+        from warehouse_bigdata.optimization.inventory_artifacts import (
+            finalize_inventory_publication,
+        )
 
         if request.get("version") != 1 or request.get("pipeline_run_id") != pipeline_run_id:
             raise HdfsNamespaceError("inventory publication execution identity/version mismatch")
@@ -547,10 +549,14 @@ def main() -> None:
             manifest.get("contract_name") == "evaluation_manifest"
             and manifest.get("producer") == "warehouse-bigdata:inventory-policy-evaluation"
         ):
-            from warehouse_bigdata.optimization.inventory_artifacts import validate_inventory_recovery
+            from warehouse_bigdata.optimization.inventory_artifacts import (
+                validate_inventory_recovery,
+            )
 
-            binding = _json(client, render_staging_path(config.base_path, args.pipeline_run_id)
-                            + "/input_binding.json")
+            binding = _json(
+                client,
+                render_staging_path(config.base_path, args.pipeline_run_id) + "/input_binding.json",
+            )
             validate_inventory_recovery(args, binding)
             finalize_publication(client, config, pipeline_run_id=args.pipeline_run_id)
             raise SystemExit(10)
@@ -659,7 +665,12 @@ def main() -> None:
         if request["manifest"].get("contract_name") == "decision_manifest":
             from warehouse_bigdata.common.hdfs_paths import render_decision_output_path
 
-            path = render_decision_output_path(config.base_path, request["manifest"]["decision_run_id"]) + "/decision_manifest.json"
+            path = (
+                render_decision_output_path(
+                    config.base_path, request["manifest"]["decision_run_id"]
+                )
+                + "/decision_manifest.json"
+            )
         elif request["manifest"].get("contract_name") == "evaluation_manifest":
             from warehouse_bigdata.common.hdfs_paths import render_evaluation_output_path
 
