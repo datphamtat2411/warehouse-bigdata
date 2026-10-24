@@ -33,10 +33,10 @@ def render_forecast(context, repository, selections):
 
 
 def render_inventory(context, repository, selections):
-    _placeholder('Tồn kho', 'Tồn kho và nguồn cung là dữ liệu mô phỏng; đề xuất bổ sung hàng '
-                 'là kết quả tính toán, không phản ánh tồn kho Walmart thực tế.')
+    from app.inventory import render_inventory as render
+    render(context, repository, selections)
 
 
 def render_allocation(context, repository, selections):
-    _placeholder('Phân bổ hàng', 'Phân bổ hàng là khuyến nghị được tính toán từ nguồn cung '
-                 'mô phỏng và chính sách đã được phê duyệt.')
+    from app.distribution import render_allocation as render
+    render(context, repository, selections)

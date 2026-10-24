@@ -36,6 +36,10 @@ def harness(monkeypatch):
         resource.get_eligible_items.return_value = ReadResult('ok', ({'item_id': 'I', 'store_id': 'S'},), 'predicted')
         resource.get_forecast_series.return_value = ReadResult('incomplete', provenance='predicted')
         resource.get_forecast_metrics.return_value = ReadResult('unavailable', provenance='evaluated')
+        resource.get_replenishment.return_value = ReadResult('empty', provenance='calculated')
+        resource.get_central_supply.return_value = ReadResult('empty', provenance='simulated')
+        resource.get_allocation.return_value = ReadResult('incomplete', provenance='calculated')
+        resource.get_policy_evaluation.return_value = ReadResult('unavailable', provenance='evaluated')
         resources.append(resource)
         try:
             yield resource
@@ -93,6 +97,21 @@ def test_real_forecast_routing_and_publication_reset(harness):
     assert not at.exception and at.session_state[PREFIX + 'item_id'] is None
     resources[-1].get_forecast_series.assert_not_called()
     assert at.sidebar.radio[0].value == 'Dự báo nhu cầu'
+
+
+@pytest.mark.parametrize('field', ['publication_id', 'manifest_checksum'])
+def test_inventory_routing_and_identity_reset(harness, field):
+    current, _, _, resources = harness
+    at = AppTest.from_file(ENTRYPOINT).run()
+    at.session_state[PREFIX + 'item_id'] = 'I'
+    at.sidebar.radio[0].set_value('Tồn kho').run()
+    assert not at.exception and at.title[0].value == 'Tồn kho'
+    resources[-1].get_replenishment.assert_called_once_with('I', 'S')
+    current[0] = replace(current[0], **{field: 'next'})
+    at.run()
+    assert not at.exception and at.session_state[PREFIX + 'item_id'] is None
+    resources[-1].get_replenishment.assert_not_called()
+    assert at.sidebar.radio[0].value == 'Tồn kho'
 
 
 def test_render_pins_context_then_next_rerun_adopts_change(harness, monkeypatch):
