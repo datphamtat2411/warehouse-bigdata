@@ -16,9 +16,17 @@ ROOT = Path.cwd()
 SELECTOR = ROOT / "artifacts/small-artifacts.json"
 DEST = ROOT / "artifacts/quick-demo"
 COMPOSE = [
-    "docker", "compose", "--env-file", str(ROOT / ".env"),
-    "-f", str(ROOT / "infrastructure/compose.yaml"),
-    "exec", "-T", "hdfs-namenode", "hdfs", "dfs",
+    "docker",
+    "compose",
+    "--env-file",
+    str(ROOT / ".env"),
+    "-f",
+    str(ROOT / "infrastructure/compose.yaml"),
+    "exec",
+    "-T",
+    "hdfs-namenode",
+    "hdfs",
+    "dfs",
 ]
 MAX_FILE_BYTES = 128 * 1024 * 1024
 MAX_DATASET_BYTES = 256 * 1024 * 1024
@@ -33,8 +41,7 @@ def hdfs_list(path: str) -> list[str]:
         raise RuntimeError(f"Cannot list HDFS path {path}: {response.stderr[-1000:]}")
     files = [s.strip() for s in response.stdout.splitlines() if s.strip()]
     parts = sorted(
-        f for f in files if f.rsplit("/", 1)[-1].startswith("part-")
-        and f.endswith(".parquet")
+        f for f in files if f.rsplit("/", 1)[-1].startswith("part-") and f.endswith(".parquet")
     )
     if not parts or len(parts) > MAX_PARTS:
         raise RuntimeError(f"Expected 1..{MAX_PARTS} Parquet parts under {path}; got {len(parts)}")
@@ -52,8 +59,9 @@ def download_one(remote: str, dest: Path) -> dict:
     total = 0
     try:
         with tmp.open("xb") as sink:
-            proc = subprocess.Popen([*COMPOSE, "-cat", remote], stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL)
+            proc = subprocess.Popen(
+                [*COMPOSE, "-cat", remote], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            )
             try:
                 assert proc.stdout is not None
                 while chunk := proc.stdout.read(1024 * 1024):
@@ -79,7 +87,9 @@ def download_one(remote: str, dest: Path) -> dict:
 
 def main() -> None:
     if not SELECTOR.is_file():
-        raise SystemExit("Run this script from the repository root with artifacts/small-artifacts.json")
+        raise SystemExit(
+            "Run this script from the repository root with artifacts/small-artifacts.json"
+        )
     import pyarrow.dataset as ds
 
     sel = json.loads(SELECTOR.read_text())
@@ -116,8 +126,11 @@ def main() -> None:
                     with local.open("rb") as fh:
                         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
                             digest.update(chunk)
-                    record = {"hdfs_path": remote, "bytes": local.stat().st_size,
-                              "sha256": digest.hexdigest()}
+                    record = {
+                        "hdfs_path": remote,
+                        "bytes": local.stat().st_size,
+                        "sha256": digest.hexdigest(),
+                    }
                     if record["bytes"] > MAX_FILE_BYTES:
                         raise RuntimeError(f"Oversized local file: {local}")
                 else:
@@ -136,20 +149,37 @@ def main() -> None:
             if dataset == "forecast_daily" and (rows > 700 or rows % 7 != 0):
                 raise RuntimeError(f"Unexpected forecast count: {rows}")
             manifest["datasets"][dataset] = {
-                "hdfs_path": path, "rows": rows, "files": evidence,
+                "hdfs_path": path,
+                "rows": rows,
+                "files": evidence,
             }
             print(f"  validated row count: {rows:,}", flush=True)
-        checked_store = ds.dataset(str(DEST / "store_daily_sales"), format="parquet").to_table(
-            columns=["source_snapshot_id", "store_id", "date"]
-        ).to_pydict()
+        checked_store = (
+            ds.dataset(str(DEST / "store_daily_sales"), format="parquet")
+            .to_table(columns=["source_snapshot_id", "store_id", "date"])
+            .to_pydict()
+        )
         if any(x != snapshot for x in checked_store["source_snapshot_id"]):
             raise RuntimeError("J03 store/day snapshot identity mismatch")
         if len(set(checked_store["store_id"])) != 10 or len(set(checked_store["date"])) != 1941:
             raise RuntimeError("Unexpected J03 store/day coverage")
-        check_forecast = ds.dataset(str(DEST / "forecast_daily"), format="parquet").to_table(
-            columns=["forecast_run_id", "source_snapshot_id", "model_run_id", "issue_date",
-                     "run_type", "horizon", "predicted_units", "item_id", "store_id"]
-        ).to_pydict()
+        check_forecast = (
+            ds.dataset(str(DEST / "forecast_daily"), format="parquet")
+            .to_table(
+                columns=[
+                    "forecast_run_id",
+                    "source_snapshot_id",
+                    "model_run_id",
+                    "issue_date",
+                    "run_type",
+                    "horizon",
+                    "predicted_units",
+                    "item_id",
+                    "store_id",
+                ]
+            )
+            .to_pydict()
+        )
         if any(x != forecast_id for x in check_forecast["forecast_run_id"]):
             raise RuntimeError("Forecast run identity mismatch")
         if any(x != snapshot for x in check_forecast["source_snapshot_id"]):
@@ -162,8 +192,10 @@ def main() -> None:
             raise RuntimeError("Unexpected forecast run type")
         groups: dict[tuple[str, str], set[int]] = {}
         for item, store, horizon in zip(
-            check_forecast["item_id"], check_forecast["store_id"],
-            check_forecast["horizon"], strict=True
+            check_forecast["item_id"],
+            check_forecast["store_id"],
+            check_forecast["horizon"],
+            strict=True,
         ):
             key = (item, store)
             if horizon in groups.setdefault(key, set()):
@@ -171,8 +203,10 @@ def main() -> None:
             groups[key].add(horizon)
         if any(horizons != set(range(1, 8)) for horizons in groups.values()):
             raise RuntimeError("Forecast series incomplete: expected exactly seven horizons")
-        if not all(isinstance(v, (int, float)) and 0 <= v < float("inf")
-                   for v in check_forecast["predicted_units"]):
+        if not all(
+            isinstance(v, (int, float)) and 0 <= v < float("inf")
+            for v in check_forecast["predicted_units"]
+        ):
             raise RuntimeError("Invalid nonnegative forecast values")
         (DEST / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         print("SUCCESS: read-only M5 Small extract ready at artifacts/quick-demo", flush=True)

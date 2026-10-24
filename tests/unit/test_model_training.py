@@ -289,6 +289,10 @@ def test_m06_workflow_stages_complete_bundle_and_preserves_failed_attempt(
         model_artifacts, "artifact_uri", lambda config, path: str(hdfs._local(path))
     )
     monkeypatch.setattr(model_artifacts, "require_sealed", lambda *a: None)
+    monkeypatch.setattr(
+        hdfs, "path_status", lambda path: {"owner": "hadoop", "permission": "755"}, raising=False
+    )
+    monkeypatch.setattr(hdfs, "get_acl", lambda path: "", raising=False)
     loaded = model_artifacts.load_validated_model(
         spark,
         model_run_id="rf-001",

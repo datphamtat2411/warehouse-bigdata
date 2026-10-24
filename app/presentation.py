@@ -5,7 +5,8 @@ import streamlit as st
 
 def apply_style():
     """Style native components without replacing their controls or focus behavior."""
-    st.markdown('''
+    st.markdown(
+        """
 <style>
     [data-testid="stAppViewContainer"] { background: #edf2f6; }
     .stMainBlockContainer {
@@ -78,14 +79,19 @@ def apply_style():
         [data-testid="stMetric"] { padding: 0.75rem 1rem; }
     }
 </style>
-''', unsafe_allow_html=True)
+""",
+        unsafe_allow_html=True,
+    )
 
 
 def sidebar_identity():
-    st.sidebar.markdown('''
+    st.sidebar.markdown(
+        """
 <div class="dashboard-identity">
     <small>PHÂN TÍCH DỮ LIỆU M5</small>
     <strong>Hỗ trợ quyết định<br>quản lý tồn kho</strong>
     <p>Bán hàng · Dự báo · Phân bổ</p>
 </div>
-''', unsafe_allow_html=True)
+""",
+        unsafe_allow_html=True,
+    )

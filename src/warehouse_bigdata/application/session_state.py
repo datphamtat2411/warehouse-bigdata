@@ -1,7 +1,7 @@
 """Small, publication-aware session state with no cached approval or resources."""
 
-PREFIX = 'm09.'
-FIELDS = ('store_id', 'item_id', 'policy_id')
+PREFIX = "m09."
+FIELDS = ("store_id", "item_id", "policy_id")
 
 
 def publication_identity(context):
@@ -11,16 +11,16 @@ def publication_identity(context):
 def sync_publication_state(state, context):
     """Invalidate owned data before widgets; preserve the navigation destination."""
     identity = publication_identity(context) if context is not None else None
-    changed = state.get(PREFIX + 'identity') != identity
-    if changed or context is None or PREFIX + 'identity' not in state:
+    changed = state.get(PREFIX + "identity") != identity
+    if changed or context is None or PREFIX + "identity" not in state:
         for key in list(state):
-            if key.startswith(PREFIX) and key != PREFIX + 'navigation':
+            if key.startswith(PREFIX) and key != PREFIX + "navigation":
                 del state[key]
-        state[PREFIX + 'identity'] = identity
+        state[PREFIX + "identity"] = identity
         for field in FIELDS:
             state[PREFIX + field] = None
         if context is not None and context.policy_ids:
-            state[PREFIX + 'policy_id'] = context.policy_ids[0]
+            state[PREFIX + "policy_id"] = context.policy_ids[0]
     return changed
 
 
@@ -32,20 +32,20 @@ def selections(state):
 def set_selection(state, field, value):
     """Apply filter dependency resets; callers supply validated selection values."""
     if field not in FIELDS:
-        raise ValueError('unknown selection field')
+        raise ValueError("unknown selection field")
     if state.get(PREFIX + field) == value:
         return
     state[PREFIX + field] = value
     for key in list(state):
-        if key.startswith(PREFIX + 'results'):
+        if key.startswith(PREFIX + "results"):
             del state[key]
 
 
 def reconcile_item(state, items):
     """Reconcile only a successfully validated catalog, before dependent reads."""
-    item = state.get(PREFIX + 'item_id')
+    item = state.get(PREFIX + "item_id")
     if item is None or item in items:
         return False
-    set_selection(state, 'item_id', None)
-    state.pop(PREFIX + 'widget_item_id', None)
+    set_selection(state, "item_id", None)
+    state.pop(PREFIX + "widget_item_id", None)
     return True

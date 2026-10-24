@@ -446,9 +446,18 @@ PUBLICATION_MANIFEST = _manifest(
     status_values=PUBLICATION_STATUSES,
     description="Validated serving release and authoritative application-selection metadata.",
     optional_metadata_fields=(
-        "dataset_bindings", "datasets", "expected_rows_map", "source_statistics",
-        "release_digest_payload", "application_checksum_definition", "publication_context",
-        "failure", "serving_unavailable", "feature_version", "issue_date", "run_type",
+        "dataset_bindings",
+        "datasets",
+        "expected_rows_map",
+        "source_statistics",
+        "release_digest_payload",
+        "application_checksum_definition",
+        "publication_context",
+        "failure",
+        "serving_unavailable",
+        "feature_version",
+        "issue_date",
+        "run_type",
     ),
 )
 

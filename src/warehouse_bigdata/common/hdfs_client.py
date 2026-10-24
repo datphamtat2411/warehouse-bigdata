@@ -420,8 +420,10 @@ class HdfsCliClient:
         if self.stat(remote_path).size_bytes > max_bytes:
             raise HdfsCommandError("HDFS data file exceeds the configured bound")
         process = subprocess.Popen(
-            self._argv("dfs", "-cat", remote_path), stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, env=self.environment,
+            self._argv("dfs", "-cat", remote_path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=self.environment,
         )
         try:
             assert process.stdout is not None

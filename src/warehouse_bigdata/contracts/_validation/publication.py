@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 from collections.abc import Mapping
 
 from ..manifests import APPROVED, PUBLICATION_CONTEXT_FIELDS
@@ -21,26 +21,53 @@ def publication_issues(
     if "dataset_bindings" in record:
         bindings = record["dataset_bindings"]
         if not isinstance(bindings, Mapping) or not bindings:
-            issues.append(_issue("MISSING_PUBLICATION_METADATA", contract_name,
-                                 field="dataset_bindings", message="explicit dataset bindings required"))
+            issues.append(
+                _issue(
+                    "MISSING_PUBLICATION_METADATA",
+                    contract_name,
+                    field="dataset_bindings",
+                    message="explicit dataset bindings required",
+                )
+            )
         for label, copy in (("context", context), ("application_copy", application_copy)):
             if copy is None or copy.get("dataset_bindings") != bindings:
-                issues.append(_issue("PUBLICATION_MISMATCH", contract_name,
-                                     field=f"{label}.dataset_bindings",
-                                     message="historical dataset bindings must be copied exactly"))
-    if record.get("application_checksum_definition") == "sha256-canonical-application-copy-v1" and application_copy is not None:
-        payload = (json.dumps(application_copy, sort_keys=True, separators=(",", ":")) + "\n").encode()
+                issues.append(
+                    _issue(
+                        "PUBLICATION_MISMATCH",
+                        contract_name,
+                        field=f"{label}.dataset_bindings",
+                        message="historical dataset bindings must be copied exactly",
+                    )
+                )
+    if (
+        record.get("application_checksum_definition") == "sha256-canonical-application-copy-v1"
+        and application_copy is not None
+    ):
+        payload = (
+            json.dumps(application_copy, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
         checksum = "sha256:" + hashlib.sha256(payload).hexdigest()
         if checksum != record.get("application_manifest_checksum"):
-            issues.append(_issue("PUBLICATION_MISMATCH", contract_name,
-                                 field="application_manifest_checksum",
-                                 message="exact application copy checksum differs"))
+            issues.append(
+                _issue(
+                    "PUBLICATION_MISMATCH",
+                    contract_name,
+                    field="application_manifest_checksum",
+                    message="exact application copy checksum differs",
+                )
+            )
         release = record.get("release_digest_payload")
         if isinstance(release, Mapping):
             payload = (json.dumps(release, sort_keys=True, separators=(",", ":")) + "\n").encode()
             if "sha256:" + hashlib.sha256(payload).hexdigest() != record.get("artifact_checksum"):
-                issues.append(_issue("PUBLICATION_MISMATCH", contract_name,
-                                     field="artifact_checksum", message="release content digest differs"))
+                issues.append(
+                    _issue(
+                        "PUBLICATION_MISMATCH",
+                        contract_name,
+                        field="artifact_checksum",
+                        message="release content digest differs",
+                    )
+                )
     required_metadata = (
         "publication_id",
         "selected_dataset_manifests",

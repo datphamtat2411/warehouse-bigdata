@@ -2,6 +2,7 @@
 
 app/main.py, app/shell.py, HDFS publication and ClickHouse are untouched.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -36,15 +37,17 @@ def render_preview():
         base, manifest, selector, digest = checked_manifest(Path.cwd())
         repository = _load_cached(str(base), manifest, selector, digest)
     except Exception as error:
-        st.error("Không thể xác minh dữ liệu M5 Small J02–J06. "
-                 "Chạy `prepare_demo.py` tại thư mục gốc repository.")
+        st.error(
+            "Không thể xác minh dữ liệu M5 Small J02–J06. "
+            "Chạy `prepare_demo.py` tại thư mục gốc repository."
+        )
         st.caption("Error category: " + type(error).__name__)
         st.stop()
     ctx = repository.context
     sync_publication_state(st.session_state, ctx)
-    st.sidebar.button("Làm mới dữ liệu", on_click=_load_cached.clear, width='stretch')
+    st.sidebar.button("Làm mới dữ liệu", on_click=_load_cached.clear, width="stretch")
     page = st.sidebar.radio("Điều hướng", tuple(PAGES), key=PREFIX + "navigation")
-    st.sidebar.caption('M5 Small · Phân tích phục vụ nghiên cứu')
+    st.sidebar.caption("M5 Small · Phân tích phục vụ nghiên cứu")
     with st.sidebar.expander("Thông tin dữ liệu"):
         st.markdown("**Bán hàng:** Quan sát từ M5 Small, trích xuất từ HDFS.")
         st.markdown("**Dự báo:** Kết quả mô hình Random Forest, chân trời 7 ngày.")

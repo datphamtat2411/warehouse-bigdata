@@ -26,7 +26,10 @@ def test_static_topology_and_resources():
     resources = ET.parse(config / "warehouse-resources.xml").getroot()
     assert int(resources.findtext("max_server_memory_usage")) < 1024**3
     compose = (ROOT / "infrastructure/compose.yaml").read_text()
-    assert "clickhouse/clickhouse-server:26.8@sha256:8b28eb09479c36c4533eec7a6268917d04ba3a6fd90e3f4205f70e761b6d7779" in compose
+    assert (
+        "clickhouse/clickhouse-server:26.8@sha256:8b28eb09479c36c4533eec7a6268917d04ba3a6fd90e3f4205f70e761b6d7779"
+        in compose
+    )
     assert '"127.0.0.1:8123:8123"' in compose
     assert "profiles: [clickhouse]" in compose
     for index in (1, 2):
@@ -39,8 +42,10 @@ def test_initializer_preserves_values_and_is_private_and_idempotent(tmp_path):
     shutil.copy(ROOT / "scripts/init-clickhouse-env.sh", scripts)
     shutil.copy(ROOT / ".env.example", tmp_path)
     env = tmp_path / ".env"
-    env.write_text("UNRELATED=keep\nWAREHOUSE_CLICKHOUSE_USER=existing_reader\n"
-                   "WAREHOUSE_CLICKHOUSE_PASSWORD=\n")
+    env.write_text(
+        "UNRELATED=keep\nWAREHOUSE_CLICKHOUSE_USER=existing_reader\n"
+        "WAREHOUSE_CLICKHOUSE_PASSWORD=\n"
+    )
     command = ["bash", str(scripts / "init-clickhouse-env.sh")]
     first = subprocess.run(command, capture_output=True, text=True, check=True)
     content = env.read_text()
@@ -57,7 +62,8 @@ def test_lifecycle_rejects_destructive_commands():
     for action in ("down", "reset", "rm", "up --volumes"):
         result = subprocess.run(
             ["bash", str(ROOT / "scripts/clickhouse-cluster.sh"), action],
-            capture_output=True, env={**os.environ},
+            capture_output=True,
+            env={**os.environ},
         )
         assert result.returncode != 0
     script = (ROOT / "scripts/clickhouse-cluster.sh").read_text()

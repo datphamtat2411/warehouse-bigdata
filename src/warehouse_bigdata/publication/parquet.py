@@ -1,8 +1,8 @@
 """One-file HDFS spooling and bounded Arrow batches; no dataset collection."""
 
+import hashlib
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-import hashlib
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 
@@ -23,7 +23,10 @@ class ParquetFile:
 
 
 def iter_parquet_batches(
-    client, files: Sequence[ParquetFile], *, scratch_dir: Path,
+    client,
+    files: Sequence[ParquetFile],
+    *,
+    scratch_dir: Path,
     batch_rows: int = DEFAULT_BATCH_ROWS,
 ) -> Iterator:
     """Yield batches from only selected files; clean scratch even on early close."""
@@ -36,9 +39,14 @@ def iter_parquet_batches(
         raise ValueError("selected Parquet files must be nonempty, unique, and bounded")
     for item in files:
         path = PurePosixPath(item.path)
-        if (not path.is_absolute() or str(path) != item.path or ".." in path.parts
-                or not item.path.endswith(".parquet")
-                or type(item.size_bytes) is not int or not 0 < item.size_bytes <= MAX_FILE_BYTES):
+        if (
+            not path.is_absolute()
+            or str(path) != item.path
+            or ".." in path.parts
+            or not item.path.endswith(".parquet")
+            or type(item.size_bytes) is not int
+            or not 0 < item.size_bytes <= MAX_FILE_BYTES
+        ):
             raise ValueError("unsafe or oversized selected Parquet file")
     Path(scratch_dir).mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="j08-parquet-", dir=scratch_dir) as directory:
@@ -57,8 +65,7 @@ def iter_parquet_batches(
                         raise ValueError("selected Parquet SHA-256 changed")
                 try:
                     with pq.ParquetFile(local) as parquet:
-                        for batch in parquet.iter_batches(batch_size=batch_rows, use_threads=False):
-                            yield batch
+                        yield from parquet.iter_batches(batch_size=batch_rows, use_threads=False)
                 except (pa.ArrowException, OSError) as error:
                     raise ValueError(f"malformed selected Parquet: {item.path}") from error
                 if item.checksum and client.checksum(item.path) != item.checksum:

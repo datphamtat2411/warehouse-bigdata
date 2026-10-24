@@ -230,7 +230,15 @@ def test_application_reads_require_one_publication_context() -> None:
     }.issubset(PUBLICATION_CONTEXT_FIELDS)
 
     for operation in APPLICATION_READ_CONTRACTS:
-        assert set(operation.required_context_fields) == set(PUBLICATION_CONTEXT_FIELDS)
+        expected_fields = set(PUBLICATION_CONTEXT_FIELDS)
+        historical_bindings = {
+            "get_forecast_metrics": "dataset_bindings.forecast_metrics",
+            "get_policy_evaluation": "dataset_bindings.inventory_policy_evaluation",
+        }
+        if operation.name in historical_bindings:
+            expected_fields.add(historical_bindings[operation.name])
+            assert operation.requires_historical_evaluation
+        assert set(operation.required_context_fields) == expected_fields
         assert operation.result_contract
         assert operation.missing_data_behavior
 

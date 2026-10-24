@@ -16,9 +16,12 @@ def test_selected_small_offline_publication():
         decision_run_id=os.environ["WAREHOUSE_PUBLICATION_DECISION_RUN_ID"],
         decision_pipeline_run_id=os.environ["WAREHOUSE_PUBLICATION_DECISION_PIPELINE_RUN_ID"],
         policy_evaluation_run_id=os.environ["WAREHOUSE_PUBLICATION_POLICY_EVALUATION_RUN_ID"],
-        policy_evaluation_pipeline_run_id=os.environ["WAREHOUSE_PUBLICATION_POLICY_EVALUATION_PIPELINE_RUN_ID"],
+        policy_evaluation_pipeline_run_id=os.environ[
+            "WAREHOUSE_PUBLICATION_POLICY_EVALUATION_PIPELINE_RUN_ID"
+        ],
         forecast_evaluation_run_id=os.environ["WAREHOUSE_PUBLICATION_FORECAST_EVALUATION_RUN_ID"],
-        offline_reload=True, confirm_offline_reload=True,
+        offline_reload=True,
+        confirm_offline_reload=True,
     )
     assert result.status == "APPROVED"
     assert result.reconciliation.validated

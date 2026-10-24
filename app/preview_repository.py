@@ -3,25 +3,33 @@
 This is NOT an approved ClickHouse publication or an implementation of J07.
 No official approval gates, repositories or publication identity are modified.
 """
+
 from __future__ import annotations
 
-from collections import defaultdict
-from dataclasses import dataclass
-from datetime import date, timedelta
 import hashlib
 import json
 import math
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-
 
 DATASETS = ("sales_daily", "store_daily_sales", "forecast_daily")
 COLUMNS = {
     "sales_daily": ("item_id", "store_id", "date", "unit_sales"),
     "store_daily_sales": ("source_snapshot_id", "store_id", "date", "total_units"),
     "forecast_daily": (
-        "forecast_run_id", "model_run_id", "source_snapshot_id", "issue_date",
-        "forecast_date", "horizon", "item_id", "store_id", "predicted_units", "run_type",
+        "forecast_run_id",
+        "model_run_id",
+        "source_snapshot_id",
+        "issue_date",
+        "forecast_date",
+        "horizon",
+        "item_id",
+        "store_id",
+        "predicted_units",
+        "run_type",
     ),
 }
 
@@ -89,7 +97,7 @@ class PreviewRepository:
             raise ValueError("Incomplete M5 Small population")
         if len(self.trends) != 10 or any(len(s) != 1941 for s in self.trends.values()):
             raise ValueError("Incomplete store/day trend")
-        for (item, store), hist in self.history.items():
+        for hist in self.history.values():
             if len(hist) != 1941 or set(hist) != days:
                 raise ValueError("Incomplete item/store observed history")
         if any(set(trend) != days for trend in self.trends.values()):
@@ -98,26 +106,43 @@ class PreviewRepository:
         for (_, store), history in self.history.items():
             for day, units in history.items():
                 totals[store, day] += units
-        if any(totals[store, day] != units for store, hist in self.trends.items()
-               for day, units in hist.items()):
+        if any(
+            totals[store, day] != units
+            for store, hist in self.trends.items()
+            for day, units in hist.items()
+        ):
             raise ValueError("J02 item-level units do not reconcile with J03 store totals")
         issue = date(2016, 5, 22)
         if not 0 < len(forecast_rows) <= 700 or len(forecast_rows) % 7:
             raise ValueError("Unexpected J06 forecast cardinality")
         for row in forecast_rows:
-            if any(row[key] != selector[val] for key, val in (
-                ("forecast_run_id", "forecast_run_id"),
-                ("source_snapshot_id", "source_snapshot_id"),
-                ("model_run_id", "model_run_id"),
-            )) or row["issue_date"] != issue or row["run_type"] != "forward_demo":
+            if (
+                any(
+                    row[key] != selector[val]
+                    for key, val in (
+                        ("forecast_run_id", "forecast_run_id"),
+                        ("source_snapshot_id", "source_snapshot_id"),
+                        ("model_run_id", "model_run_id"),
+                    )
+                )
+                or row["issue_date"] != issue
+                or row["run_type"] != "forward_demo"
+            ):
                 raise ValueError("J06 forecast lineage mismatch")
-            item, store, horizon, pred = (row[k] for k in
-                                          ("item_id", "store_id", "horizon", "predicted_units"))
-            if (not isinstance(item, str) or not isinstance(store, str)
-                or (item, store) not in self.history or type(horizon) is not int
+            item, store, horizon, pred = (
+                row[k] for k in ("item_id", "store_id", "horizon", "predicted_units")
+            )
+            if (
+                not isinstance(item, str)
+                or not isinstance(store, str)
+                or (item, store) not in self.history
+                or type(horizon) is not int
                 or horizon not in range(1, 8)
                 or row["forecast_date"] != issue + timedelta(days=horizon)
-                or type(pred) not in (float, int) or not math.isfinite(pred) or pred < 0):
+                or type(pred) not in (float, int)
+                or not math.isfinite(pred)
+                or pred < 0
+            ):
                 raise ValueError("Malformed J06 forecast")
             self.predictions[item, store].append(dict(row, forecast_status="ok"))
         if not self.predictions or any(
@@ -138,8 +163,10 @@ class PreviewRepository:
             forecast_run_id=selector["forecast_run_id"],
             issue_date=issue,
             coverage=SimpleNamespace(
-                available_stores=tuple(sorted(stores)), series_total=len(self.history),
-                series_eligible=len(self.predictions), series_scored=len(self.predictions),
+                available_stores=tuple(sorted(stores)),
+                series_total=len(self.history),
+                series_eligible=len(self.predictions),
+                series_scored=len(self.predictions),
                 loaded_rows=sum(manifest["datasets"][k]["rows"] for k in DATASETS),
             ),
             dataset_bindings=bindings,
@@ -148,7 +175,9 @@ class PreviewRepository:
     def get_eligible_items(self, store, search="", *, limit=50):
         if store not in self.trends or not isinstance(search, str) or limit > 50:
             return PreviewResult("error", provenance="predicted")
-        items = [item for item, other in self.pairs if other == store and search.lower() in item.lower()]
+        items = [
+            item for item, other in self.pairs if other == store and search.lower() in item.lower()
+        ]
         rows = tuple({"item_id": item, "store_id": store} for item in items[:limit])
         return PreviewResult("ok" if rows else "empty", rows, "predicted")
 
@@ -156,37 +185,58 @@ class PreviewRepository:
         days = self.trends.get(store)
         if not days:
             return PreviewResult("empty", provenance="observed")
-        return PreviewResult("ok", (dict(store_id=store, start_date=min(days),
-            end_date=max(days), day_count=len(days), row_count=len(days)),), "observed")
+        return PreviewResult(
+            "ok",
+            (
+                dict(
+                    store_id=store,
+                    start_date=min(days),
+                    end_date=max(days),
+                    day_count=len(days),
+                    row_count=len(days),
+                ),
+            ),
+            "observed",
+        )
 
     def _window(self, start, end):
-        return (type(start) is date and type(end) is date and start <= end
-                and (end - start).days < self.limits.max_history_days)
+        return (
+            type(start) is date
+            and type(end) is date
+            and start <= end
+            and (end - start).days < self.limits.max_history_days
+        )
 
     def get_store_trend(self, store, start, end):
         if not self._window(start, end):
             return PreviewResult("error", provenance="observed")
-        rows = tuple({"store_id": store, "sale_date": day, "total_units": count}
-                     for day, count in sorted(self.trends.get(store, {}).items())
-                     if start <= day <= end)
+        rows = tuple(
+            {"store_id": store, "sale_date": day, "total_units": count}
+            for day, count in sorted(self.trends.get(store, {}).items())
+            if start <= day <= end
+        )
         return PreviewResult("ok" if rows else "empty", rows, "observed")
 
     def get_item_history(self, item, store, start, end):
         if not self._window(start, end):
             return PreviewResult("error", provenance="observed")
-        rows = tuple({"item_id": item, "store_id": store, "sale_date": day, "unit_sales": count}
-                     for day, count in sorted(self.history.get((item, store), {}).items())
-                     if start <= day <= end)
+        rows = tuple(
+            {"item_id": item, "store_id": store, "sale_date": day, "unit_sales": count}
+            for day, count in sorted(self.history.get((item, store), {}).items())
+            if start <= day <= end
+        )
         return PreviewResult("ok" if rows else "empty", rows, "observed")
 
     def get_forecast_series(self, item, store):
         rows = self.predictions.get((item, store), ())
-        return PreviewResult("ok" if rows else "empty",
-                             tuple(sorted(rows, key=lambda r: r["horizon"])), "predicted")
+        return PreviewResult(
+            "ok" if rows else "empty", tuple(sorted(rows, key=lambda r: r["horizon"])), "predicted"
+        )
 
     def get_forecast_metrics(self):
-        return PreviewResult("unavailable", provenance="evaluated",
-                             reason="No approved J08 evaluation publication")
+        return PreviewResult(
+            "unavailable", provenance="evaluated", reason="No approved J08 evaluation publication"
+        )
 
 
 def checked_manifest(root: Path):
@@ -196,11 +246,15 @@ def checked_manifest(root: Path):
     selector = json.loads(src.read_text())
     manifest_bytes = (base / "manifest.json").read_bytes()
     manifest = json.loads(manifest_bytes)
-    if (manifest.get("demo_mode") != "HDFS read-only artifact extract; NOT J08 publication"
+    if (
+        manifest.get("demo_mode") != "HDFS read-only artifact extract; NOT J08 publication"
         or manifest.get("dataset_scope") != "demo_sample"
-        or any(manifest.get(key) != selector.get(key) for key in
-               ("source_snapshot_id", "model_run_id", "forecast_run_id", "selection_digest"))
-        or set(manifest.get("datasets", {})) != set(DATASETS)):
+        or any(
+            manifest.get(key) != selector.get(key)
+            for key in ("source_snapshot_id", "model_run_id", "forecast_run_id", "selection_digest")
+        )
+        or set(manifest.get("datasets", {})) != set(DATASETS)
+    ):
         raise ValueError("Preview extraction does not match the frozen selector")
     dig = hashlib.sha256(manifest_bytes)
     for dataset in DATASETS:
@@ -238,5 +292,11 @@ def make_repository(base: Path, manifest: dict, selector: dict, signature: str):
         if table.num_rows != manifest["datasets"][name]["rows"]:
             raise ValueError("Preview Parquet row-count mismatch")
         rows[name] = table.to_pylist()
-    return PreviewRepository(rows["sales_daily"], rows["store_daily_sales"],
-                             rows["forecast_daily"], manifest, selector, signature)
+    return PreviewRepository(
+        rows["sales_daily"],
+        rows["store_daily_sales"],
+        rows["forecast_daily"],
+        manifest,
+        selector,
+        signature,
+    )

@@ -4,11 +4,12 @@ Real J02/J03/J06 data originates from verified M5 Small HDFS extracts.
 J07 quantities are hypothetical and deterministic; NO J07 job, ClickHouse
 publication, approved pointer, HDFS mutation, or production API is involved.
 """
+
 from __future__ import annotations
 
-from dataclasses import replace
 import hashlib
 import math
+from dataclasses import replace
 
 from app.preview_repository import PreviewResult, make_repository
 
@@ -66,8 +67,11 @@ class MockServingRepository:
     def __init__(self, real):
         self.real = real
         bindings = dict(real.context.dataset_bindings)
-        for dataset in ("replenishment_recommendations", "central_supply_scenario",
-                        "allocation_recommendations"):
+        for dataset in (
+            "replenishment_recommendations",
+            "central_supply_scenario",
+            "allocation_recommendations",
+        ):
             bindings[dataset] = {"dataset_scope": "demo_sample", "demo_source": "MOCK_ONLY"}
         self.context = replace(
             real.context,
@@ -109,7 +113,8 @@ class MockServingRepository:
         safe_need = request - critical
         ctx = self.context
         row = dict(
-            item_id=item, store_id=store,
+            item_id=item,
+            store_id=store,
             issue_date=ctx.issue_date,
             source_snapshot_id=ctx.source_snapshot_id,
             forecast_run_id=ctx.forecast_run_id,
@@ -148,16 +153,24 @@ class MockServingRepository:
         # Supply shortage is a hypothetical classroom demonstration parameter.
         supply = math.floor(total * 0.70)
         ctx = self.context
-        row = dict(item_id=item, scenario_id=ctx.scenario_id, issue_date=ctx.issue_date,
-                   origin_label="simulated_central_supply", source_warehouse_id="MOCK-WH-01",
-                   central_available_units=supply)
+        row = dict(
+            item_id=item,
+            scenario_id=ctx.scenario_id,
+            issue_date=ctx.issue_date,
+            origin_label="simulated_central_supply",
+            source_warehouse_id="MOCK-WH-01",
+            central_available_units=supply,
+        )
         self._supply[item] = row
         return row
 
     def get_central_supply(self, item):
         row = self._central(item)
-        return (PreviewResult("ok", (row,), "simulated") if row is not None
-                else PreviewResult("empty", provenance="simulated"))
+        return (
+            PreviewResult("ok", (row,), "simulated")
+            if row is not None
+            else PreviewResult("empty", provenance="simulated")
+        )
 
     def get_allocation(self, item, policy):
         if policy not in MOCK_POLICIES:
@@ -180,27 +193,36 @@ class MockServingRepository:
             extra = proportional(safety_need, capacity - sum(critical_alloc.values()))
             allocated = {store: critical_alloc[store] + extra[store] for store in stores}
         else:
-            allocated = equal_share({store: row["request_units"] for store, row in requests.items()}, capacity)
-            critical_alloc = {store: min(allocated[store], critical_need[store]) for store in stores}
+            allocated = equal_share(
+                {store: row["request_units"] for store, row in requests.items()}, capacity
+            )
+            critical_alloc = {
+                store: min(allocated[store], critical_need[store]) for store in stores
+            }
             extra = {store: allocated[store] - critical_alloc[store] for store in stores}
         ctx = self.context
-        rows = tuple(dict(
-            item_id=item, store_id=store,
-            issue_date=ctx.issue_date,
-            source_snapshot_id=ctx.source_snapshot_id,
-            forecast_run_id=ctx.forecast_run_id,
-            model_run_id=ctx.model_run_id,
-            scenario_id=ctx.scenario_id,
-            decision_run_id=ctx.decision_run_id,
-            policy_id=policy, policy_version="v1",
-            source_warehouse_id=central["source_warehouse_id"],
-            central_available_units=capacity,
-            requested_units=requests[store]["request_units"],
-            allocated_units=allocated[store],
-            unmet_request_units=requests[store]["request_units"] - allocated[store],
-            critical_allocated_units=critical_alloc[store],
-            safety_allocated_units=extra[store],
-        ) for store in stores)
+        rows = tuple(
+            dict(
+                item_id=item,
+                store_id=store,
+                issue_date=ctx.issue_date,
+                source_snapshot_id=ctx.source_snapshot_id,
+                forecast_run_id=ctx.forecast_run_id,
+                model_run_id=ctx.model_run_id,
+                scenario_id=ctx.scenario_id,
+                decision_run_id=ctx.decision_run_id,
+                policy_id=policy,
+                policy_version="v1",
+                source_warehouse_id=central["source_warehouse_id"],
+                central_available_units=capacity,
+                requested_units=requests[store]["request_units"],
+                allocated_units=allocated[store],
+                unmet_request_units=requests[store]["request_units"] - allocated[store],
+                critical_allocated_units=critical_alloc[store],
+                safety_allocated_units=extra[store],
+            )
+            for store in stores
+        )
         self._allocations[key] = rows
         return PreviewResult("ok", rows, "calculated")
 

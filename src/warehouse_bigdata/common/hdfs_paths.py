@@ -41,7 +41,9 @@ def validate_source_snapshot_id(source_snapshot_id: str) -> str:
 def render_publication_manifest_path(base_path: str, publication_id: str) -> str:
     """Render the explicit J08 manifest, never discover a latest candidate."""
     validate_pipeline_run_id(publication_id)
-    return render_hdfs_artifact_path(base_path, "publication_manifest", publication_id=publication_id)
+    return render_hdfs_artifact_path(
+        base_path, "publication_manifest", publication_id=publication_id
+    )
 
 
 def render_hdfs_artifact_path(base_path: str, artifact_name: str, **values: str) -> str:

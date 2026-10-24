@@ -13,8 +13,8 @@ from warehouse_bigdata.common.config import (
     PathsConfig,
     RuntimeConfig,
     SparkConfig,
-    load_clickhouse_config,
     load_clickhouse_admin_config,
+    load_clickhouse_config,
     load_clickhouse_publisher_config,
     load_hdfs_config,
     load_paths_config,
@@ -72,8 +72,10 @@ def test_runtime_defaults() -> None:
     assert load_runtime_config({}) == RuntimeConfig(environment="local", log_level="INFO")
 
 
-@pytest.mark.parametrize("loader,role", [(load_clickhouse_publisher_config, "PUBLISHER"),
-                                         (load_clickhouse_admin_config, "ADMIN")])
+@pytest.mark.parametrize(
+    "loader,role",
+    [(load_clickhouse_publisher_config, "PUBLISHER"), (load_clickhouse_admin_config, "ADMIN")],
+)
 def test_clickhouse_privileged_roles_never_fall_back_to_reader(loader, role):
     env = clickhouse_environment()
     with pytest.raises(ConfigurationError, match=role + "_USER"):

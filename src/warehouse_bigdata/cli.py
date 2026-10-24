@@ -55,19 +55,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     ingest.add_argument("--profile-path", required=True, type=Path, metavar="PATH")
     ingest.add_argument("--manifest-path", required=True, type=Path, metavar="PATH")
     ingest.add_argument("--pipeline-run-id", required=True, metavar="ID")
-    publish = commands.add_parser("publish-clickhouse", help="Validate and replace M5 Small serving data offline.")
-    publish.add_argument("--selector", type=Path, help="Canonical selector; defaults to WAREHOUSE_SMALL_ARTIFACTS.")
-    for name in ("decision-run-id", "decision-pipeline-run-id", "policy-evaluation-run-id",
-                 "policy-evaluation-pipeline-run-id", "forecast-evaluation-run-id"):
+    publish = commands.add_parser(
+        "publish-clickhouse", help="Validate and replace M5 Small serving data offline."
+    )
+    publish.add_argument(
+        "--selector", type=Path, help="Canonical selector; defaults to WAREHOUSE_SMALL_ARTIFACTS."
+    )
+    for name in (
+        "decision-run-id",
+        "decision-pipeline-run-id",
+        "policy-evaluation-run-id",
+        "policy-evaluation-pipeline-run-id",
+        "forecast-evaluation-run-id",
+    ):
         publish.add_argument("--" + name, required=True)
     publish.add_argument("--batch-rows", type=int, default=2048)
     publish.add_argument("--offline-reload", action="store_true", required=True)
     publish.add_argument("--confirm-offline-reload", action="store_true", required=True)
-    verify = commands.add_parser('verify-clickhouse-distributed', help='Read-only approved M5 Small verification.')
-    verify.add_argument('--publication', type=Path, default=Path('artifacts/approved_publication.json'))
-    verify.add_argument('--evidence-dir', type=Path, default=Path('artifacts/verification'))
+    verify = commands.add_parser(
+        "verify-clickhouse-distributed", help="Read-only approved M5 Small verification."
+    )
+    verify.add_argument(
+        "--publication", type=Path, default=Path("artifacts/approved_publication.json")
+    )
+    verify.add_argument("--evidence-dir", type=Path, default=Path("artifacts/verification"))
     arguments = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
-    if arguments.command == 'verify-clickhouse-distributed':
+    if arguments.command == "verify-clickhouse-distributed":
         from warehouse_bigdata.jobs.verify_clickhouse_distributed import run_verification
 
         try:
@@ -80,12 +93,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         try:
             result = run_publish_clickhouse(
-                selector_path=arguments.selector, decision_run_id=arguments.decision_run_id,
+                selector_path=arguments.selector,
+                decision_run_id=arguments.decision_run_id,
                 decision_pipeline_run_id=arguments.decision_pipeline_run_id,
                 policy_evaluation_run_id=arguments.policy_evaluation_run_id,
                 policy_evaluation_pipeline_run_id=arguments.policy_evaluation_pipeline_run_id,
                 forecast_evaluation_run_id=arguments.forecast_evaluation_run_id,
-                batch_rows=arguments.batch_rows, offline_reload=arguments.offline_reload,
+                batch_rows=arguments.batch_rows,
+                offline_reload=arguments.offline_reload,
                 confirm_offline_reload=arguments.confirm_offline_reload,
             )
             print(f"{result.status} publication_id={result.publication_id}")
