@@ -144,6 +144,7 @@ class ManifestContract:
     conditional_identifiers: tuple[str, ...]
     status_values: tuple[str, ...]
     description: str
+    optional_metadata_fields: tuple[str, ...] = ()
 
     @property
     def field_names(self) -> tuple[str, ...]:
@@ -259,6 +260,7 @@ def _manifest(
     conditional_identifiers: tuple[str, ...] = (),
     status_values: tuple[str, ...] = COMPUTATION_STATUSES,
     description: str,
+    optional_metadata_fields: tuple[str, ...] = (),
 ) -> ManifestContract:
     required_fields = COMMON_MANIFEST_FIELDS + specific_fields
     return ManifestContract(
@@ -277,6 +279,7 @@ def _manifest(
         conditional_identifiers=conditional_identifiers,
         status_values=status_values,
         description=description,
+        optional_metadata_fields=optional_metadata_fields,
     )
 
 
@@ -442,6 +445,11 @@ PUBLICATION_MANIFEST = _manifest(
     ),
     status_values=PUBLICATION_STATUSES,
     description="Validated serving release and authoritative application-selection metadata.",
+    optional_metadata_fields=(
+        "dataset_bindings", "datasets", "expected_rows_map", "source_statistics",
+        "release_digest_payload", "application_checksum_definition", "publication_context",
+        "failure", "serving_unavailable", "feature_version", "issue_date", "run_type",
+    ),
 )
 
 MANIFEST_CONTRACTS: Final = (
@@ -619,6 +627,18 @@ class PublicationContext:
     issue_date: date
     policy_ids: tuple[str, ...]
     coverage: PublicationCoverage
+    dataset_bindings: Mapping[str, Mapping[str, object]] | None = None
+
+    def evaluation_binding(self, dataset: str) -> Mapping[str, object]:
+        """Return the historical query binding; never fall back to primary run IDs."""
+        if dataset not in {"forecast_metrics", "inventory_policy_evaluation"}:
+            raise ValueError("dataset is not an evaluation dataset")
+        binding = (self.dataset_bindings or {}).get(dataset)
+        if not binding or binding.get("run_type") not in {"validation", "test"}:
+            raise ValueError("validated historical dataset binding is unavailable")
+        if not binding.get("evaluation_run_id"):
+            raise ValueError("historical evaluation identity is unavailable")
+        return binding
 
 
 PUBLICATION_CONTEXT_FIELDS: Final = (
@@ -666,7 +686,7 @@ APPLICATION_READ_CONTRACTS: Final = (
     ),
     ApplicationReadContract(
         "get_forecast_metrics",
-        PUBLICATION_CONTEXT_FIELDS,
+        (*PUBLICATION_CONTEXT_FIELDS, "dataset_bindings.forecast_metrics"),
         (),
         "Forecast metrics for the context's compatible holdout and method cohort.",
         "Missing evaluation context is an unavailable score, never a fabricated metric.",
@@ -695,7 +715,7 @@ APPLICATION_READ_CONTRACTS: Final = (
     ),
     ApplicationReadContract(
         "get_policy_evaluation",
-        PUBLICATION_CONTEXT_FIELDS,
+        (*PUBLICATION_CONTEXT_FIELDS, "dataset_bindings.inventory_policy_evaluation"),
         ("item_id",),
         "Historical policy outcomes only when a compatible evaluation exists.",
         "Forward-demo or missing labels produce an unavailable evaluation state.",
@@ -709,6 +729,8 @@ PUBLICATION_SELECTION_RULES: Final = (
     "artifacts/approved_publication.json is an exact read-only materialized copy with checksum and publication_id.",
     "The application never selects independent latest model, forecast, scenario, decision, or evaluation IDs.",
     "Invalid publication metadata and unavailable shards are explicit errors; valid empty filters are empty results.",
+    "An HDFS published/unavailable.json fence makes serving unavailable even while an earlier approved pointer remains as historical evidence.",
+    "Evaluation queries select their dataset_bindings historical identities, never the primary forward-demo forecast or decision IDs.",
 )
 
 

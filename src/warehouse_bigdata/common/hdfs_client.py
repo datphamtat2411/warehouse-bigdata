@@ -413,6 +413,46 @@ class HdfsCliClient:
         assert isinstance(result, RemoteFileHash)
         return result
 
+    def download_file(self, remote_path: str, local_path: Path, *, max_bytes: int) -> None:
+        """Stream one bounded data file to owned scratch, never through metadata reads."""
+        if type(max_bytes) is not int or max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+        if self.stat(remote_path).size_bytes > max_bytes:
+            raise HdfsCommandError("HDFS data file exceeds the configured bound")
+        process = subprocess.Popen(
+            self._argv("dfs", "-cat", remote_path), stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, env=self.environment,
+        )
+        try:
+            assert process.stdout is not None
+            size = 0
+            with Path(local_path).open("xb") as target:
+                while chunk := process.stdout.read(self.transfer_chunk_size):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise HdfsCommandError("HDFS data transfer exceeded the configured bound")
+                    target.write(chunk)
+            process.stdout.close()
+            if process.wait(timeout=self.command_timeout) != 0:
+                raise HdfsCommandError("HDFS data transfer failed")
+        except BaseException:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            Path(local_path).unlink(missing_ok=True)
+            raise
+
+    def rename_replace(self, source: str, destination: str) -> None:
+        """Atomically replace one metadata file via NameNode rename2(OVERWRITE)."""
+        try:
+            result = self._webhdfs(
+                source, "RENAME", method="PUT", destination=destination, renameoptions="OVERWRITE"
+            )
+            if isinstance(result, dict) and result.get("boolean") is False:
+                raise HdfsCommandError("HDFS metadata replacement returned false")
+        except HTTPError as error:
+            raise HdfsCommandError("HDFS metadata replacement failed") from error
+
     def stat(self, remote_path: str) -> RemoteFileStat:
         """Return byte size and replication from HDFS stat output."""
         output = self._run(("dfs", "-stat", "%b %r", remote_path)).stdout.decode().strip()

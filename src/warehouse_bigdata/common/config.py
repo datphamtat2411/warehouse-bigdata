@@ -145,6 +145,30 @@ def load_paths_config(env: Mapping[str, str] | None = None) -> PathsConfig:
     return PathsConfig(artifacts_dir=Path(artifacts_dir), scratch_dir=Path(scratch_dir))
 
 
+def _load_clickhouse_role(role: str, env: Mapping[str, str] | None) -> ClickHouseConfig:
+    settings = _settings(env)
+    prefix = f"WAREHOUSE_CLICKHOUSE_{role}_"
+    remapped = dict(settings)
+    for key in ("HOST", "PORT", "DATABASE"):
+        role_key = prefix + key
+        if role_key in settings:
+            remapped["WAREHOUSE_CLICKHOUSE_" + key] = settings[role_key]
+    # Never silently use reader credentials for a privileged operation.
+    remapped["WAREHOUSE_CLICKHOUSE_USER"] = _read(settings, prefix + "USER")
+    remapped["WAREHOUSE_CLICKHOUSE_PASSWORD"] = _read(settings, prefix + "PASSWORD")
+    return load_clickhouse_config(remapped)
+
+
+def load_clickhouse_publisher_config(env: Mapping[str, str] | None = None) -> ClickHouseConfig:
+    """Load explicit insert/read credentials, independently of the reader account."""
+    return _load_clickhouse_role("PUBLISHER", env)
+
+
+def load_clickhouse_admin_config(env: Mapping[str, str] | None = None) -> ClickHouseConfig:
+    """Load explicit administrative credentials for gated offline clearing only."""
+    return _load_clickhouse_role("ADMIN", env)
+
+
 def _settings(env: Mapping[str, str] | None) -> Mapping[str, str]:
     return os.environ if env is None else env
 

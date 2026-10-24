@@ -9,6 +9,8 @@ authors = [
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "numpy>=1.26.4,<2",
+    "pyarrow>=19,<24",
+    "clickhouse-connect>=0.8,<1",
 ]
 
 [project.scripts]

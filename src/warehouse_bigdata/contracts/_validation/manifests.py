@@ -29,7 +29,7 @@ def manifest_issues(
         ]
 
     fields = {field.name: field for field in contract.field_specs}
-    allowed_fields = set(fields) | set(contract.conditional_identifiers)
+    allowed_fields = set(fields) | set(contract.conditional_identifiers) | set(contract.optional_metadata_fields)
     issues: list[ValidationIssue] = []
     for field_name in sorted(set(record) - allowed_fields):
         issues.append(

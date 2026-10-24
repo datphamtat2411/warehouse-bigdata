@@ -1,6 +1,7 @@
 """Contract tests for approved publication metadata and coherent context."""
 
 import json
+import hashlib
 from copy import deepcopy
 
 import pytest
@@ -91,3 +92,43 @@ def test_publication_context_is_required_and_has_no_latest_id_fallback() -> None
     with pytest.raises(ContractValidationError) as error:
         validate_publication(record, application_copy=application_copy)
     _assert_code(error.value, "MISSING_PUBLICATION_METADATA")
+
+
+def test_explicit_dataset_bindings_must_match_application_copy_and_context():
+    record, context, application_copy = _valid_publication_inputs()
+    bindings = {
+        "forecast_metrics": {"evaluation_run_id": "historical-forecast-evaluation"},
+        "inventory_policy_evaluation": {"evaluation_run_id": "historical-policy-evaluation"},
+    }
+    record["dataset_bindings"] = bindings
+    context["dataset_bindings"] = deepcopy(bindings)
+    application_copy["dataset_bindings"] = deepcopy(bindings)
+    validate_publication(record, context=context, application_copy=application_copy)
+    application_copy["dataset_bindings"]["forecast_metrics"]["evaluation_run_id"] = "forward-demo"
+    with pytest.raises(ContractValidationError) as error:
+        validate_publication(record, context=context, application_copy=application_copy)
+    _assert_code(error.value, "PUBLICATION_MISMATCH")
+
+
+def test_application_checksum_binds_the_exact_materialized_copy():
+    record, context, application_copy = _valid_publication_inputs()
+    record["application_checksum_definition"] = "sha256-canonical-application-copy-v1"
+    payload = (json.dumps(application_copy, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    record["application_manifest_checksum"] = "sha256:" + hashlib.sha256(payload).hexdigest()
+    validate_publication(record, context=context, application_copy=application_copy)
+    application_copy["unapproved_extra_field"] = "changed"
+    with pytest.raises(ContractValidationError) as error:
+        validate_publication(record, context=context, application_copy=application_copy)
+    _assert_code(error.value, "PUBLICATION_MISMATCH")
+
+
+def test_evaluation_query_binding_never_falls_back_to_primary_context():
+    from warehouse_bigdata.contracts.manifests import PublicationContext
+
+    _, context, _ = _valid_publication_inputs()
+    publication = PublicationContext(**context)
+    with pytest.raises(ValueError, match="unavailable"):
+        publication.evaluation_binding("forecast_metrics")
+    historical = {"evaluation_run_id": "historical", "run_type": "test", "forecast_run_id": "historical-forecast"}
+    publication = PublicationContext(**context, dataset_bindings={"forecast_metrics": historical})
+    assert publication.evaluation_binding("forecast_metrics") == historical
