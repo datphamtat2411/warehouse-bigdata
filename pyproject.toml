@@ -12,6 +12,7 @@ dependencies = [
     "pyarrow>=19,<24",
     "clickhouse-connect>=0.8,<1",
     "streamlit>=1.36,<2",
+    "plotly>=6,<7",
 ]
 
 [project.scripts]

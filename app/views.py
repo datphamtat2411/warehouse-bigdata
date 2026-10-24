@@ -23,8 +23,8 @@ def _placeholder(title, notice):
 
 
 def render_overview(context, repository, selections):
-    _placeholder('Tổng quan', 'Doanh số M5 là số đơn vị bán quan sát được, không phải đơn hàng '
-                 'hay tồn kho thực tế. Phạm vi minh họa chỉ đại diện cho mẫu đã được phê duyệt.')
+    from app.overview import render_overview as render
+    render(context, repository, selections)
 
 
 def render_forecast(context, repository, selections):

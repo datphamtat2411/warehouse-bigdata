@@ -10,6 +10,7 @@ from streamlit.testing.v1 import AppTest
 from app import shell
 from tests.unit.test_application_read_repository import context
 from warehouse_bigdata.application import runtime
+from warehouse_bigdata.application.read_repository import ReadLimits, ReadResult
 from warehouse_bigdata.application.session_state import PREFIX
 from warehouse_bigdata.common.hdfs_client import HdfsCommandError
 
@@ -30,6 +31,9 @@ def harness(monkeypatch):
     @contextmanager
     def repository(ctx):
         resource = Mock(context=ctx)
+        resource.limits = ReadLimits()
+        resource.get_store_history_coverage.return_value = ReadResult('empty', provenance='observed')
+        resource.get_eligible_items.return_value = ReadResult('ok', ({'item_id': 'I', 'store_id': 'S'},), 'predicted')
         resources.append(resource)
         try:
             yield resource

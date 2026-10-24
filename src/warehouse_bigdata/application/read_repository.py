@@ -179,6 +179,50 @@ class ClickHouseReadRepository:
         return self._read('store_daily_sales', dict(store_id=store_id,
             start_date=start_date, end_date=end_date), order='sale_date', provenance='observed')
 
+    def get_store_history_coverage(self, store_id):
+        """Measure the complete bound store history without fetching daily facts.
+
+        A single daily aggregate must exist for every day between the measured
+        boundaries. Grouped lineage is checked again after the distributed read.
+        """
+        error = self._arguments('observed', store_id=store_id, require_store=True)
+        if error:
+            return error
+        try:
+            where, params = binding_filter(self.context, 'store_daily_sales')
+        except ValueError as error:
+            return ReadResult('unavailable', provenance='observed', reason=str(error))
+        identities = tuple(params)
+        columns = ', '.join(f'`{key}`' for key in ('store_id', *identities))
+        params['store_id'] = store_id
+        params['result_limit'] = 2
+        sql = (f'SELECT {columns}, min(sale_date) AS start_date, max(sale_date) AS end_date, '
+               f'uniqExact(sale_date) AS day_count, count() AS row_count '
+               f'FROM {self.database}.{MAPPINGS["store_daily_sales"].serving_dataset} '
+               f'WHERE {where} AND store_id = {{store_id:String}} '
+               f'GROUP BY {columns} LIMIT {{result_limit:UInt32}}')
+        try:
+            rows = tuple(self.client.query(sql, parameters=params, settings={
+                'skip_unavailable_shards': 0, 'max_execution_time': self.limits.timeout_seconds,
+                'max_result_rows': 2, 'result_overflow_mode': 'throw',
+                'readonly': 1}).named_results())
+        except Exception:
+            return ReadResult('unavailable', provenance='observed', reason='query failed; no partial results')
+        if not rows:
+            return ReadResult('empty', provenance='observed')
+        if len(rows) != 1:
+            return ReadResult('incomplete', provenance='observed', reason='duplicate coverage groups')
+        row = rows[0]
+        if any(str(row.get(key)) != str(params[key]) for key in ('store_id', *identities)):
+            return ReadResult('error', provenance='observed', reason='coverage identity mismatch')
+        start, end = row.get('start_date'), row.get('end_date')
+        days, count = row.get('day_count'), row.get('row_count')
+        if not (type(start) is date and type(end) is date and start <= end
+                and type(days) is int and type(count) is int
+                and days == count == (end - start).days + 1):
+            return ReadResult('incomplete', provenance='observed', reason='invalid daily coverage')
+        return ReadResult('ok', rows, 'observed')
+
     def get_item_history(self, item_id, store_id, start_date, end_date):
         """Read observed daily sales without filling absent dates or aggregating duplicates."""
         error = self._arguments('observed', item_id=item_id, store_id=store_id,

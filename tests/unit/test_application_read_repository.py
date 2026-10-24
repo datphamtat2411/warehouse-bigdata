@@ -224,3 +224,56 @@ def test_policy_evaluation_approved_policies_and_historical_decisions():
     assert 'approved_policy_ids' in client.calls[0][1]['parameters']
     client.rows = [{'item_id': 'I', 'policy_id': 'other', 'decision_run_id': 'old-other'}]
     assert repo.get_policy_evaluation('I').state == 'error'
+
+
+def coverage_row(**changes):
+    return dict(dict(store_id='S', source_snapshot_id='source',
+                     start_date=date(2011, 1, 1), end_date=date(2016, 4, 24),
+                     day_count=1941, row_count=1941), **changes)
+
+
+def test_history_coverage_measured_full_span_independent_of_presentation_limits():
+    client = Client([coverage_row()])
+    result = ClickHouseReadRepository(context(), client, ReadLimits(max_rows=7)).get_store_history_coverage('S')
+    assert result.state == 'ok' and result.provenance == 'observed'
+    assert result.rows == (coverage_row(),)
+    sql, args = client.calls[0]
+    assert '.store_daily_sales ' in sql
+    assert 'uniqExact(sale_date)' in sql and 'count()' in sql
+    assert args['parameters']['store_id'] == 'S'
+    assert args['parameters']['source_snapshot_id'] == 'source'
+    assert args['settings']['readonly'] == 1
+    assert args['settings']['skip_unavailable_shards'] == 0
+    assert args['settings']['result_overflow_mode'] == 'throw'
+
+
+@pytest.mark.parametrize('changes', [
+    {'day_count': 1940}, {'row_count': 1942}, {'day_count': 0, 'row_count': 0},
+    {'start_date': None}, {'end_date': date(2010, 1, 1)},
+    {'row_count': True}, {'day_count': 1941.0},
+])
+def test_history_coverage_rejects_invalid_daily_grain(changes):
+    result = ClickHouseReadRepository(context(), Client([coverage_row(**changes)])).get_store_history_coverage('S')
+    assert result.state == 'incomplete' and not result.rows
+
+
+def test_history_coverage_authorization_missing_binding_and_shard_failure():
+    client = Client()
+    assert ClickHouseReadRepository(context(), client).get_store_history_coverage('other').state == 'error'
+    assert not client.calls
+    ctx = replace(context(), dataset_bindings={})
+    assert ClickHouseReadRepository(ctx, client).get_store_history_coverage('S').state == 'unavailable'
+    assert not client.calls
+    result = ClickHouseReadRepository(context(), Client(error=OSError('shard'))).get_store_history_coverage('S')
+    assert result.state == 'unavailable' and not result.rows
+    assert ClickHouseReadRepository(context(), Client()).get_store_history_coverage('S').state == 'empty'
+
+
+@pytest.mark.parametrize('rows,state', [
+    ([coverage_row(store_id='other')], 'error'),
+    ([coverage_row(source_snapshot_id='other')], 'error'),
+    ([coverage_row(), coverage_row()], 'incomplete'),
+])
+def test_history_coverage_discards_wrong_identity_or_multiple_groups(rows, state):
+    result = ClickHouseReadRepository(context(), Client(rows)).get_store_history_coverage('S')
+    assert result.state == state and not result.rows
