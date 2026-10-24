@@ -6,7 +6,8 @@ import streamlit as st
 
 from app.inventory import _catalog, _change_selection, _format
 from warehouse_bigdata.application.read_repository import ReadResult
-from warehouse_bigdata.application.session_state import PREFIX, set_selection
+from warehouse_bigdata.application.session_state import PREFIX, set_selection, reconcile_item
+from app.views import read_page
 
 POLICIES = ('shortage_first_proportional', 'equal_share')
 LABELS = {'shortage_first_proportional': 'Ưu tiên thiếu hàng', 'equal_share': 'Chia đều có giới hạn'}
@@ -96,7 +97,10 @@ def normalize_comparison(result, context, item):
     invalid = ReadResult('incomplete', provenance='evaluated')
     if result.state != 'ok':
         return ReadResult(result.state, provenance='evaluated')
-    binding = context.evaluation_binding('inventory_policy_evaluation')
+    try:
+        binding = context.evaluation_binding('inventory_policy_evaluation')
+    except ValueError:
+        return ReadResult('unavailable', provenance='evaluated')
     if (result.provenance != 'evaluated' or not binding
             or not set(POLICIES) <= set(context.policy_ids)
             or set(binding.get('policy_ids', ())) != set(POLICIES)
@@ -163,12 +167,13 @@ def render_allocation(context, repository, selections):
         return
     membership = {}
     for store in stores:
-        catalog = _catalog(repository.get_eligible_items(store, '', limit=50), store)
+        catalog = _catalog(read_page(repository.get_eligible_items, store, '', limit=50), store)
         if catalog.state not in ('ok', 'empty'):
             render_read_state(catalog)
             return
         for row in catalog.rows:
             membership.setdefault(row['item_id'], set()).add(store)
+    unsupported_item = reconcile_item(st.session_state, membership)
     item = st.session_state.get(PREFIX + 'item_id', selections.get('item_id'))
     policy = st.session_state.get(PREFIX + 'policy_id', selections.get('policy_id'))
     if policy is None:
@@ -185,14 +190,17 @@ def render_allocation(context, repository, selections):
         if value is not None and value not in options:
             st.warning('Lựa chọn hiện tại không được hỗ trợ trong bản công bố này.')
             return
+    if unsupported_item:
+        st.warning('Lựa chọn hiện tại không được hỗ trợ trong bản công bố này.')
+        return
     if item is None or policy is None:
         st.info('Vui lòng chọn sản phẩm và chính sách để xem phân bổ.')
         return
     if membership[item] != set(stores):
         st.warning('Phạm vi cửa hàng của sản phẩm không tương thích với phạm vi phân bổ đã phê duyệt.')
         return
-    supply = repository.get_central_supply(item)
-    result = normalize_allocation(supply, repository.get_allocation(item, policy), context, item, policy)
+    supply = read_page(repository.get_central_supply, item)
+    result = normalize_allocation(supply, read_page(repository.get_allocation, item, policy), context, item, policy)
     if supply.state == 'empty':
         st.info('Chưa có nguồn cung trung tâm mô phỏng đã công bố.')
         return
@@ -218,7 +226,7 @@ def render_allocation(context, repository, selections):
                 'theo phần dư lớn nhất và phá hòa theo mã cửa hàng tăng dần.' if policy == POLICIES[0]
                 else 'Chính sách chia đều có giới hạn theo yêu cầu và phân phối lại phần dư.')
     st.subheader('So sánh chính sách trên dữ liệu lịch sử')
-    comparison = normalize_comparison(repository.get_policy_evaluation(item), context, item)
+    comparison = normalize_comparison(read_page(repository.get_policy_evaluation, item), context, item)
     if comparison.state != 'ok':
         st.info('Chưa có kết quả so sánh chính sách trên các nhóm đánh giá đầy đủ, trùng khớp đã phê duyệt.')
         return

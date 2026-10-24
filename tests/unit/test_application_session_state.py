@@ -66,10 +66,22 @@ def test_selection_dependencies_and_noop():
     assert selections(state)['item_id'] == 'I'
     state[PREFIX + 'widget_item_id'] = 'I'
     set_selection(state, 'store_id', 'S2')
-    assert selections(state)['item_id'] is None
-    assert PREFIX + 'widget_item_id' not in state
+    assert selections(state)['item_id'] == 'I'
+    assert state[PREFIX + 'widget_item_id'] == 'I'
     state[PREFIX + 'results'] = 2
     set_selection(state, 'item_id', 'I2')
     assert PREFIX + 'results' not in state
     with pytest.raises(ValueError):
         set_selection(state, 'unknown', 'x')
+
+
+def test_catalog_reconciliation_retains_compatible_and_clears_invalid_item():
+    from warehouse_bigdata.application.session_state import reconcile_item
+    state = {PREFIX + 'item_id': 'I', PREFIX + 'widget_item_id': 'I',
+             PREFIX + 'results.forecast': 'stale'}
+    assert not reconcile_item(state, ['I', 'J'])
+    assert state[PREFIX + 'item_id'] == 'I'
+    assert reconcile_item(state, ['J'])
+    assert state[PREFIX + 'item_id'] is None
+    assert PREFIX + 'widget_item_id' not in state
+    assert PREFIX + 'results.forecast' not in state

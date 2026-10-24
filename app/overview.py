@@ -6,7 +6,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from warehouse_bigdata.application.read_repository import ReadResult
-from warehouse_bigdata.application.session_state import PREFIX, set_selection
+from warehouse_bigdata.application.session_state import PREFIX, set_selection, reconcile_item
+from app.views import read_page, UNSUPPORTED_ITEM
 
 
 KEY = PREFIX + 'overview.'
@@ -131,33 +132,36 @@ def render_overview(context, repository, selections):
     if store is None:
         store = stores[0]
         set_selection(st.session_state, 'store_id', store)
-    if store not in stores:
+    unsupported_store = store not in stores
+    store_key = KEY + 'store'
+    st.session_state[store_key] = None if unsupported_store else store
+    st.selectbox('Cửa hàng', [None, *stores], key=store_key,
+                 format_func=lambda value: 'Chọn cửa hàng' if value is None else value,
+                 on_change=_change_selection, args=('store_id', store_key))
+    if unsupported_store:
         st.warning('Cửa hàng đã chọn không được hỗ trợ trong bản công bố hiện tại.')
         return
-    store_key = KEY + 'store'
-    st.session_state[store_key] = store
-    st.selectbox('Cửa hàng', stores, key=store_key,
-                 on_change=_change_selection, args=('store_id', store_key))
 
-    catalog = _catalog(repository.get_eligible_items(store, '', limit=50), store)
+    catalog = _catalog(read_page(repository.get_eligible_items, store, '', limit=50), store)
     if catalog.state not in {'ok', 'empty'}:
         st.caption('Độ phủ sản phẩm được hỗ trợ hiện không khả dụng; không coi là bằng không.')
         render_read_state(catalog)
         return
     items = sorted(row['item_id'] for row in catalog.rows)
+    unsupported_item = reconcile_item(st.session_state, items)
     item = st.session_state.get(PREFIX + 'item_id', selections.get('item_id'))
-    if item is not None and item not in items:
-        st.warning('Sản phẩm đã chọn không được hỗ trợ tại cửa hàng trong bản công bố hiện tại.')
-        return
     item_key = PREFIX + 'widget_item_id'
     st.session_state[item_key] = item
     st.selectbox('Sản phẩm được hỗ trợ', [None, *items], key=item_key,
                  format_func=lambda value: 'Tất cả sản phẩm' if value is None else value,
                  on_change=_change_selection, args=('item_id', item_key))
+    if unsupported_item:
+        st.warning(UNSUPPORTED_ITEM)
+        return
     if not items:
         st.info('Không có sản phẩm đủ điều kiện được hỗ trợ. Vẫn có thể xem tổng bán của cửa hàng.')
 
-    coverage = _coverage(repository.get_store_history_coverage(store), store)
+    coverage = _coverage(read_page(repository.get_store_history_coverage, store), store)
     if not render_read_state(coverage):
         return
     measured = coverage.rows[0]
@@ -181,6 +185,11 @@ def render_overview(context, repository, selections):
         st.session_state[applied_key] = default
     draft = st.date_input('Khoảng ngày bán hàng', value=default, min_value=start,
                           max_value=end, format='DD/MM/YYYY', key=date_key)
+    if draft != st.session_state.get(KEY + 'effective_dates'):
+        for key in list(st.session_state):
+            if key.startswith(PREFIX + 'results'):
+                del st.session_state[key]
+        st.session_state[KEY + 'effective_dates'] = draft
     apply = st.button('Áp dụng', key=KEY + 'apply')
     if not valid_window(draft, start, end, limit):
         st.warning(f'Vui lòng chọn đủ hai ngày đúng thứ tự trong lịch sử đã nạp, tối đa {limit} ngày.')
@@ -194,8 +203,8 @@ def render_overview(context, repository, selections):
         return
     window = tuple(draft)
     _source(context, store, item, window)
-    raw = (repository.get_store_trend(store, *window) if item is None
-           else repository.get_item_history(item, store, *window))
+    raw = (read_page(repository.get_store_trend, store, *window) if item is None
+           else read_page(repository.get_item_history, item, store, *window))
     result = normalize_daily(raw, store, item, *window)
     if not render_read_state(result):
         return

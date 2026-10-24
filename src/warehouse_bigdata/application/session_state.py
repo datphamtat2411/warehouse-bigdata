@@ -39,6 +39,13 @@ def set_selection(state, field, value):
     for key in list(state):
         if key.startswith(PREFIX + 'results'):
             del state[key]
-    if field == 'store_id':
-        state[PREFIX + 'item_id'] = None
-        state.pop(PREFIX + 'widget_item_id', None)
+
+
+def reconcile_item(state, items):
+    """Reconcile only a successfully validated catalog, before dependent reads."""
+    item = state.get(PREFIX + 'item_id')
+    if item is None or item in items:
+        return False
+    set_selection(state, 'item_id', None)
+    state.pop(PREFIX + 'widget_item_id', None)
+    return True

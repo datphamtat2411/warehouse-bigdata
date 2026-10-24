@@ -7,7 +7,7 @@ checks the HDFS availability fence, exact authoritative pointer, approved manife
 release checksum, nine dataset bindings and frozen small coverage. Reload the context
 before each application request; discard a repository when approval changes.
 
-Seven methods implement `APPLICATION_READ_CONTRACTS`. SQL uses bound parameters,
+Repository methods implement `APPLICATION_READ_CONTRACTS` and bounded history helpers. SQL uses bound parameters,
 explicit publication dataset identities, `readonly=1`, a 30-second timeout,
 `skip_unavailable_shards=0`, throwing overflow behavior and a 1,000-row bound.
 Historical ranges default to at most 366 days. No independent latest-ID selection
@@ -48,4 +48,45 @@ publication identity/checksum, scope digest, coverage, source/distributed/shard
 statistics, routing checks, actual query timings, outage probe and limitations.
 Evidence is written only after successful checks and revalidation of approval.
 Metrics describe `demo_sample` only. No performance target, full-catalog accuracy,
-HA or physical multi-host resilience is established. This handoff implements no UI.
+HA or physical multi-host resilience is established.
+
+## M09 cross-page acceptance
+
+The four Vietnamese dashboards share a publication identity (ID and checksum),
+store, candidate item and approved policy. Store changes immediately invalidate
+owned result state; a validated bounded destination catalog retains a compatible
+item or clears it with recovery controls and an explanation. Unavailable catalogs
+stop dependent reads. Allocation always reads the complete approved store population,
+independent of the selected store, and counts central supply once. Approval loss
+clears all owned selections/results; every rerender rechecks approval without caching.
+Unexpected page exceptions clear the analytical container before localized feedback.
+
+Run synthetic integration/UI checks first:
+
+```sh
+uv run --locked pytest tests/unit/test_application_*.py -q
+```
+
+With existing approved M5 Small artifacts, canonical selector and running services,
+explicitly authorize the serial read-only acceptance module:
+
+```sh
+WAREHOUSE_VERIFY_APPROVED_DATA=1 WAREHOUSE_VERIFY_APPLICATION=1 uv run --locked pytest -m integration tests/integration/test_application_acceptance.py -q
+```
+
+This invokes distributed verification once, checks selector/publication identity,
+reads representative checksum-bound source Parquet with Arrow (no Spark), compares
+independently parameterized Distributed SQL and repository results, and exercises
+the real shell/pages through AppTest using live runtime boundaries. Counts, identities
+and dates are exact; numerical comparisons use `1e-8` relative/absolute tolerance;
+displayed KPI formatting is compared separately. Approval is revalidated at the end.
+No infrastructure startup or artifact regeneration is performed.
+
+Each opted-in attempt writes
+`artifacts/verification/application-<unique-id>/application-acceptance.json`, including
+PASS/FAIL/BLOCKED checks, expected/actual values, tolerances, filters, publication
+identity, revision, timestamp, actual SQL/test durations and linked distributed evidence.
+Missing prerequisites are BLOCKED (pytest skip), contract/numerical mismatches FAIL.
+Without both gates live checks are NOT RUN. Deployed-shard outages, browser-visible
+responsiveness and the ten-second warm-operation target remain NOT RUN; AppTest
+duration does not establish browser performance. All live results describe `demo_sample` only.

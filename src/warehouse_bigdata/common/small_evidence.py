@@ -12,9 +12,9 @@ from warehouse_bigdata.common.hdfs_paths import render_curated_sales_daily_path,
 from warehouse_bigdata.common.scope_evidence import read_scope
 from warehouse_bigdata.contracts.dataset_scope import ScopeError
 
-# The frozen J06 event log measured 281,066,249 bytes. Keep finite headroom for
-# the same demo workload without allowing arbitrary event-log growth.
-MAX_EVENT_BYTES = 384 * 1024 * 1024
+# Measured M5 Small validation event log: 1,274,181,933 bytes.
+# Retain a finite bound with approximately 26% headroom.
+MAX_EVENT_BYTES = 1536 * 1024 * 1024
 # The largest measured J06 JSON record was 5,444,499 bytes.
 MAX_EVENT_RECORD_BYTES = 8 * 1024 * 1024
 STREAM_FALLBACK_CHUNK_BYTES = 1024 * 1024
@@ -1029,7 +1029,11 @@ def main():
     parser.add_argument("--expected-master", default=EXPECTED_MASTER)
     parser.add_argument("--expected-event-log-dir")
     args = parser.parse_args()
-    client, config = HdfsCliClient(metadata_limit=MAX_EVENT_BYTES), load_hdfs_config()
+    client = HdfsCliClient(
+        metadata_limit=MAX_EVENT_BYTES,
+        command_timeout=1800,
+    )
+    config = load_hdfs_config()
     report = {}
     if args.pipeline_run_id:
         expected_event_log_dir = (

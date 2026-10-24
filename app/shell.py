@@ -98,11 +98,14 @@ def render_shell():
     page = st.sidebar.radio('Điều hướng', tuple(PAGES), key=PREFIX + 'navigation')
     _summary(context)
     operation = 'client_initialization'
+    analytical = st.empty()
     try:
         with runtime.open_render_repository(context) as repository:
             operation = 'page_render'
-            PAGES[page](context, repository, selections(st.session_state))
+            with analytical.container():
+                PAGES[page](context, repository, selections(st.session_state))
     except Exception as error:
+        analytical.empty()
         _log_failure(operation, page, error, publication_identity(context))
         if operation == 'client_initialization':
             st.error('Không thể kết nối kho dữ liệu phục vụ. Vui lòng kiểm tra kết nối và thử lại.')

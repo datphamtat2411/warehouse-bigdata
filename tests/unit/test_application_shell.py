@@ -222,6 +222,18 @@ def test_client_and_page_failure_are_safe_and_cleanup(harness, monkeypatch):
     resources[-1].close.assert_called_once()
 
 
+def test_partial_page_output_is_removed_on_exception(harness, monkeypatch):
+    def broken_page(*args):
+        import streamlit as st
+        st.metric('Invalid partial result', '999')
+        st.dataframe([{'partial': 999}])
+        raise RuntimeError('secret')
+    monkeypatch.setitem(shell.PAGES, 'Tổng quan', broken_page)
+    at = AppTest.from_file(ENTRYPOINT).run()
+    assert not at.exception and at.error
+    assert not at.metric and not at.dataframe
+
+
 @pytest.mark.parametrize('state,ready', [('ok', True), ('empty', False), ('incomplete', False),
                                        ('unavailable', False), ('error', False)])
 def test_read_state_presenter(state, ready):

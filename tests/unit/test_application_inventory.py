@@ -143,17 +143,24 @@ def test_selection_and_recovery():
     repo.get_replenishment.assert_not_called()
     at.selectbox[1].set_value('I').run()
     assert at.metric
+    repo.get_replenishment.assert_called_once_with('I', 'S')
     at.session_state[PREFIX + 'store_id'] = 'unsupported'
     repo.get_replenishment.reset_mock()
     at.run()
     repo.get_replenishment.assert_not_called()
     at.selectbox[0].set_value('S').run()
-    assert at.session_state[PREFIX + 'item_id'] is None and not at.metric
+    assert at.session_state[PREFIX + 'item_id'] == 'I' and at.metric
+    repo.get_replenishment.assert_called_once_with('I', 'S')
+    # Isolate the unsupported selection from the legitimate recovery read.
+    repo.get_replenishment.reset_mock()
     at.session_state[PREFIX + 'item_id'] = 'unsupported'
     at.run()
     repo.get_replenishment.assert_not_called()
+    assert at.session_state[PREFIX + 'item_id'] is None
+    assert not at.metric and not at.dataframe and not at.get('plotly_chart')
     at.selectbox[1].set_value('I').run()
     assert at.metric and not at.exception
+    repo.get_replenishment.assert_called_once_with('I', 'S')
 
 
 @pytest.mark.parametrize('kind', ['empty', 'unavailable', 'error', 'incomplete', 'duplicate',

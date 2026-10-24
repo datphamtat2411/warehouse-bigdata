@@ -1,6 +1,15 @@
 """Minimal destination handoffs and safe shared read-state presentation."""
 import streamlit as st
 
+LOADING = 'Đang tải dữ liệu đã công bố...'
+UNSUPPORTED_ITEM = 'Sản phẩm đã chọn không được hỗ trợ tại cửa hàng trong bản công bố hiện tại.'
+
+
+def read_page(method, *args, **kwargs):
+    """Bounded uncached reads with consistent loading feedback."""
+    with st.spinner(LOADING):
+        return method(*args, **kwargs)
+
 
 def render_read_state(result):
     """Return whether rows may be shown; never expose technical failure reasons."""

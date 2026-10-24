@@ -6,7 +6,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from warehouse_bigdata.application.read_repository import ReadResult
-from warehouse_bigdata.application.session_state import PREFIX, set_selection
+from warehouse_bigdata.application.session_state import PREFIX, set_selection, reconcile_item
+from app.views import read_page, UNSUPPORTED_ITEM
 
 
 KEY = PREFIX + 'forecast.'
@@ -141,7 +142,7 @@ def _historical(context, repository):
     st.subheader('Đánh giá mô hình trên dữ liệu lịch sử')
     st.caption('Các chỉ số đo trên nhóm chuỗi lịch sử đã phê duyệt, không phải độ chính xác '
                'riêng của sản phẩm–cửa hàng đang chọn; không đại diện toàn bộ danh mục M5.')
-    result = compare_metrics(repository.get_forecast_metrics(), context)
+    result = compare_metrics(read_page(repository.get_forecast_metrics), context)
     if result.state != 'ok':
         st.info(MISSING_EVALUATION)
         render_read_state(result)
@@ -195,24 +196,24 @@ def render_forecast(context, repository, selections):
     if unsupported_store:
         st.warning('Cửa hàng đã chọn không được hỗ trợ trong bản công bố hiện tại.')
         return
-    catalog = _catalog(repository.get_eligible_items(store, '', limit=50), store)
+    catalog = _catalog(read_page(repository.get_eligible_items, store, '', limit=50), store)
     if not render_read_state(catalog):
         return
     items = sorted(row['item_id'] for row in catalog.rows)
+    unsupported_item = reconcile_item(st.session_state, items)
     item = st.session_state.get(PREFIX + 'item_id', selections.get('item_id'))
-    unsupported_item = item is not None and item not in items
     item_key = PREFIX + 'widget_item_id'
     st.session_state[item_key] = None if unsupported_item else item
     st.selectbox('Sản phẩm được hỗ trợ', [None, *items], key=item_key,
                  format_func=lambda value: 'Chọn sản phẩm' if value is None else value,
                  on_change=_change_selection, args=('item_id', item_key))
     if unsupported_item:
-        st.warning('Sản phẩm đã chọn không được hỗ trợ tại cửa hàng trong bản công bố hiện tại.')
+        st.warning(UNSUPPORTED_ITEM)
         return
     if item is None:
         st.info('Vui lòng chọn một sản phẩm để xem dự báo bảy ngày.')
         return
-    result = normalize_forecast(repository.get_forecast_series(item, store), context, item, store)
+    result = normalize_forecast(read_page(repository.get_forecast_series, item, store), context, item, store)
     if result.state != 'ok':
         st.warning('Chưa có đủ bảy ngày dự báo hợp lệ liên tiếp; không hiển thị kết quả một phần.')
         render_read_state(result)

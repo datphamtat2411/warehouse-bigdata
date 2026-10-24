@@ -142,7 +142,7 @@ def test_invalid_product_and_store_are_rejected_without_history():
     assert at.warning and not at.dataframe
 
 
-def test_store_change_clears_item_and_rejects_wrong_item_identity():
+def test_store_change_retains_candidate_when_catalog_is_unavailable():
     repo = repository()
     ctx = replace(context(), coverage=replace(context().coverage, available_stores=('S', 'T')))
     at = launch(repo, ctx)
@@ -151,7 +151,8 @@ def test_store_change_clears_item_and_rejects_wrong_item_identity():
     at.run()
     assert not at.dataframe
     at.selectbox[0].set_value('T').run()
-    assert at.session_state['m09.item_id'] is None
+    assert at.session_state['m09.item_id'] == 'I'
+    assert not at.dataframe and at.warning
 
 
 def test_date_drafts_do_not_read_or_retain_sales_until_applied():
