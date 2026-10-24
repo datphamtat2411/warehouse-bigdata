@@ -41,7 +41,7 @@ On first empty-volume initialization the official image creates the private admi
 the bootstrap independently creates an empty `warehouse` database and idempotent
 reader/publisher users on both nodes. Reader has SELECT on `warehouse.*` and
 `system.clusters`. Publisher has SELECT/INSERT on `warehouse.*` and SELECT on
-`system.one` for distributed probes. There are no serving tables.
+`system.one` for distributed probes. Serving tables are initialized separately below.
 Bootstrap does not rerun on populated volumes: editing `.env` does not rotate
 persisted reader/publisher passwords. Account changes require explicit authenticated
 administration on each node; retain credentials consistent with persisted users.
@@ -60,5 +60,49 @@ uv run --locked pytest -q -m integration tests/integration/test_clickhouse_topol
 requires exact system.clusters rows `1/1/clickhouse-1` and `2/1/clickhouse-2`,
 checks clusterAllReplicas against system.one reaches both hosts and requires
 matching 26.8 versions. Integration tests are explicitly opt-in and use existing
-services. All checks are independent of M5. Serving schemas, publication and
-Streamlit remain future work.
+services. All checks are independent of M5.
+
+## Contract v1 serving schema
+
+After environment initialization and with both services running:
+
+```bash
+bash scripts/clickhouse-schema.sh apply
+bash scripts/clickhouse-schema.sh apply
+bash scripts/clickhouse-schema.sh check
+uv run --locked pytest -q tests/unit/test_clickhouse_schema.py tests/unit/test_clickhouse_infrastructure.py
+uv run --locked pytest -q -m integration tests/integration/test_clickhouse_schema.py
+```
+
+The runner requires Python 3 and the existing Compose containers, using the admin
+account configured by `WAREHOUSE_CLICKHOUSE_ADMIN_USER` and
+`WAREHOUSE_CLICKHOUSE_ADMIN_PASSWORD` in private `.env`. Container credentials
+must match persisted users. No host ClickHouse client is needed. Readiness and
+the exact two-shard topology are checked before schema operations.
+
+`001_warehouse_local.sql` explicitly creates nine independent MergeTree tables on
+each node. `002_warehouse_distributed.sql` creates their Distributed counterparts
+only on `clickhouse-1`: `sales_daily`, `store_daily_sales`, `forecast_daily`,
+`forecast_metrics`, `inventory_scenario`, `central_supply_scenario`,
+`replenishment`, `allocation`, and `policy_evaluation`.
+
+Both commands validate columns, types including nullability, engines, sort keys,
+Distributed targets and sharding. Initialization uses conditional creation and
+preserves existing rows. Incompatible tables cause a nonzero exit and require an
+explicitly reviewed migration. Application is not transactional across nodes;
+after a partial failure, fix its cause and rerun. `check` performs no DDL.
+
+Contract v1 governs numeric widths and lineage. Observed sales retain
+`source_snapshot_id`; `date` maps to `sale_date`; raw model predictions remain in
+Parquet. Predicted values, simulated inputs, recommendations and historical policy
+outcomes remain separate. The documented sort keys are indexes, not uniqueness
+constraints. Product-store facts hash both identifiers; central supply hashes
+item, store aggregates hash store/date, and forecast metrics hash
+evaluation/holdout/method. Keep `skip_unavailable_shards = 0` so unavailable shards
+fail explicitly.
+
+The integration test uses synthetic rows in a unique disposable database and
+captures `SHOW CREATE TABLE` output in pytest's temporary directory. It never reads
+or publishes M5 artifacts. Warehouse reader/publisher grants remain unchanged.
+This unreplicated single-host simulation has no Keeper or high availability.
+Publication, approval and Streamlit implementation remain separate tasks.
