@@ -19,7 +19,83 @@ x-hdfs-common: &hdfs-common
       max-size: "10m"
       max-file: "3"
 
+x-clickhouse-common: &clickhouse-common
+  image: clickhouse/clickhouse-server:26.8@sha256:8b28eb09479c36c4533eec7a6268917d04ba3a6fd90e3f4205f70e761b6d7779
+  platform: linux/amd64
+  profiles: [clickhouse]
+  networks: [warehouse-bigdata]
+  cpus: 1.0
+  mem_limit: 1g
+  restart: "on-failure:3"
+  stop_grace_period: 60s
+  environment:
+    CLICKHOUSE_USER: ${WAREHOUSE_CLICKHOUSE_ADMIN_USER:-}
+    CLICKHOUSE_PASSWORD: ${WAREHOUSE_CLICKHOUSE_ADMIN_PASSWORD:-}
+    CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    WAREHOUSE_CLICKHOUSE_USER: ${WAREHOUSE_CLICKHOUSE_USER:-}
+    WAREHOUSE_CLICKHOUSE_PASSWORD: ${WAREHOUSE_CLICKHOUSE_PASSWORD:-}
+    WAREHOUSE_CLICKHOUSE_PUBLISHER_USER: ${WAREHOUSE_CLICKHOUSE_PUBLISHER_USER:-}
+    WAREHOUSE_CLICKHOUSE_PUBLISHER_PASSWORD: ${WAREHOUSE_CLICKHOUSE_PUBLISHER_PASSWORD:-}
+  expose: ["8123", "9000"]
+  healthcheck:
+    test: ["CMD", "/bin/bash", "/opt/warehouse-clickhouse/healthcheck.sh", "ready"]
+    interval: 10s
+    timeout: 15s
+    retries: 12
+    start_period: 30s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
+  clickhouse-1:
+    <<: *clickhouse-common
+    hostname: clickhouse-1
+    ports:
+      - "127.0.0.1:8123:8123"
+    volumes:
+      - clickhouse-1-data:/var/lib/clickhouse
+      - &clickhouse-cluster-config
+        type: bind
+        source: ./clickhouse/config.d/warehouse-cluster.xml
+        target: /etc/clickhouse-server/config.d/warehouse-cluster.xml
+        read_only: true
+        bind:
+          create_host_path: false
+      - &clickhouse-resource-config
+        type: bind
+        source: ./clickhouse/config.d/warehouse-resources.xml
+        target: /etc/clickhouse-server/config.d/warehouse-resources.xml
+        read_only: true
+        bind:
+          create_host_path: false
+      - &clickhouse-access-init
+        type: bind
+        source: ./clickhouse/initdb/01-access.sh
+        target: /docker-entrypoint-initdb.d/01-access.sh
+        read_only: true
+        bind:
+          create_host_path: false
+      - &clickhouse-probe
+        type: bind
+        source: ./clickhouse/healthcheck.sh
+        target: /opt/warehouse-clickhouse/healthcheck.sh
+        read_only: true
+        bind:
+          create_host_path: false
+
+  clickhouse-2:
+    <<: *clickhouse-common
+    hostname: clickhouse-2
+    volumes:
+      - clickhouse-2-data:/var/lib/clickhouse
+      - *clickhouse-cluster-config
+      - *clickhouse-resource-config
+      - *clickhouse-access-init
+      - *clickhouse-probe
+
   hdfs-namenode:
     <<: *hdfs-common
     hostname: hdfs-namenode
@@ -306,6 +382,8 @@ networks:
     driver: bridge
 
 volumes:
+  clickhouse-1-data:
+  clickhouse-2-data:
   hdfs-namenode-data:
   hdfs-datanode-1-data:
   hdfs-datanode-2-data:

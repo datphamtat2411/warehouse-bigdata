@@ -36,6 +36,10 @@ ALL_VARIABLES = {
     "WAREHOUSE_CLICKHOUSE_DATABASE",
     "WAREHOUSE_CLICKHOUSE_USER",
     "WAREHOUSE_CLICKHOUSE_PASSWORD",
+    "WAREHOUSE_CLICKHOUSE_PUBLISHER_USER",
+    "WAREHOUSE_CLICKHOUSE_PUBLISHER_PASSWORD",
+    "WAREHOUSE_CLICKHOUSE_ADMIN_USER",
+    "WAREHOUSE_CLICKHOUSE_ADMIN_PASSWORD",
     "WAREHOUSE_ARTIFACTS_DIR",
     "WAREHOUSE_SCRATCH_DIR",
     "WAREHOUSE_M5_SOURCE_DIR",
@@ -373,10 +377,10 @@ def test_env_example_contains_exact_supported_variables() -> None:
     assert values["WAREHOUSE_HDFS_URI"] == ""
     assert values["WAREHOUSE_HDFS_BASE_PATH"] == "/data/warehouse"
     assert values["WAREHOUSE_SPARK_MASTER_URL"] == ""
-    assert values["WAREHOUSE_CLICKHOUSE_HOST"] == ""
-    assert values["WAREHOUSE_CLICKHOUSE_PORT"] == ""
-    assert values["WAREHOUSE_CLICKHOUSE_DATABASE"] == ""
-    assert values["WAREHOUSE_CLICKHOUSE_USER"] == ""
+    assert values["WAREHOUSE_CLICKHOUSE_HOST"] == "localhost"
+    assert values["WAREHOUSE_CLICKHOUSE_PORT"] == "8123"
+    assert values["WAREHOUSE_CLICKHOUSE_DATABASE"] == "warehouse"
+    assert values["WAREHOUSE_CLICKHOUSE_USER"] == "warehouse_reader"
     assert values["WAREHOUSE_CLICKHOUSE_PASSWORD"] == ""
     assert values["WAREHOUSE_M5_SOURCE_DIR"] == ""
     assert values["WAREHOUSE_M5_SOURCE_URL"] == ""

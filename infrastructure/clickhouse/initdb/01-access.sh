@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Invoked by the official entrypoint only on first-volume initialization.
+set +x
+set -euo pipefail
+for name in "$WAREHOUSE_CLICKHOUSE_USER" "$WAREHOUSE_CLICKHOUSE_PUBLISHER_USER" "$CLICKHOUSE_USER"; do
+    [[ $name =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || { printf 'Invalid account identifier\n' >&2; exit 1; }
+done
+[[ $WAREHOUSE_CLICKHOUSE_USER != "$WAREHOUSE_CLICKHOUSE_PUBLISHER_USER" &&
+   $WAREHOUSE_CLICKHOUSE_USER != "$CLICKHOUSE_USER" &&
+   $WAREHOUSE_CLICKHOUSE_PUBLISHER_USER != "$CLICKHOUSE_USER" ]] || exit 1
+reader_hash=$(printf %s "$WAREHOUSE_CLICKHOUSE_PASSWORD" | sha256sum | cut -d ' ' -f 1)
+publisher_hash=$(printf %s "$WAREHOUSE_CLICKHOUSE_PUBLISHER_PASSWORD" | sha256sum | cut -d ' ' -f 1)
+CLICKHOUSE_PASSWORD=$CLICKHOUSE_PASSWORD clickhouse-client --user "$CLICKHOUSE_USER" --multiquery <<SQL
+CREATE DATABASE IF NOT EXISTS warehouse;
+CREATE USER IF NOT EXISTS $WAREHOUSE_CLICKHOUSE_USER IDENTIFIED WITH sha256_hash BY '$reader_hash';
+CREATE USER IF NOT EXISTS $WAREHOUSE_CLICKHOUSE_PUBLISHER_USER IDENTIFIED WITH sha256_hash BY '$publisher_hash';
+GRANT SELECT ON warehouse.* TO $WAREHOUSE_CLICKHOUSE_USER;
+GRANT SELECT ON system.clusters TO $WAREHOUSE_CLICKHOUSE_USER;
+GRANT SELECT, INSERT ON warehouse.* TO $WAREHOUSE_CLICKHOUSE_PUBLISHER_USER;
+GRANT SELECT ON system.one TO $WAREHOUSE_CLICKHOUSE_PUBLISHER_USER;
+SQL

@@ -1,0 +1,22 @@
+<clickhouse>
+    <remote_servers>
+        <warehouse_cluster>
+            <shard>
+                <internal_replication>false</internal_replication>
+                <replica>
+                    <host>clickhouse-1</host><port>9000</port>
+                    <user from_env="WAREHOUSE_CLICKHOUSE_PUBLISHER_USER" />
+                    <password from_env="WAREHOUSE_CLICKHOUSE_PUBLISHER_PASSWORD" />
+                </replica>
+            </shard>
+            <shard>
+                <internal_replication>false</internal_replication>
+                <replica>
+                    <host>clickhouse-2</host><port>9000</port>
+                    <user from_env="WAREHOUSE_CLICKHOUSE_PUBLISHER_USER" />
+                    <password from_env="WAREHOUSE_CLICKHOUSE_PUBLISHER_PASSWORD" />
+                </replica>
+            </shard>
+        </warehouse_cluster>
+    </remote_servers>
+</clickhouse>

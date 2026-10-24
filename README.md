@@ -16,7 +16,8 @@ and a bounded synthetic distributed Spark–HDFS acceptance that passed on
 run manifests, J02/J03 curated ETL, J04 features, J05 Random Forest persistence,
 J06 recursive forecasting, and chronological evaluation are implemented in the local
 tree. Their new M5 Small profile still requires separately authorized live validation.
-Inventory processing, database publication, and the dashboard remain planned.
+Opt-in two-shard ClickHouse infrastructure is implemented. Serving schemas,
+inventory processing, database publication, and the dashboard remain planned.
 
 ## Standard Execution Profile — M5 Small
 
@@ -77,9 +78,9 @@ serving layer, and Streamlit is planned as a read-oriented presentation layer.
 | Distributed storage | Hadoop HDFS 3.4.3 | Persistent one-NameNode/two-DataNode deployment and configuration loaders implemented; complete four-scenario HDFS integration suite passed |
 | Distributed processing | Apache Spark 3.5.7 | One Master/two Workers, qualified submission runtime, J02–J04 ETL/features implemented; M5 Small live acceptance pending |
 | Forecasting | Spark MLlib `RandomForestRegressor` | Bounded training, immutable model reload, recursive forecasts and evaluation implemented; real-M5 Small execution pending |
-| Analytical serving | ClickHouse Distributed, two shards and one replica per shard | Designed only; no SQL or deployment is implemented |
+| Analytical serving | ClickHouse 26.8, two shards and one replica per shard | Infrastructure implemented; serving schemas and publication remain planned |
 | Application | Streamlit and Plotly | Designed only; no application code is implemented |
-| Local environment | Docker Compose on Ubuntu/WSL2 | HDFS default topology and opt-in Spark profile implemented; other services remain planned |
+| Local environment | Docker Compose on Ubuntu/WSL2 | HDFS default topology and opt-in Spark and ClickHouse profiles implemented |
 
 ## Dataset Overview
 
@@ -117,7 +118,7 @@ The tracked repository is intentionally small at this stage:
 | [`.env.example`](.env.example) | Safe template for the shared environment-variable contract |
 | [`src/warehouse_bigdata/`](src/warehouse_bigdata/) | Tracked package and minimal CLI entry point |
 | [`docs/`](docs/01_PROJECT_OVERVIEW.md) | Design specifications and repository guidance |
-| [`infrastructure/`](infrastructure/) | HDFS deployment, Hadoop configuration, and opt-in Spark topology/runtime/probes; ClickHouse remains planned |
+| [`infrastructure/`](infrastructure/) | HDFS deployment, Hadoop configuration, opt-in Spark runtime and ClickHouse cluster infrastructure |
 | `tests/` | Focused offline checks, Spark registration/lifecycle checks, and opt-in HDFS and distributed Spark–HDFS integration scenarios |
 | [`scripts/`](scripts/) | Repository environment loading, explicit HDFS initialization, scoped Spark lifecycle/submission commands, and focused smoke checks |
 | `app/`, `sql/`, `data/`, `artifacts/` | Planned areas described by the design; not currently present in the tracked tree |
@@ -130,6 +131,10 @@ first real implementation requires them.
 
 ### Implemented or scaffolded
 
+- Two-shard ClickHouse infrastructure with independent volumes, private account
+  bootstrap, bounded resources and SQL topology checks. See the
+  [ClickHouse operations guide](infrastructure/clickhouse/README.md) for private
+  initialization, safe lifecycle commands and focused verification.
 - Python project metadata and reproducible developer tooling for Python 3.11 managed with `uv`.
 - A `warehouse-bigdata` console entry point with `--help` and `--version` support.
 - Focused pytest checks for package importability and CLI argument handling.
@@ -474,8 +479,10 @@ is optional and empty by default. Local generated artifacts use
 paths distinct from the HDFS base path.
 
 Invalid or missing values raise `ConfigurationError` with the variable and expected
-format. Required HDFS, Spark, and ClickHouse endpoints remain blank in
-`.env.example`. Successful parsing only validates configuration syntax; it does not
+format. Required HDFS and Spark endpoints remain blank in `.env.example`;
+ClickHouse has local endpoint/account defaults and empty passwords. Initialize
+private credentials with `bash scripts/init-clickhouse-env.sh`.
+Successful parsing only validates configuration syntax; it does not
 prove that a service is reachable or that HDFS paths exist. Runtime environments,
 including application containers, must explicitly receive their required variables
 through process-environment injection or a caller-supplied mapping.
