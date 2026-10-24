@@ -34,6 +34,8 @@ def harness(monkeypatch):
         resource.limits = ReadLimits()
         resource.get_store_history_coverage.return_value = ReadResult('empty', provenance='observed')
         resource.get_eligible_items.return_value = ReadResult('ok', ({'item_id': 'I', 'store_id': 'S'},), 'predicted')
+        resource.get_forecast_series.return_value = ReadResult('incomplete', provenance='predicted')
+        resource.get_forecast_metrics.return_value = ReadResult('unavailable', provenance='evaluated')
         resources.append(resource)
         try:
             yield resource
@@ -77,6 +79,20 @@ def test_direct_first_navigation(harness):
     at.run()
     assert not at.exception
     assert at.title[0].value == 'Phân bổ hàng'
+
+
+def test_real_forecast_routing_and_publication_reset(harness):
+    current, _, _, resources = harness
+    at = AppTest.from_file(ENTRYPOINT).run()
+    at.session_state[PREFIX + 'item_id'] = 'I'
+    at.sidebar.radio[0].set_value('Dự báo nhu cầu').run()
+    assert not at.exception and at.warning
+    resources[-1].get_forecast_series.assert_called_once_with('I', 'S')
+    current[0] = replace(current[0], manifest_checksum='next')
+    at.run()
+    assert not at.exception and at.session_state[PREFIX + 'item_id'] is None
+    resources[-1].get_forecast_series.assert_not_called()
+    assert at.sidebar.radio[0].value == 'Dự báo nhu cầu'
 
 
 def test_render_pins_context_then_next_rerun_adopts_change(harness, monkeypatch):

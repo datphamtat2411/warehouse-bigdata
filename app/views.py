@@ -28,8 +28,8 @@ def render_overview(context, repository, selections):
 
 
 def render_forecast(context, repository, selections):
-    _placeholder('Dự báo nhu cầu', 'Dự báo là kết quả dự đoán của mô hình cho bảy ngày tới. '
-                 'Đánh giá lịch sử là kết quả đo trên giai đoạn quá khứ riêng biệt.')
+    from app.forecast import render_forecast as render
+    render(context, repository, selections)
 
 
 def render_inventory(context, repository, selections):
