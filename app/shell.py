@@ -4,6 +4,7 @@ import logging
 import streamlit as st
 
 from app import views
+from app.presentation import apply_style, sidebar_identity
 from warehouse_bigdata.application import runtime
 from warehouse_bigdata.application.session_state import (
     PREFIX,
@@ -81,6 +82,8 @@ def _summary(context):
 
 def render_shell():
     st.set_page_config(page_title='Hỗ trợ quyết định kho hàng', layout='wide')
+    apply_style()
+    sidebar_identity()
     # A button interaction already causes a full script rerun, including this gate.
     st.sidebar.button('Làm mới dữ liệu đã công bố')
     page = st.session_state.get(PREFIX + 'navigation', 'Tổng quan')

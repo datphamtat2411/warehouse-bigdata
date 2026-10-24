@@ -58,8 +58,11 @@ def test_routing_reconciliation_and_vietnamese_meaning():
     assert list(table['Ngày']) == ['01/01/2016', '02/01/2016', '03/01/2016']
     text = '\n'.join(el.value for el in list(at.markdown) + list(at.info) + list(at.caption))
     for expected in ['Dữ liệu bán hàng lịch sử từ bộ M5 Walmart.', 'không phải', 'approved',
-                     'source', '3.049', '30.490', '59.181.090', 'Nguồn']:
+                     'source', 'M5 Small', 'Nguồn']:
         assert expected in text
+    source = next(el for el in at.expander if el.label == 'Nguồn và phạm vi dữ liệu')
+    assert not source.proto.expanded
+    assert not at.info and not at.error
     assert len(at.get('plotly_chart')) == 1
     repo.reset_mock()
     at.selectbox[1].set_value('I').run()
@@ -210,6 +213,8 @@ def test_plot_uses_exact_chronological_numeric_rows():
     assert list(fig.data[0].y) == [0, 2, 3]
     assert list(fig.data[0].x) == [START, START + timedelta(days=1), END]
     assert sum(fig.data[0].y) == sum(row['units'] for row in result.rows) == 5
+    assert fig.layout.yaxis.rangemode == 'tozero'
+    assert 'Thực tế' in fig.data[0].name
 
 
 def test_missing_detail_binding_and_saturated_catalog_fail_closed():
