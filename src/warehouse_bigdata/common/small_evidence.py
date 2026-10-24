@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 from collections import defaultdict
 
 from warehouse_bigdata.common.config import load_hdfs_config
@@ -11,7 +12,12 @@ from warehouse_bigdata.common.hdfs_paths import render_curated_sales_daily_path,
 from warehouse_bigdata.common.scope_evidence import read_scope
 from warehouse_bigdata.contracts.dataset_scope import ScopeError
 
-MAX_EVENT_BYTES = 256 * 1024 * 1024
+# The frozen J06 event log measured 281,066,249 bytes. Keep finite headroom for
+# the same demo workload without allowing arbitrary event-log growth.
+MAX_EVENT_BYTES = 384 * 1024 * 1024
+# The largest measured J06 JSON record was 5,444,499 bytes.
+MAX_EVENT_RECORD_BYTES = 8 * 1024 * 1024
+STREAM_FALLBACK_CHUNK_BYTES = 1024 * 1024
 EXPECTED_MASTER = "spark://spark-master:7077"
 EXPECTED_WORKERS = ("spark-worker-1", "spark-worker-2")
 
@@ -53,21 +59,12 @@ def completed_execution(
     size = stat.size_bytes if hasattr(stat, "size_bytes") else stat["size_bytes"]
     if type(size) is not int or not 0 < size <= MAX_EVENT_BYTES:
         raise ScopeError("event log exceeds the bounded evidence limit")
-    payload = client.read_remote(path)
-    after = client.stat(path)
-    after_size = after.size_bytes if hasattr(after, "size_bytes") else after["size_bytes"]
-    if len(payload) != size or after_size != size:
-        raise ScopeError("event log changed during readback")
     expected_workers = tuple(expected_workers)
     expected_worker_set = set(expected_workers)
     if not expected_worker_set or len(expected_worker_set) != len(expected_workers):
         raise ScopeError("expected Workers must be distinct and nonempty")
     if not isinstance(expected_master, str) or not expected_master.startswith("spark://"):
         raise ScopeError("expected Spark master must be a Standalone URL")
-
-    lines = payload.splitlines()
-    if not lines or not payload.endswith(b"\n"):
-        raise ScopeError("event log is truncated or missing its terminal newline")
 
     executors = {}
     workers = {}
@@ -83,7 +80,9 @@ def completed_execution(
     task_start_records = {}
     partition_ids_by_task = {}
     partition_to_task_index = {}
-    event_kinds = []
+    event_count = 0
+    first_event_kind = None
+    last_event_kind = None
     application = None
     application_name = None
     application_end_count = 0
@@ -158,6 +157,12 @@ def completed_execution(
             raise ScopeError("Spark stage parents or RDD lineage changed across event records")
         return key, task_count, definition[0], lineage
 
+    def lifecycle_snapshot(info):
+        return {
+            field: info.get(field)
+            for field in ("Number of Tasks", "Submission Time", "Completion Time", "Failure Reason")
+        }
+
     def ensure_stage(key, *, task_count=None, parent_ids=None, lineage=None, job_start_info=None):
         record = stage_attempts.setdefault(
             key,
@@ -170,7 +175,6 @@ def completed_execution(
                 "expected_tasks": None,
                 "tasks": [],
                 "failure_reason": None,
-                "properties": {},
                 "parent_ids": None,
                 "job_start_infos": [],
                 "submission_position": None,
@@ -202,7 +206,11 @@ def completed_execution(
     def invalid_constant(value):
         raise ScopeError("event log contains non-JSON numeric constants")
 
-    for raw_line in lines:
+    def process_line(raw_line):
+        nonlocal application, application_name, application_end_count
+        nonlocal application_start_time, application_end_time
+        nonlocal event_count, first_event_kind, last_event_kind
+        nonlocal environment_properties, log_start_count
         if not raw_line.strip():
             raise ScopeError("event log contains a blank record")
         try:
@@ -216,8 +224,11 @@ def completed_execution(
         kind = event.get("Event")
         if not isinstance(kind, str) or not kind:
             raise ScopeError("event log record is missing its Event identity")
-        position = len(event_kinds)
-        event_kinds.append(kind)
+        position = event_count
+        event_count += 1
+        if first_event_kind is None:
+            first_event_kind = kind
+        last_event_kind = kind
         if kind == "SparkListenerApplicationStart":
             if application is not None:
                 raise ScopeError("event log contains duplicate application starts")
@@ -293,7 +304,7 @@ def completed_execution(
                     "task_count": task_count,
                     "parent_ids": parent_ids,
                     "lineage": lineage,
-                    "snapshot": snapshot,
+                    "snapshot": lifecycle_snapshot(snapshot),
                 }
                 for snapshot, (key, task_count, parent_ids, lineage) in zip(
                     infos, parsed, strict=True
@@ -314,7 +325,7 @@ def completed_execution(
                     key,
                     parent_ids=parent_ids,
                     lineage=lineage,
-                    job_start_info=info,
+                    job_start_info=lifecycle_snapshot(info),
                 )
         elif kind == "SparkListenerStageSubmitted":
             info = event.get("Stage Info")
@@ -328,13 +339,16 @@ def completed_execution(
                 raise ScopeError("event log contains duplicate stage submissions")
             record["submitted"] = True
             record["submission_position"] = position
-            record["submission_info"] = info
-            if info.get("Completion Time") is not None or info.get("Failure Reason") is not None:
-                raise ScopeError("stage submission contains contradictory completion evidence")
+            record["submission_info"] = lifecycle_snapshot(info)
+            for field in ("Submission Time", "Completion Time"):
+                if field in info and info[field] is not None:
+                    _nonnegative_int(info[field], field)
+            failure = info.get("Failure Reason")
+            if failure is not None and not isinstance(failure, str):
+                raise ScopeError("stage submission has malformed failure reason")
             properties = event.get("Properties", {})
             if not isinstance(properties, dict):
                 raise ScopeError("stage submission has malformed Properties")
-            record["properties"] = properties
         elif kind == "SparkListenerStageCompleted":
             info = event.get("Stage Info")
             key, task_count, parent_ids, lineage = stage_info(info)
@@ -346,7 +360,7 @@ def completed_execution(
             ensure_stage(key, task_count=task_count, parent_ids=parent_ids, lineage=lineage)
             record["completed"] = True
             record["completion_position"] = position
-            record["completion_info"] = info
+            record["completion_info"] = lifecycle_snapshot(info)
             for field in ("Submission Time", "Completion Time"):
                 if field in info:
                     _nonnegative_int(info[field], field)
@@ -356,6 +370,16 @@ def completed_execution(
                 or info.get("Completion Time", submission_time) < submission_time
             ):
                 raise ScopeError("stage completion has contradictory lifecycle times")
+            if (
+                record["submission_info"].get("Completion Time") is not None
+                and info.get("Completion Time") != record["submission_info"]["Completion Time"]
+            ):
+                raise ScopeError("stage completion has contradictory lifecycle times")
+            if (
+                record["submission_info"].get("Failure Reason") is not None
+                and info.get("Failure Reason") != record["submission_info"]["Failure Reason"]
+            ):
+                raise ScopeError("stage completion has contradictory lifecycle evidence")
             failure = info.get("Failure Reason")
             if failure is not None and not isinstance(failure, str):
                 raise ScopeError("stage completion has malformed failure reason")
@@ -549,11 +573,64 @@ def completed_execution(
             )
             task_attempts.setdefault(retry_key, []).append(task)
 
+    line_buffer = bytearray()
+    line_count = 0
+    last_byte = None
+
+    def consume_chunk(chunk):
+        nonlocal last_byte, line_count
+        if not isinstance(chunk, bytes) or len(chunk) > MAX_EVENT_RECORD_BYTES + 1:
+            raise ScopeError("event log transfer chunk exceeds the bounded record limit")
+        if chunk:
+            last_byte = chunk[-1]
+            line_buffer.extend(chunk)
+        while True:
+            newline = line_buffer.find(b"\n")
+            if newline < 0:
+                if len(line_buffer) > MAX_EVENT_RECORD_BYTES:
+                    raise ScopeError("event log record exceeds the bounded record limit")
+                return
+            raw_line = bytes(line_buffer[:newline])
+            del line_buffer[: newline + 1]
+            if len(raw_line) > MAX_EVENT_RECORD_BYTES:
+                raise ScopeError("event log record exceeds the bounded record limit")
+            line_count += 1
+            process_line(raw_line)
+
+    stream_remote = getattr(client, "stream_remote", None)
+    if callable(stream_remote):
+        streamed = stream_remote(path, consume_chunk, max_bytes=MAX_EVENT_BYTES)
+        streamed_size = (
+            streamed.size_bytes if hasattr(streamed, "size_bytes") else streamed["size_bytes"]
+        )
+        streamed_sha256 = streamed.sha256 if hasattr(streamed, "sha256") else streamed["sha256"]
+    else:
+        # Existing in-memory test doubles predate the production streaming API.
+        payload = client.read_remote(path)
+        if not isinstance(payload, bytes) or len(payload) > MAX_EVENT_BYTES:
+            raise ScopeError("event log read exceeds the bounded evidence limit")
+        for offset in range(0, len(payload), STREAM_FALLBACK_CHUNK_BYTES):
+            consume_chunk(payload[offset : offset + STREAM_FALLBACK_CHUNK_BYTES])
+        streamed_size = len(payload)
+        streamed_sha256 = "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    after = client.stat(path)
+    after_size = after.size_bytes if hasattr(after, "size_bytes") else after["size_bytes"]
+    if streamed_size != size or after_size != size:
+        raise ScopeError("event log changed during readback")
+    if not (
+        isinstance(streamed_sha256, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", streamed_sha256) is not None
+    ):
+        raise ScopeError("event log readback did not provide a complete SHA-256")
+    if line_count == 0 or line_buffer or last_byte != ord("\n"):
+        raise ScopeError("event log is truncated or missing its terminal newline")
+
     if task_start_attempt_ids - task_attempt_ids:
         raise ScopeError("task start has no matching task completion")
-    if event_kinds[0] != "SparkListenerLogStart" or log_start_count != 1:
+    if event_count == 0 or first_event_kind != "SparkListenerLogStart" or log_start_count != 1:
         raise ScopeError("event log is missing exactly one SparkListenerLogStart")
-    if event_kinds[-1] != "SparkListenerApplicationEnd" or application_end_count != 1:
+    if last_event_kind != "SparkListenerApplicationEnd" or application_end_count != 1:
         raise ScopeError("event log is missing terminal ApplicationEnd")
     if application is None:
         raise ScopeError("event log is missing application start")
@@ -713,6 +790,10 @@ def completed_execution(
             if stage["completion_position"] < before
         ]
         covered = {task["partition_id"] for _, tasks in sources for task in tasks}
+        if partitions == 0:
+            if info.get("task_count", partitions) != 0 or sources or covered:
+                raise ScopeError("zero-partition planned stage has execution evidence")
+            return set()
         if not sources or covered != set(range(partitions)):
             raise ScopeError("planned stage reuse lacks prior complete successful shuffle evidence")
         return {(stage["stage_id"], stage["stage_attempt_id"]) for stage, _ in sources}
@@ -935,7 +1016,7 @@ def completed_execution(
         job_count=len(jobs),
         event_log_path=path,
         event_log_bytes=size,
-        event_log_sha256="sha256:" + hashlib.sha256(payload).hexdigest(),
+        event_log_sha256=streamed_sha256,
     )
 
 

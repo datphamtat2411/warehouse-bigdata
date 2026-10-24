@@ -59,6 +59,71 @@ def test_file_upload_and_remote_hash_are_streamed_in_bounded_chunks(tmp_path: Pa
     assert evidence.sha256 == "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
 
 
+def test_remote_stream_delivers_bounded_chunks_and_hashes_without_collecting(
+    tmp_path: Path,
+) -> None:
+    stub = tmp_path / "hdfs-stream-stub.py"
+    stub.write_text(
+        dedent(
+            """
+            import os
+            import sys
+
+            args = sys.argv[1:]
+            if args[:3] == ["hdfs", "dfs", "-cat"]:
+                sys.stdout.buffer.write(open(os.environ["HDFS_STUB_OUTPUT"], "rb").read())
+            else:
+                raise SystemExit(f"unexpected command: {args!r}")
+            """
+        ),
+        encoding="utf-8",
+    )
+    source = tmp_path / "remote.bin"
+    source.write_bytes(b"streamed remote payload\x00" * 17)
+    client = HdfsCliClient(
+        command_prefix=(sys.executable, str(stub)),
+        env={"HDFS_STUB_OUTPUT": str(source)},
+        transfer_chunk_size=3,
+    )
+    chunks = []
+
+    evidence = client.stream_remote("/events/app", chunks.append, max_bytes=1024)
+
+    assert b"".join(chunks) == source.read_bytes()
+    assert chunks and max(map(len, chunks)) <= 3
+    assert evidence.size_bytes == source.stat().st_size
+    assert evidence.sha256 == "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+
+
+def test_remote_stream_rejects_the_bound_and_cleans_up_a_stalled_reader(tmp_path: Path) -> None:
+    stub = tmp_path / "hdfs-stalled-stub.py"
+    stub.write_text(
+        dedent(
+            """
+            import sys
+            import time
+
+            if sys.argv[1:4] == ["hdfs", "dfs", "-cat"]:
+                sys.stdout.write("payload")
+                sys.stdout.flush()
+                time.sleep(30)
+            """
+        ),
+        encoding="utf-8",
+    )
+    client = HdfsCliClient(
+        command_prefix=(sys.executable, str(stub)),
+        transfer_chunk_size=2,
+        command_timeout=0.05,
+    )
+
+    with pytest.raises(HdfsCommandError, match="bounded limit"):
+        client.stream_remote("/events/app", lambda _chunk: None, max_bytes=3)
+
+    with pytest.raises(HdfsCommandError, match="timed out"):
+        client.stream_remote("/events/app", lambda _chunk: None)
+
+
 REPORT = """Configured Capacity: 1000000 (976.56 KB)
 Live datanodes (2):
 

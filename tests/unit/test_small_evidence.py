@@ -3,12 +3,18 @@
 import copy
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from tests.unit.test_hdfs_namespace import CONFIG
 from tests.unit.test_m06_acceptance import _event_client, _event_log
-from warehouse_bigdata.common.small_evidence import MAX_EVENT_BYTES, completed_execution
+from warehouse_bigdata.common.hdfs_client import HdfsCommandError, RemoteFileHash
+from warehouse_bigdata.common.small_evidence import (
+    MAX_EVENT_BYTES,
+    MAX_EVENT_RECORD_BYTES,
+    completed_execution,
+)
 from warehouse_bigdata.contracts.dataset_scope import ScopeError
 
 
@@ -115,6 +121,46 @@ def validate(events):
     )
 
 
+def streaming_event_client(
+    event_payload,
+    *,
+    reported_size=None,
+    stat_sizes=None,
+    read_error=None,
+    chunk_size=3,
+):
+    reported_size = len(event_payload) if reported_size is None else reported_size
+    values = iter(stat_sizes or (reported_size,))
+    last_size = reported_size
+    calls = []
+
+    def stat(_path):
+        nonlocal last_size
+        try:
+            last_size = next(values)
+        except StopIteration:
+            pass
+        return SimpleNamespace(size_bytes=last_size)
+
+    def stream_remote(_path, on_chunk, *, max_bytes=None):
+        calls.append(max_bytes)
+        if read_error is not None:
+            raise read_error
+        for offset in range(0, len(event_payload), chunk_size):
+            on_chunk(event_payload[offset : offset + chunk_size])
+        return RemoteFileHash(
+            reported_size,
+            "sha256:" + hashlib.sha256(event_payload).hexdigest(),
+        )
+
+    return SimpleNamespace(
+        list_children=lambda path: [path + "/app-1"],
+        stat=stat,
+        stream_remote=stream_remote,
+        stream_calls=calls,
+    )
+
+
 def test_shuffle_reuse_is_proven_by_prior_successful_rdd_lineage():
     events = reuse_events()
     result = validate(events)
@@ -127,6 +173,120 @@ def test_shuffle_reuse_is_proven_by_prior_successful_rdd_lineage():
     assert planned["referenced_by_jobs"] == [1]
     assert planned["reuse_sources"] == [{"stage_id": 0, "stage_attempt_id": 0}]
     assert result["event_log_sha256"] == "sha256:" + hashlib.sha256(payload(events)).hexdigest()
+
+
+def test_streamed_completed_log_above_previous_limit_is_accepted_with_mocked_metadata():
+    event_payload = payload(reuse_events())
+    reported_size = 256 * 1024 * 1024 + 1
+    client = streaming_event_client(event_payload, reported_size=reported_size)
+
+    result = completed_execution(
+        client,
+        CONFIG,
+        "run",
+        expected_application_id="app-1",
+        expected_application_name="m06-readback",
+    )
+
+    assert result["event_log_bytes"] == reported_size
+    assert result["event_log_sha256"] == "sha256:" + hashlib.sha256(event_payload).hexdigest()
+    assert client.stream_calls == [MAX_EVENT_BYTES]
+
+
+def test_streamed_log_above_revised_limit_is_rejected_before_read():
+    event_payload = payload(reuse_events())
+    client = streaming_event_client(event_payload, reported_size=MAX_EVENT_BYTES + 1)
+
+    with pytest.raises(ScopeError, match="bounded evidence limit"):
+        completed_execution(client, CONFIG, "run")
+
+    assert client.stream_calls == []
+
+
+def test_streamed_log_rejects_a_record_above_the_bounded_line_limit():
+    event_payload = b'{"Event":"Unknown","padding":"' + b"x" * MAX_EVENT_RECORD_BYTES + b'"}\n'
+    client = streaming_event_client(event_payload, chunk_size=1024 * 1024)
+
+    with pytest.raises(ScopeError, match="record exceeds"):
+        completed_execution(client, CONFIG, "run")
+
+
+def test_streamed_log_rejects_missing_terminal_newline():
+    event_payload = payload(reuse_events()).rstrip(b"\n")
+    client = streaming_event_client(event_payload)
+
+    with pytest.raises(ScopeError, match="truncated|terminal newline"):
+        completed_execution(client, CONFIG, "run")
+
+
+def test_streamed_read_failure_is_not_treated_as_completed_evidence():
+    client = streaming_event_client(
+        payload(reuse_events()), read_error=HdfsCommandError("HDFS read failed")
+    )
+
+    with pytest.raises(HdfsCommandError, match="HDFS read failed"):
+        completed_execution(client, CONFIG, "run")
+
+
+def test_streamed_log_mutation_between_pre_and_post_stat_is_rejected():
+    event_payload = payload(reuse_events())
+    client = streaming_event_client(
+        event_payload,
+        stat_sizes=(len(event_payload), len(event_payload) + 1),
+    )
+
+    with pytest.raises(ScopeError, match="changed during readback"):
+        completed_execution(client, CONFIG, "run")
+
+
+def test_stage_submission_may_reflect_late_serialization_of_matching_completion():
+    events = reuse_events()
+    submitted = next(event for event in events if event["Event"] == "SparkListenerStageSubmitted")
+    completed = next(event for event in events if event["Event"] == "SparkListenerStageCompleted")
+    for info in (submitted["Stage Info"], completed["Stage Info"]):
+        info.update({"Submission Time": 10, "Completion Time": 20})
+
+    result = validate(events)
+
+    assert result["successful_stage_attempt_count"] == 2
+
+
+def test_stage_submission_lifecycle_snapshot_must_match_completion():
+    events = reuse_events()
+    submitted = next(event for event in events if event["Event"] == "SparkListenerStageSubmitted")
+    completed = next(event for event in events if event["Event"] == "SparkListenerStageCompleted")
+    submitted["Stage Info"]["Completion Time"] = 20
+    completed["Stage Info"]["Completion Time"] = 21
+
+    with pytest.raises(ScopeError, match="contradictory lifecycle"):
+        validate(events)
+
+
+def test_zero_partition_planned_shuffle_can_be_reused_without_execution():
+    planned = stage(0, tasks=0, rdd=10, partitions=0)
+    consumer = stage(2, parents=(0,), rdd=20, partitions=2)
+
+    result = validate(
+        [
+            *header(),
+            job_start(0, planned, consumer),
+            *execution(consumer, task_type="ResultTask"),
+            job_end(0),
+            {"Event": "SparkListenerApplicationEnd"},
+        ]
+    )
+
+    assert result["planned_only_stage_attempts"] == [
+        {
+            "stage_id": 0,
+            "stage_attempt_id": 0,
+            "expected_tasks": 0,
+            "parent_ids": [],
+            "root_rdd_id": 10,
+            "referenced_by_jobs": [0],
+            "reuse_sources": [],
+        }
+    ]
 
 
 def test_normal_multistage_job_executes_all_dependencies():

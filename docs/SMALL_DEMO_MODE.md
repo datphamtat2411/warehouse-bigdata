@@ -315,7 +315,10 @@ actual per-stage wall times, completed-event evidence and Docker resource sample
 `small_evidence` validates one completed nonrolling event log, actual Standalone master,
 application ID and successful tasks on **both** named Workers. It reports stage/job/task
 counts, input/output bytes, executor runtime, spill and GC; unavailable metrics are not
-invented. Docker snapshots are point-in-time usage, not measured peak memory.
+invented. The validator streams the original HDFS bytes in bounded chunks, hashes the
+complete stream, and parses one bounded JSON record at a time. The measured J06 log was
+281,066,249 bytes; the finite event-log and per-record limits are 384 MiB and 8 MiB.
+Docker snapshots are point-in-time usage, not measured peak memory.
 
 ### Spark event lifecycle and evidence report
 
@@ -324,8 +327,13 @@ sets. Spark 3.5.7 can create a new shuffle stage ID while retaining earlier shuf
 outputs in MapOutputTracker. Such planned-only references have no submission,
 completion or tasks. The validator requires a connected, acyclic completed-job DAG
 and **earlier successful ShuffleMapTask execution with the identical root RDD,
-narrow-RDD parent graph and partition counts, covering every shuffle partition**.
-Unproven references fail validation. Skipped references never become executed attempts.
+narrow-RDD parent graph and partition counts, covering every shuffle partition**. An
+empty zero-partition planned `EmptyRDD` is the one vacuous case: it is accepted only
+when its planned task count is zero and no execution evidence exists. Spark event-log
+serialization can also expose completion fields on a `StageSubmitted` snapshot for a
+very fast stage; those fields are accepted only when they exactly match the later
+`StageCompleted` lifecycle record. Unproven or contradictory references fail validation.
+Skipped references never become executed attempts.
 See Spark v3.5.7 [DAGScheduler](https://github.com/apache/spark/blob/v3.5.7/core/src/main/scala/org/apache/spark/scheduler/DAGScheduler.scala)
 (`createShuffleMapStage`, `getMissingParentStages`, `submitMissingTasks`) and
 [StageInfo](https://github.com/apache/spark/blob/v3.5.7/core/src/main/scala/org/apache/spark/scheduler/StageInfo.scala)

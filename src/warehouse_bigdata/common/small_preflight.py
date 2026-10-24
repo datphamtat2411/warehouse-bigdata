@@ -28,7 +28,7 @@ from warehouse_bigdata.common.validation_timing import validation_phase
 from warehouse_bigdata.contracts.dataset_scope import ScopeError
 from warehouse_bigdata.contracts.manifests import PIPELINE_RUN_MANIFEST, VALIDATED
 from warehouse_bigdata.contracts.validation import validate_manifest
-from warehouse_bigdata.forecasting.feature_input import read_json, require_sealed
+from warehouse_bigdata.forecasting.feature_input import read_json, require_sealed_paths
 
 _PIPELINE_OUTPUTS = {
     "j02": {"sales_daily": render_curated_sales_daily_path},
@@ -109,14 +109,17 @@ def _pipeline_publication(selector, stage, client, config):
         manifest["output_dataset_uris"]
     ) != [config.uri + path for path in paths.values()]:
         raise ScopeError(stage + " publication output identity conflicts")
-    require_sealed(client, marker, config.base_path)
+    sidecars = {
+        path: path + ("/_snapshot_manifest.json" if stage == "j02" else "/_dataset_manifest.json")
+        for path in paths.values()
+    }
+    sealed_paths = [marker]
+    for path, sidecar in sidecars.items():
+        sealed_paths.extend((sidecar, path + "/_scope.json"))
+    with validation_phase(stage + ".permissions"):
+        require_sealed_paths(client, sealed_paths, config.base_path)
     coverage = json.loads(manifest["coverage_and_exclusion_counts"])
-    for path in paths.values():
-        sidecar_path = path + (
-            "/_snapshot_manifest.json" if stage == "j02" else "/_dataset_manifest.json"
-        )
-        require_sealed(client, sidecar_path, config.base_path)
-        require_sealed(client, path + "/_scope.json", config.base_path)
+    for path, sidecar_path in sidecars.items():
         _require(
             read_json(client, sidecar_path),
             {
@@ -174,7 +177,8 @@ def _analytical_publication(selector, stage, client, config):
     scope = _scope(selector, client, path)
     run = selector[stage + "_pipeline_run_id"]
     manifest = read_json(client, path + "/" + marker_name)
-    validate(client, config, manifest, path, pipeline_run_id=run)
+    with validation_phase(stage + ".evidence_and_inventory"):
+        validate(client, config, manifest, path, pipeline_run_id=run)
     binding = read_json(client, path + "/evidence/" + binding_name)
     _require(
         binding,
@@ -197,13 +201,20 @@ def _analytical_publication(selector, stage, client, config):
         stage + " input binding",
     )
     quality = read_json(client, render_staging_path(config.base_path, run) + "/quality_report.json")
-    for relative in (
-        marker_name,
-        "evidence/" + binding_name,
-        "evidence/publication.json",
-        *(item["path"] for item in quality["file_integrity"]),
-    ):
-        require_sealed(client, path + "/" + relative, config.base_path)
+    with validation_phase(stage + ".permissions"):
+        require_sealed_paths(
+            client,
+            (
+                path + "/" + relative
+                for relative in (
+                    marker_name,
+                    "evidence/" + binding_name,
+                    "evidence/publication.json",
+                    *(item["path"] for item in quality["file_integrity"]),
+                )
+            ),
+            config.base_path,
+        )
     return manifest, binding
 
 
@@ -219,8 +230,8 @@ def validate_small_publications(selector, *, through, client, config):
         from warehouse_bigdata.forecasting.model_artifacts import read_validated_model_metadata
 
         path = render_model_artifact_path(config.base_path, selector["model_run_id"])
-        scope = _scope(selector, client, path)
         with validation_phase("j05.model_metadata"):
+            scope = _scope(selector, client, path)
             metadata = read_validated_model_metadata(
                 model_run_id=selector["model_run_id"],
                 source_snapshot_id=selector["source_snapshot_id"],

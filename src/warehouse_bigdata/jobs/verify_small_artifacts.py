@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 
 from warehouse_bigdata.common.config import load_hdfs_config
 from warehouse_bigdata.common.hdfs_paths import (
@@ -14,6 +15,7 @@ from warehouse_bigdata.common.hdfs_paths import (
 from warehouse_bigdata.common.scope_evidence import SCOPED_METADATA_LIMIT, read_scope
 from warehouse_bigdata.common.small_artifacts import STAGES, VERIFY_STAGES, validate_small_artifacts
 from warehouse_bigdata.common.spark_hdfs_client import SparkHdfsCliClient
+from warehouse_bigdata.common.validation_timing import validation_phase
 from warehouse_bigdata.contracts.dataset_scope import ScopeError
 
 
@@ -58,7 +60,8 @@ def verify(
     )
     if scope["dataset_scope"] != "demo_sample" or scope["original_series_count"] != 30490:
         raise ScopeError("real-data verification requires canonical M5 Small source lineage")
-    validate_hdfs_raw_snapshot(source, client=client, config=config)
+    with validation_phase("raw.integrity"):
+        validate_hdfs_raw_snapshot(source, client=client, config=config)
     report = dict(
         dataset_scope="demo_sample",
         selection_digest=scope["selection_digest"],
@@ -132,6 +135,7 @@ def verify(
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selector-json", required=True)
     parser.add_argument("--through", choices=VERIFY_STAGES, default="test")

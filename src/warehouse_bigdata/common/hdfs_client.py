@@ -13,14 +13,18 @@ import json
 import os
 import pwd
 import re
+import selectors
 import subprocess
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
+
+from warehouse_bigdata.common.validation_timing import record_validation_io
 
 DEFAULT_METADATA_LIMIT = 64 * 1024
 DEFAULT_TRANSFER_CHUNK_SIZE = 1024 * 1024
@@ -219,10 +223,12 @@ class HdfsCliClient:
                 env=self.environment,
             )
         except subprocess.TimeoutExpired as error:
+            record_validation_io("hadoop_cli", self._operation(arguments))
             raise HdfsCommandError(f"HDFS command timed out: {' '.join(argv)}") from error
         except OSError as error:
             raise HdfsCommandError(f"HDFS command unavailable: {argv[0]!r}: {error}") from error
 
+        record_validation_io("hadoop_cli", self._operation(arguments))
         if (
             len(completed.stdout) > self.metadata_limit
             or len(completed.stderr) > self.metadata_limit
@@ -234,6 +240,11 @@ class HdfsCliClient:
                 f"HDFS command failed (exit {completed.returncode}): {' '.join(argv)}\n{detail}"
             )
         return completed
+
+    @staticmethod
+    def _operation(arguments: Sequence[str]) -> str:
+        """Label operations, never path arguments or payloads, in phase diagnostics."""
+        return " ".join(arguments[:2] if arguments and arguments[0] == "dfs" else arguments[:1])
 
     def _stream_upload(self, reader: BinaryIO, remote_path: str) -> None:
         argv = self._argv("dfs", "-put", "-", remote_path)
@@ -248,6 +259,7 @@ class HdfsCliClient:
         except OSError as error:
             raise HdfsCommandError(f"HDFS upload command unavailable: {error}") from error
 
+        record_validation_io("hadoop_cli", "dfs -put")
         try:
             if process.stdin is None:
                 raise HdfsCommandError("HDFS upload process has no stdin.")
@@ -272,7 +284,18 @@ class HdfsCliClient:
         if returncode != 0:
             raise HdfsCommandError(f"HDFS upload failed (exit {returncode}) for {remote_path!r}.")
 
-    def _stream_remote(self, remote_path: str, *, collect: bool = False) -> RemoteFileHash | bytes:
+    def _stream_remote(
+        self,
+        remote_path: str,
+        *,
+        collect: bool = False,
+        on_chunk: Callable[[bytes], None] | None = None,
+        max_bytes: int | None = None,
+    ) -> RemoteFileHash | bytes:
+        if collect and on_chunk is not None:
+            raise ValueError("collect and on_chunk are mutually exclusive")
+        if max_bytes is not None and (type(max_bytes) is not int or max_bytes <= 0):
+            raise ValueError("max_bytes must be a positive integer")
         argv = self._argv("dfs", "-cat", remote_path)
         try:
             process = subprocess.Popen(
@@ -284,36 +307,71 @@ class HdfsCliClient:
         except OSError as error:
             raise HdfsCommandError(f"HDFS read command unavailable: {error}") from error
 
+        record_validation_io("hadoop_cli", "dfs -cat")
         digest = hashlib.sha256()
-        payload = bytearray()
+        payload = bytearray() if collect else None
         size = 0
+
+        def stop_process() -> None:
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            try:
+                process.wait(timeout=min(self.command_timeout, 5.0))
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                process.wait()
+
+        selector = selectors.DefaultSelector()
         try:
             if process.stdout is None:
                 raise HdfsCommandError("HDFS read process has no stdout.")
-            while chunk := process.stdout.read(self.transfer_chunk_size):
+            selector.register(process.stdout, selectors.EVENT_READ)
+            deadline = time.monotonic() + self.command_timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise subprocess.TimeoutExpired(argv, self.command_timeout)
+                try:
+                    chunk = os.read(process.stdout.fileno(), self.transfer_chunk_size)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    break
                 size += len(chunk)
+                if max_bytes is not None and size > max_bytes:
+                    raise HdfsCommandError("HDFS read exceeded the bounded limit.")
                 if collect:
                     if size > self.metadata_limit:
-                        process.kill()
-                        process.wait()
                         raise HdfsCommandError("HDFS metadata read exceeded the bounded limit.")
+                    assert payload is not None
                     payload.extend(chunk)
-                else:
-                    digest.update(chunk)
-            process.stdout.close()
-            returncode = process.wait(timeout=self.command_timeout)
+                digest.update(chunk)
+                if on_chunk is not None:
+                    on_chunk(chunk)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(argv, self.command_timeout)
+            returncode = process.wait(timeout=remaining)
         except subprocess.TimeoutExpired as error:
-            process.kill()
-            process.wait()
+            stop_process()
             raise HdfsCommandError(f"HDFS read timed out for {remote_path!r}.") from error
         except BaseException:
-            if process.poll() is None:
-                process.kill()
-                process.wait()
+            stop_process()
             raise
+        finally:
+            selector.close()
+            if process.stdout is not None:
+                process.stdout.close()
         if returncode != 0:
             raise HdfsCommandError(f"HDFS read failed (exit {returncode}) for {remote_path!r}.")
         if collect:
+            assert payload is not None
             return bytes(payload)
         return RemoteFileHash(size, f"sha256:{digest.hexdigest()}")
 
@@ -339,6 +397,20 @@ class HdfsCliClient:
         """Read one bounded metadata file through a fresh Hadoop client."""
         result = self._stream_remote(remote_path, collect=True)
         assert isinstance(result, bytes)
+        return result
+
+    def stream_remote(
+        self,
+        remote_path: str,
+        on_chunk: Callable[[bytes], None],
+        *,
+        max_bytes: int | None = None,
+    ) -> RemoteFileHash:
+        """Stream one remote file to a bounded callback while hashing every byte."""
+        if not callable(on_chunk):
+            raise TypeError("on_chunk must be callable")
+        result = self._stream_remote(remote_path, on_chunk=on_chunk, max_bytes=max_bytes)
+        assert isinstance(result, RemoteFileHash)
         return result
 
     def stat(self, remote_path: str) -> RemoteFileStat:
@@ -464,9 +536,9 @@ class HdfsCliClient:
         query = urlencode({"op": operation, "user.name": self.effective_user(), **parameters})
         request = Request(self._http_endpoint + quote(path, safe="/") + "?" + query, method=method)
         try:
-            with build_opener(ProxyHandler({})).open(
-                request, timeout=min(self.command_timeout, 20)
-            ) as response:
+            opener = build_opener(ProxyHandler({}))
+            record_validation_io("webhdfs", operation)
+            with opener.open(request, timeout=min(self.command_timeout, 20)) as response:
                 payload = response.read(self.metadata_limit + 1)
             if len(payload) > self.metadata_limit:
                 raise HdfsCommandError("WebHDFS metadata response exceeded the bounded limit")

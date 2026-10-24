@@ -2,6 +2,8 @@
 
 import copy
 import json
+from collections import Counter
+from pathlib import PurePosixPath
 
 import pytest
 
@@ -302,3 +304,94 @@ def test_publication_timing_reports_failed_phase_without_swallowing_error(monkey
         )
     assert "validation_phase=j02.publication status=STARTED" in caplog.text
     assert "validation_phase=j02.publication status=FAILED elapsed_seconds=" in caplog.text
+
+
+def expected_permission_paths(paths):
+    expected = set()
+    for path in paths:
+        for current in (PurePosixPath(path), *PurePosixPath(path).parents):
+            expected.add(str(current))
+            if str(current) == CONFIG.base_path:
+                break
+    return Counter(dict.fromkeys(expected, 1))
+
+
+def count_acls(client, monkeypatch):
+    calls = Counter()
+    original = client.get_acl
+
+    def counted(path):
+        calls[path] += 1
+        return original(path)
+
+    monkeypatch.setattr(client, "get_acl", counted)
+    return calls
+
+
+@pytest.mark.parametrize("stage", ["j02", "j03"])
+def test_pipeline_batches_all_required_permission_paths_per_publication(monkeypatch, stage):
+    from warehouse_bigdata.common.small_preflight import _PIPELINE_OUTPUTS, _pipeline_publication
+
+    client = published_processing()
+    selector = complete_selector()
+    marker = CONFIG.base_path + "/manifests/runs/" + selector[stage + "_pipeline_run_id"] + ".json"
+    paths = [marker]
+    sidecar = "/_snapshot_manifest.json" if stage == "j02" else "/_dataset_manifest.json"
+    for render in _PIPELINE_OUTPUTS[stage].values():
+        root = render(CONFIG.base_path, selector["source_snapshot_id"])
+        paths.extend([root + sidecar, root + "/_scope.json"])
+    calls = count_acls(client, monkeypatch)
+    _pipeline_publication(selector, stage, client, CONFIG)
+    assert calls == expected_permission_paths(paths)
+    _pipeline_publication(selector, stage, client, CONFIG)
+    assert calls == Counter({p: 2 for p in expected_permission_paths(paths)})
+
+
+@pytest.mark.parametrize("stage", ["j06", "validation"])
+def test_analytical_batches_inventory_and_evidence_without_skipping_duplicate_paths(
+    monkeypatch, stage
+):
+    from tests.unit.test_evaluation_artifacts import staged_evaluation
+    from tests.unit.test_forecast_artifacts import staged_forecast
+    from warehouse_bigdata.common.small_preflight import _analytical_publication
+
+    if stage == "j06":
+        client, _, manifest = staged_forecast(issue_date="2016-05-22", run_type="forward_demo")
+        run, run_id, marker, binding = "j06", "forecast", "scoring_manifest.json", "scoring.json"
+        selector_keys = {"forecast_run_id": run_id, "j06_pipeline_run_id": run}
+    else:
+        client, _, manifest, _ = staged_evaluation()
+        run, run_id = "execution", "eval"
+        marker, binding = "evaluation_manifest.json", "evaluation.json"
+        selector_keys = {"validation_evaluation_run_id": run_id, "validation_pipeline_run_id": run}
+    finalize_publication(client, CONFIG, pipeline_run_id=run)
+    quality = json.loads(
+        client.files[render_staging_path(CONFIG.base_path, run) + "/quality_report.json"]
+    )
+    root = manifest["artifact_uri"].removeprefix(CONFIG.uri)
+    paths = [
+        root + "/" + relative
+        for relative in (
+            marker,
+            "evidence/" + binding,
+            "evidence/publication.json",
+            *(item["path"] for item in quality["file_integrity"]),
+        )
+    ]
+    selector = {
+        **complete_selector(),
+        **selector_keys,
+        "source_snapshot_id": "snapshot",
+        "selection_digest": evidence("snapshot")["selection_digest"],
+        "model_run_id": "model",
+        "feature_version": "v1",
+        "j03_pipeline_run_id": "j03",
+        "j04_pipeline_run_id": "j04",
+    }
+    calls = count_acls(client, monkeypatch)
+    _analytical_publication(selector, stage, client, CONFIG)
+    assert calls == expected_permission_paths(paths)
+    assert len(paths) > len(set(paths))  # The binding is also an inventory entry.
+    client.entries[CONFIG.base_path]["owner"] = "spark"
+    with pytest.raises(ValueError, match="sealed"):
+        _analytical_publication(selector, stage, client, CONFIG)
