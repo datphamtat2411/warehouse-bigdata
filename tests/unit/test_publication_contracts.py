@@ -132,3 +132,10 @@ def test_evaluation_query_binding_never_falls_back_to_primary_context():
     historical = {"evaluation_run_id": "historical", "run_type": "test", "forecast_run_id": "historical-forecast"}
     publication = PublicationContext(**context, dataset_bindings={"forecast_metrics": historical})
     assert publication.evaluation_binding("forecast_metrics") == historical
+
+
+def test_read_context_rejects_missing_approval(tmp_path):
+    from warehouse_bigdata.application.read_repository import load_approved_publication_context
+
+    with pytest.raises((OSError, ValueError)):
+        load_approved_publication_context(tmp_path / 'missing.json')

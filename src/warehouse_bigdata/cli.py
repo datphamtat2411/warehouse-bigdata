@@ -63,7 +63,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     publish.add_argument("--batch-rows", type=int, default=2048)
     publish.add_argument("--offline-reload", action="store_true", required=True)
     publish.add_argument("--confirm-offline-reload", action="store_true", required=True)
+    verify = commands.add_parser('verify-clickhouse-distributed', help='Read-only approved M5 Small verification.')
+    verify.add_argument('--publication', type=Path, default=Path('artifacts/approved_publication.json'))
+    verify.add_argument('--evidence-dir', type=Path, default=Path('artifacts/verification'))
     arguments = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    if arguments.command == 'verify-clickhouse-distributed':
+        from warehouse_bigdata.jobs.verify_clickhouse_distributed import run_verification
+
+        try:
+            print(run_verification(arguments.publication, arguments.evidence_dir))
+            return 0
+        except (OSError, ValueError, RuntimeError) as error:
+            verify.error(str(error))
     if arguments.command == "publish-clickhouse":
         from warehouse_bigdata.jobs.publish_clickhouse import run_publish_clickhouse
 
